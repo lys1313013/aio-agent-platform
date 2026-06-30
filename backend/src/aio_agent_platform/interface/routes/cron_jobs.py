@@ -1,0 +1,180 @@
+"""Cron job management routes — CRUD for scheduled tasks."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from aio_agent_platform.auth.dependencies import CurrentUser
+from aio_agent_platform.cron_jobs.service import CronJobService
+from aio_agent_platform.db.connection import get_db
+from aio_agent_platform.db.models import CronJob
+
+router = APIRouter(prefix="/api/cron-jobs", tags=["cron-jobs"])
+
+
+# ---- Schemas ----
+
+
+class CronJobOut(BaseModel):
+    id: UUID
+    agent_id: UUID | None = None
+    name: str
+    cron_expr: str | None = None
+    run_at: datetime | None = None
+    message: str | None = None
+    task_config: dict
+    is_active: bool
+    last_run_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+    @classmethod
+    def from_model(cls, j: CronJob) -> CronJobOut:
+        return cls(
+            id=j.id,
+            agent_id=j.agent_id,
+            name=j.name,
+            cron_expr=j.cron_expr,
+            run_at=j.run_at,
+            message=j.message,
+            task_config=j.task_config or {},
+            is_active=j.is_active,
+            last_run_at=j.last_run_at,
+        )
+
+
+class CronJobCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=256)
+    agent_id: UUID | None = None
+    cron_expr: str | None = Field(default=None, max_length=128)
+    run_at: datetime | None = None
+    message: str | None = None
+    task_config: dict = Field(default_factory=dict)
+    is_active: bool = True
+
+
+class CronJobUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=256)
+    agent_id: UUID | None = None
+    cron_expr: str | None = Field(default=None, max_length=128)
+    run_at: datetime | None = None
+    message: str | None = None
+    task_config: dict | None = None
+    is_active: bool | None = None
+
+
+class CronJobListResponse(BaseModel):
+    items: list[CronJobOut]
+    total: int
+
+
+# ---- Endpoints ----
+
+
+@router.get("", response_model=CronJobListResponse)
+async def list_cron_jobs(
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """List cron jobs for current user."""
+    jobs = await CronJobService.list_jobs(db, user.id, limit=limit, offset=offset)
+
+    count_stmt = (
+        select(func.count()).select_from(CronJob).where(CronJob.user_id == user.id)
+    )
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
+
+    return CronJobListResponse(
+        items=[CronJobOut.from_model(j) for j in jobs],
+        total=total,
+    ).model_dump(mode="json")
+
+
+@router.post("", response_model=CronJobOut, status_code=201)
+async def create_cron_job(
+    req: CronJobCreate,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Create a new cron job."""
+    if not req.cron_expr and not req.run_at:
+        raise HTTPException(
+            status_code=400,
+            detail="Either cron_expr or run_at must be provided",
+        )
+
+    job = await CronJobService.create_job(
+        db=db,
+        user_id=user.id,
+        name=req.name,
+        agent_id=req.agent_id,
+        message=req.message,
+        cron_expr=req.cron_expr,
+        run_at=req.run_at,
+        task_config=req.task_config,
+        is_active=req.is_active,
+    )
+    await db.commit()
+    return CronJobOut.from_model(job).model_dump(mode="json")
+
+
+@router.get("/{job_id}", response_model=CronJobOut)
+async def get_cron_job(
+    job_id: UUID,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Get a single cron job."""
+    job = await CronJobService.get_job(db, job_id, user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Cron job not found")
+    return CronJobOut.from_model(job).model_dump(mode="json")
+
+
+@router.put("/{job_id}", response_model=CronJobOut)
+async def update_cron_job(
+    job_id: UUID,
+    req: CronJobUpdate,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Update a cron job."""
+    job = await CronJobService.update_job(
+        db=db,
+        job_id=job_id,
+        user_id=user.id,
+        name=req.name,
+        agent_id=req.agent_id,
+        message=req.message,
+        cron_expr=req.cron_expr,
+        run_at=req.run_at,
+        task_config=req.task_config,
+        is_active=req.is_active,
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Cron job not found")
+    await db.commit()
+    return CronJobOut.from_model(job).model_dump(mode="json")
+
+
+@router.delete("/{job_id}", status_code=204)
+async def delete_cron_job(
+    job_id: UUID,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """Delete a cron job."""
+    deleted = await CronJobService.delete_job(db, job_id, user.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Cron job not found")
+    await db.commit()

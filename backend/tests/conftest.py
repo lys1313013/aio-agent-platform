@@ -1,0 +1,83 @@
+"""Test fixtures for agent tests."""
+
+import asyncio
+import os
+from collections.abc import AsyncGenerator
+import configparser
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
+
+from aio_agent_platform.db.models import Base
+from aio_agent_platform.interface.api import app
+
+
+def get_test_database_url():
+    """Get database URL from DATABASE_URL env var or alembic.ini."""
+    url = os.environ.get("DATABASE_URL")
+    if url:
+        return url
+    try:
+        config = configparser.ConfigParser()
+        config.read('alembic.ini')
+        url = config.get('alembic', 'sqlalchemy.url', fallback=None)
+        if url:
+            return url
+    except Exception:
+        pass
+    raise RuntimeError(
+        "DATABASE_URL must be set in environment or alembic.ini for tests"
+    )
+
+
+@pytest.fixture(scope="session")
+def event_loop():
+    """Create an event loop for the test session."""
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+
+@pytest_asyncio.fixture
+async def engine():
+    """Create a test database engine for each test."""
+    database_url = get_test_database_url()
+    engine = create_async_engine(
+        database_url,
+        echo=False,
+        pool_size=1,
+        max_overflow=0,
+    )
+    yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
+    """Create a database session for each test."""
+    async_session = sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False
+    )
+    async with async_session() as session:
+        yield session
+
+
+@pytest_asyncio.fixture
+async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+    """Create an HTTP client for testing."""
+    async def override_get_db():
+        yield db_session
+
+    from aio_agent_platform.db.connection import get_db
+    app.dependency_overrides[get_db] = override_get_db
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as test_client:
+        yield test_client
+
+    app.dependency_overrides.clear()

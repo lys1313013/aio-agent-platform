@@ -1,0 +1,16 @@
+{# Context Summary Prompt — used to compress early conversation history into a short summary #}
+You are a conversation summarizer. Your task is to compress the following conversation history into a concise summary.
+
+## Requirements
+- Preserve: user's explicit instructions and preferences, technical decisions made, key file paths and configurations, unresolved questions or pending tasks
+- Discard: greetings and pleasantries, detailed tool call parameters and outputs, intermediate reasoning steps, repetitive confirmations
+- The summary should be written in the same language as the conversation
+- Maximum length: {{ max_chars }} characters
+
+## Conversation History
+{% for msg in messages %}
+**{{ msg.role }}**: {{ msg.content }}
+{% endfor %}
+
+## Output
+Provide ONLY the summary text, no preamble or explanation. Start directly with the key context.

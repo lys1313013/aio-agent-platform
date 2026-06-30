@@ -1,0 +1,181 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  /* Dark theme (default) */
+  .dark,
+  :root {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --ring: 217 91% 60%;
+  }
+
+  /* Light theme */
+  .light {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 98%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --ring: 217 91% 60%;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-muted-foreground/20 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted-foreground/40;
+}
+
+/* Markdown prose styling */
+.prose {
+  @apply text-foreground leading-relaxed;
+}
+
+.prose p {
+  @apply my-2;
+}
+
+.prose code {
+  @apply bg-black/10 dark:bg-white/15 px-1.5 py-0.5 rounded text-sm;
+  font-family: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* CodeBlock renders its own dark <pre>/<code>; don't override its colors */
+.prose pre {
+  @apply p-0 overflow-hidden my-3;
+  background: transparent;
+}
+
+.prose pre code {
+  @apply bg-transparent p-0;
+  color: inherit;
+}
+
+.prose a {
+  @apply text-primary underline;
+}
+
+.prose ul,
+.prose ol {
+  @apply pl-6 my-2;
+}
+
+.prose ul {
+  @apply list-disc;
+}
+
+.prose ol {
+  @apply list-decimal;
+}
+
+.prose li {
+  @apply my-1;
+}
+
+.prose blockquote {
+  @apply border-l-2 border-muted-foreground/50 pl-4 italic text-muted-foreground;
+}
+
+.prose h1,
+.prose h2,
+.prose h3 {
+  @apply font-bold mt-4 mb-2;
+}
+
+.prose h1 {
+  @apply text-2xl;
+}
+
+.prose h2 {
+  @apply text-xl;
+}
+
+.prose h3 {
+  @apply text-lg;
+}
+
+.prose table {
+  @apply w-full border-collapse my-3;
+}
+
+.prose th,
+.prose td {
+  @apply border border-border px-3 py-2 text-left;
+}
+
+.prose th {
+  @apply bg-muted font-semibold;
+}
+
+/* Code block styling */
+.code-block-wrapper {
+  @apply relative;
+}
+
+.code-block-header {
+  @apply flex items-center justify-between px-4 py-2 bg-muted/50 border-b border-border text-xs text-muted-foreground;
+}
+
+/* Animation for streaming text cursor */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.streaming-cursor::after {
+  content: '▊';
+  @apply text-primary ml-0.5;
+  animation: blink 1s step-end infinite;
+}
+
+/* Transition for sidebar */
+.sidebar-transition {
+  transition: width 200ms ease, opacity 200ms ease;
+}

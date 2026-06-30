@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>智能体平台</title>
+    <!-- Inline theme init to prevent flash -->
+    <script>
+      try {
+        var stored = JSON.parse(localStorage.getItem('aio-theme') || '{}');
+        var theme = stored.state && stored.state.theme ? stored.state.theme : 'dark';
+        var resolved = theme === 'system'
+          ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : theme;
+        document.documentElement.classList.remove('light', 'dark');
+        document.documentElement.classList.add(resolved);
+      } catch(e) {}
+    </script>
+  </head>
+  <body class="bg-background text-foreground">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
