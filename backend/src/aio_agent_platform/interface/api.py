@@ -31,6 +31,7 @@ from aio_agent_platform.interface.routes import (
 from aio_agent_platform.memory.handlers import MEMORY_HANDLERS
 from aio_agent_platform.knowledge.handlers import KNOWLEDGE_HANDLERS
 from aio_agent_platform.cron_jobs.handlers import CRON_JOB_HANDLERS
+from aio_agent_platform.observation import init_langfuse, shutdown_langfuse
 from aio_agent_platform.portrait.handlers import PORTRAIT_HANDLERS
 from aio_agent_platform.sandbox import SandboxManager
 from aio_agent_platform.skills.handlers import SKILL_HANDLERS
@@ -178,6 +179,9 @@ async def lifespan(app: FastAPI):
     app.state.mcp_manager = mcp_manager
     app.state.remote_manager = remote_manager
 
+    # 11.5 Langfuse observability
+    init_langfuse()
+
     # 12. Cron Job Scheduler — load and schedule all active jobs
     from aio_agent_platform.cron_jobs.scheduler import Scheduler
 
@@ -299,6 +303,7 @@ async def lifespan(app: FastAPI):
         await scheduler.shutdown()
     await mcp_manager.shutdown()
     await sandbox_mgr.shutdown()
+    await shutdown_langfuse()
     await close_db()
 
 

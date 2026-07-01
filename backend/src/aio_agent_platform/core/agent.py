@@ -18,6 +18,7 @@ from aio_agent_platform.llm import (
     LLMProvider,
     ToolCall,
 )
+from aio_agent_platform.observation import get_current_observation, get_langfuse_client
 from aio_agent_platform.tools.executor import ToolExecutor, ToolResult
 
 logger = structlog.get_logger(__name__)
@@ -411,17 +412,7 @@ class AgentLoop:
                     tool_name=tc.name,
                     tool_call_id=tc.id,
                 )
-                result = await self.tool_executor.execute(
-                    tool_name=tc.name,
-                    arguments=tc.arguments,
-                    tool_call_id=tc.id,
-                    user_id=str(ctx.user_id),
-                    session_id=str(ctx.session_id),
-                    delegation=ctx.delegation,
-                    event_queue=self.event_queue,
-                    workspace_id=str(ctx.workspace_id) if ctx.workspace_id else None,
-                    allowed_tools=self.allowed_tools,
-                )
+                result = await self._execute_tool_traced(tc, ctx)
                 step.tool_results.append(result)
 
                 status = "ok" if result.success else "err"
@@ -517,6 +508,65 @@ class AgentLoop:
             final_output="智能体已达到最大迭代次数，仍未完成任务。",
             done=True,
         )
+
+    # ------------------------------------------------------------------
+    # Tool execution with tracing
+    # ------------------------------------------------------------------
+
+    async def _execute_tool_traced(
+        self,
+        tc: ToolCall,
+        ctx: ToolContext,
+    ):
+        """Execute a tool with Langfuse tracing."""
+        parent = get_current_observation()
+        lf_client = get_langfuse_client()
+
+        tool_obs = None
+        if parent and lf_client:
+            tool_obs = parent.start_observation(
+                name=tc.name,
+                as_type="tool",
+                input={
+                    "tool_call_id": tc.id,
+                    "arguments": tc.arguments,
+                },
+            )
+
+        try:
+            result = await self.tool_executor.execute(
+                tool_name=tc.name,
+                arguments=tc.arguments,
+                tool_call_id=tc.id,
+                user_id=str(ctx.user_id),
+                session_id=str(ctx.session_id),
+                delegation=ctx.delegation,
+                event_queue=self.event_queue,
+                workspace_id=str(ctx.workspace_id) if ctx.workspace_id else None,
+                allowed_tools=self.allowed_tools,
+            )
+        except Exception as e:
+            if tool_obs:
+                tool_obs.update(level="ERROR", status_message=str(e))
+                tool_obs.end()
+            raise
+
+        if tool_obs:
+            status = "success" if result.success else "error"
+            output = (result.output if result.success else result.error or "")[:10000]
+            tool_obs.update(
+                output=output,
+                metadata={
+                    "status": status,
+                    "duration_ms": result.duration_ms,
+                    "tool_call_id": tc.id,
+                },
+                level="ERROR" if not result.success else "DEFAULT",
+                status_message=result.error if not result.success else None,
+            )
+            tool_obs.end()
+
+        return result
 
     # ------------------------------------------------------------------
     # AskUserQuestion handling

@@ -130,6 +130,17 @@ class StorageSettings(BaseSettings):
     presign_expire_seconds: int = Field(default=3600, ge=60, le=86400, description="Presigned URL expiry")
 
 
+class LangfuseSettings(BaseSettings):
+    """Langfuse observability configuration."""
+
+    model_config = SettingsConfigDict(env_prefix="LANGFUSE_")
+
+    secret_key: str = Field(default="", description="Langfuse secret key")
+    public_key: str = Field(default="", description="Langfuse public key")
+    base_url: str = Field(default="http://localhost:3000", description="Langfuse base URL")
+    enabled: bool = Field(default=True, description="Enable Langfuse tracing")
+
+
 class ServerSettings(BaseSettings):
     """Server configuration."""
 
@@ -157,6 +168,7 @@ class AppSettings(BaseSettings):
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
+    langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

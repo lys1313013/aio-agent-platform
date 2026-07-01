@@ -31,6 +31,11 @@ from aio_agent_platform.auth.jwt_handler import TokenExpiredError, decode_token
 from aio_agent_platform.core.context import current_agent_id
 from aio_agent_platform.core.agent import AgentLoop, AgentStep, DelegationContext
 from aio_agent_platform.core.config import settings
+from aio_agent_platform.observation import (
+    get_langfuse_client,
+    set_current_observation,
+)
+from langfuse._client.propagation import propagate_attributes
 from aio_agent_platform.core.context import (
     ContextBudget,
     emergency_compress,
@@ -729,6 +734,7 @@ async def _build_agent_loop(
         api_key=model_to_use.provider.api_key_encrypted,
         temperature=agent_temperature if agent_temperature is not None else settings.llm.temperature,
         enable_retry=agent_enable_retry,
+        langfuse_client=get_langfuse_client(),
     )
     logger.info(
         "使用模型",
@@ -1315,11 +1321,31 @@ async def chat_stream(
     await db.commit()
 
     async def event_generator():
+        # Langfuse trace: wrap the entire chat flow
+        langfuse_client = get_langfuse_client()
+        root_obs = None
+        prop_ctx = None
+
         try:
+            if langfuse_client:
+                root_obs = langfuse_client.start_observation(
+                    name="chat",
+                    as_type="span",
+                    input={
+                        "message": req.message,
+                        "agent_id": str(req.agent_id) if req.agent_id else None,
+                    },
+                )
+                set_current_observation(root_obs)
+                prop_ctx = propagate_attributes(
+                    user_id=str(user.id),
+                    session_id=str(session_id),
+                )
+                prop_ctx.__enter__()
+
             # Get a fresh DB session for this generator
             factory = get_session_factory()
             async with factory() as gen_db:
-                # Load conversation history (adaptive + context_summary)
                 logger.debug(
                     "stream_loading_history",
                     session_id=str(session_id),
@@ -1772,6 +1798,13 @@ async def chat_stream(
                     tool_calls_count=len(tool_calls_list),
                 )
 
+                # Update langfuse root observation with output
+                if root_obs:
+                    root_obs.update(output={
+                        "content": final_output,
+                        "tool_calls_count": len(tool_calls_list),
+                    })
+
                 # Done — include tool_calls so frontend can persist them
                 yield _sse_event({
                     "type": "done",
@@ -1790,6 +1823,8 @@ async def chat_stream(
                 elapsed_ms=round(elapsed, 2),
                 reason="client_disconnected",
             )
+            if root_obs:
+                root_obs.update(level="DEFAULT", status_message="client disconnected")
             # Rescue tool calls accumulated so far. Shield the save so it isn't
             # itself cancelled, then let the cancellation propagate.
             try:
@@ -1825,6 +1860,8 @@ async def chat_stream(
                     error=str(e),
                     exc_info=True,
                 )
+            if root_obs:
+                root_obs.update(level="ERROR", status_message=str(e))
             try:
                 yield _sse_event({"type": "error", "message": str(e)})
             except Exception:
@@ -1836,6 +1873,26 @@ async def chat_stream(
                     await _rescue_partial()
             except Exception:
                 logger.exception("stream_error_rescue_failed", session_id=str(session_id))
+        finally:
+            # End langfuse root observation
+            if prop_ctx:
+                try:
+                    prop_ctx.__exit__(None, None, None)
+                except Exception:
+                    pass
+            if root_obs:
+                try:
+                    root_obs.end()
+                except Exception:
+                    pass
+                try:
+                    set_current_observation(None)
+                except Exception:
+                    pass
+                try:
+                    langfuse_client.flush()
+                except Exception:
+                    pass
 
     return StreamingResponse(
         event_generator(),

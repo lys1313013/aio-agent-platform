@@ -38,5 +38,8 @@ frontend/tsconfig.node.tsbuildinfo
 frontend/vite.config.d.ts
 frontend/vite.config.js
 
+# Test
+frontend/test-results/
+
 # Misc
 *.log

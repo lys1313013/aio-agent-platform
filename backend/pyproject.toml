@@ -65,6 +65,9 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "email-validator>=2.2.0",
     "Pillow>=10.0.0",              # 图片压缩 (chat attachments)
+
+    # ---- 可观测性 ----
+    "langfuse>=4.0.0",
 ]
 
 [project.optional-dependencies]

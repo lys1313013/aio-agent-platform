@@ -1,14 +1,16 @@
 """LLM Provider — unified interface for OpenAI and Anthropic."""
 
 import asyncio
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Annotated, Any, AsyncIterator, Literal
+from typing import Any, AsyncIterator, Literal
 
 import anthropic
 import httpx
 import openai
 import structlog
+from langfuse import Langfuse
 
 logger = structlog.get_logger()
 
@@ -187,6 +189,7 @@ class OpenAIProvider(LLMProvider):
         default_temperature: float = 0.7,
         default_max_tokens: int | None = None,
         enable_retry: bool = True,
+        langfuse_client: Langfuse | None = None,
     ):
         self.client = openai.AsyncOpenAI(
             base_url=base_url,
@@ -197,6 +200,7 @@ class OpenAIProvider(LLMProvider):
         self.default_temperature = default_temperature
         self.default_max_tokens = default_max_tokens
         self.enable_retry = enable_retry
+        self.langfuse_client = langfuse_client
 
     async def complete(
         self,
@@ -231,41 +235,102 @@ class OpenAIProvider(LLMProvider):
         max_tokens: int | None = None,
     ) -> AsyncIterator[LLMChunk]:
         openai_messages = self._to_openai_messages(messages)
+        temp = temperature if temperature is not None else self.default_temperature
+        mt = max_tokens or self.default_max_tokens
 
-        # Retry only on initial connection failure; mid-stream errors are not retried
-        async def _open_stream():
-            return await self.client.chat.completions.create(
+        # Start Langfuse generation if available
+        gen_obs = None
+        if self.langfuse_client:
+            from aio_agent_platform.observation import get_current_observation
+            parent = get_current_observation()
+            factory = parent.start_observation if parent else self.langfuse_client.start_observation
+            gen_obs = factory(
+                name="OpenAI Chat Completion",
+                as_type="generation",
                 model=self.model,
-                messages=openai_messages,
-                tools=tools,
-                temperature=temperature or self.default_temperature,
-                max_tokens=max_tokens or self.default_max_tokens,
-                stream=True,
+                model_parameters={
+                    "temperature": temp,
+                    "max_tokens": str(mt) if mt else None,
+                },
+                input=openai_messages,
             )
 
-        try:
-            if self.enable_retry:
-                stream = await _retry_with_backoff("OpenAI.stream", self.model, _open_stream)
-            else:
-                stream = await _open_stream()
-        except Exception as e:
-            logger.warning("LLM stream connection failed after retries (OpenAI)", model=self.model, error=str(e))
-            raise LLMStreamError(f"LLM 流式连接失败: {e}") from e
+        accumulated_text = ""
+        accumulated_tool_calls: list[dict] = []
+        last_usage = None
 
         try:
-            async for event in stream:
-                chunk = self._parse_stream_event(event)
-                if chunk:
-                    yield chunk
-        except httpx.RemoteProtocolError as e:
-            logger.warning("LLM stream connection lost (OpenAI)", model=self.model, error=str(e))
-            raise LLMStreamError(f"LLM 流式连接中断: {e}") from e
-        except openai.APIConnectionError as e:
-            logger.warning("LLM API connection error (OpenAI)", model=self.model, error=str(e))
-            raise LLMStreamError(f"LLM API 连接失败: {e}") from e
-        except openai.APITimeoutError as e:
-            logger.warning("LLM API timeout (OpenAI)", model=self.model, error=str(e))
-            raise LLMStreamError(f"LLM API 超时: {e}") from e
+            async def _open_stream():
+                return await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=openai_messages,
+                    tools=tools,
+                    temperature=temp,
+                    max_tokens=mt,
+                    stream=True,
+                )
+
+            try:
+                if self.enable_retry:
+                    stream = await _retry_with_backoff("OpenAI.stream", self.model, _open_stream)
+                else:
+                    stream = await _open_stream()
+            except Exception as e:
+                logger.warning("LLM stream connection failed after retries (OpenAI)", model=self.model, error=str(e))
+                if gen_obs:
+                    gen_obs.update(level="ERROR", status_message=str(e))
+                    gen_obs.end()
+                raise LLMStreamError(f"LLM 流式连接失败: {e}") from e
+
+            try:
+                async for event in stream:
+                    chunk = self._parse_stream_event(event)
+                    if chunk:
+                        if chunk.type == "text_delta" and chunk.content:
+                            accumulated_text += chunk.content
+                        elif chunk.type in ("tool_call_start", "tool_call_delta"):
+                            pass  # tool calls tracked below
+                        elif chunk.type == "done":
+                            last_usage = chunk.usage
+                        yield chunk
+            except httpx.RemoteProtocolError as e:
+                logger.warning("LLM stream connection lost (OpenAI)", model=self.model, error=str(e))
+                if gen_obs:
+                    gen_obs.update(level="ERROR", status_message=str(e))
+                    gen_obs.end()
+                raise LLMStreamError(f"LLM 流式连接中断: {e}") from e
+            except openai.APIConnectionError as e:
+                logger.warning("LLM API connection error (OpenAI)", model=self.model, error=str(e))
+                if gen_obs:
+                    gen_obs.update(level="ERROR", status_message=str(e))
+                    gen_obs.end()
+                raise LLMStreamError(f"LLM API 连接失败: {e}") from e
+            except openai.APITimeoutError as e:
+                logger.warning("LLM API timeout (OpenAI)", model=self.model, error=str(e))
+                if gen_obs:
+                    gen_obs.update(level="ERROR", status_message=str(e))
+                    gen_obs.end()
+                raise LLMStreamError(f"LLM API 超时: {e}") from e
+        finally:
+            if gen_obs:
+                output = accumulated_text
+                if accumulated_tool_calls:
+                    output = json.dumps(
+                        {"text": accumulated_text, "tool_calls": accumulated_tool_calls},
+                        ensure_ascii=False,
+                    )
+                usage_details = None
+                if last_usage:
+                    usage_details = {
+                        "input": last_usage.get("prompt_tokens", 0),
+                        "output": last_usage.get("completion_tokens", 0),
+                        "total": last_usage.get("total_tokens", 0),
+                    }
+                gen_obs.update(
+                    output=output,
+                    usage_details=usage_details,
+                )
+                gen_obs.end()
 
     def _to_openai_messages(self, messages: list[LLMMessage]) -> list[dict]:
         result = []
@@ -434,6 +499,7 @@ class AnthropicProvider(LLMProvider):
         default_temperature: float = 0.7,
         default_max_tokens: int = 4096,
         enable_retry: bool = True,
+        langfuse_client: Langfuse | None = None,
     ):
         self.client = anthropic.AsyncAnthropic(
             api_key=api_key,
@@ -443,6 +509,7 @@ class AnthropicProvider(LLMProvider):
         self.default_temperature = default_temperature
         self.default_max_tokens = default_max_tokens
         self.enable_retry = enable_retry
+        self.langfuse_client = langfuse_client
 
     async def complete(
         self,
@@ -479,16 +546,39 @@ class AnthropicProvider(LLMProvider):
     ) -> AsyncIterator[LLMChunk]:
         system_content, anthropic_messages = self._to_anthropic_format(messages)
         anthropic_tools = self._convert_tools(tools) if tools else None
+        temp = temperature if temperature is not None else self.default_temperature
+        mt = max_tokens or self.default_max_tokens
 
-        # Retry only on initial connection failure; mid-stream errors are not retried
+        # Start Langfuse generation if available
+        gen_obs = None
+        if self.langfuse_client:
+            from aio_agent_platform.observation import get_current_observation
+            model_input = {"system": system_content, "messages": anthropic_messages}
+            parent = get_current_observation()
+            factory = parent.start_observation if parent else self.langfuse_client.start_observation
+            gen_obs = factory(
+                name="Anthropic Messages",
+                as_type="generation",
+                model=self.model,
+                model_parameters={
+                    "temperature": temp,
+                    "max_tokens": mt,
+                },
+                input=model_input,
+            )
+
+        accumulated_text = ""
+        accumulated_tool_calls: list[dict] = []
+        last_usage = None
+
         async def _open_stream():
             return self.client.messages.stream(
                 model=self.model,
                 system=system_content,
                 messages=anthropic_messages,
                 tools=anthropic_tools,
-                max_tokens=max_tokens or self.default_max_tokens,
-                temperature=temperature or self.default_temperature,
+                max_tokens=mt,
+                temperature=temp,
             )
 
         try:
@@ -498,6 +588,9 @@ class AnthropicProvider(LLMProvider):
                 stream_ctx = await _open_stream()
         except Exception as e:
             logger.warning("LLM stream connection failed after retries (Anthropic)", model=self.model, error=str(e))
+            if gen_obs:
+                gen_obs.update(level="ERROR", status_message=str(e))
+                gen_obs.end()
             raise LLMStreamError(f"LLM 流式连接失败: {e}") from e
 
         try:
@@ -505,16 +598,49 @@ class AnthropicProvider(LLMProvider):
                 async for event in stream:
                     chunk = self._parse_stream_event(event)
                     if chunk:
+                        if chunk.type == "text_delta" and chunk.content:
+                            accumulated_text += chunk.content
+                        elif chunk.type == "done":
+                            last_usage = chunk.usage
                         yield chunk
         except httpx.RemoteProtocolError as e:
             logger.warning("LLM stream connection lost (Anthropic)", model=self.model, error=str(e))
+            if gen_obs:
+                gen_obs.update(level="ERROR", status_message=str(e))
+                gen_obs.end()
             raise LLMStreamError(f"LLM 流式连接中断: {e}") from e
         except anthropic.APIConnectionError as e:
             logger.warning("LLM API connection error (Anthropic)", model=self.model, error=str(e))
+            if gen_obs:
+                gen_obs.update(level="ERROR", status_message=str(e))
+                gen_obs.end()
             raise LLMStreamError(f"LLM API 连接失败: {e}") from e
         except anthropic.APITimeoutError as e:
             logger.warning("LLM API timeout (Anthropic)", model=self.model, error=str(e))
+            if gen_obs:
+                gen_obs.update(level="ERROR", status_message=str(e))
+                gen_obs.end()
             raise LLMStreamError(f"LLM API 超时: {e}") from e
+        finally:
+            if gen_obs:
+                output = accumulated_text
+                if accumulated_tool_calls:
+                    output = json.dumps(
+                        {"text": accumulated_text, "tool_calls": accumulated_tool_calls},
+                        ensure_ascii=False,
+                    )
+                usage_details = None
+                if last_usage:
+                    usage_details = {
+                        "input": last_usage.get("prompt_tokens", 0),
+                        "output": last_usage.get("completion_tokens", 0),
+                        "total": last_usage.get("total_tokens", 0),
+                    }
+                gen_obs.update(
+                    output=output,
+                    usage_details=usage_details,
+                )
+                gen_obs.end()
 
     def _to_anthropic_format(self, messages: list[LLMMessage]) -> tuple[str | None, list[dict]]:
         """Split messages into system prompt + message array."""
@@ -766,6 +892,7 @@ def create_provider(
     api_key: str | None = None,
     temperature: float = 0.7,
     enable_retry: bool = True,
+    langfuse_client: Langfuse | None = None,
 ) -> LLMProvider:
     """Create an LLM provider instance.
 
@@ -778,6 +905,7 @@ def create_provider(
             api_key=api_key or "",
             default_temperature=temperature,
             enable_retry=enable_retry,
+            langfuse_client=langfuse_client,
         )
     else:
         return OpenAIProvider(
@@ -786,4 +914,5 @@ def create_provider(
             api_key=api_key or "",
             default_temperature=temperature,
             enable_retry=enable_retry,
+            langfuse_client=langfuse_client,
         )
