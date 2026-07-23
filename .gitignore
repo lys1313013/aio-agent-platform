@@ -43,3 +43,5 @@ frontend/test-results/
 
 # Misc
 *.log
+.coverage
+coverage.xml
