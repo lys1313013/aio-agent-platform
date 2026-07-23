@@ -2,12 +2,41 @@
 
 from __future__ import annotations
 
+import importlib.util
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from uuid import UUID
 
 import structlog
 
 logger = structlog.get_logger()
+
+_MCP_PACKAGE_NAME = "mcp"
+_MCP_INSTALL_HINT = (
+    "MCP 客户端库未安装。请运行: pip install mcp>=1.0.0\n"
+    "或安装项目完整依赖: pip install aio-agent-platform[all]"
+)
+
+
+def _ensure_mcp_package() -> None:
+    """Check for MCP package and auto-install if missing."""
+    if importlib.util.find_spec(_MCP_PACKAGE_NAME) is not None:
+        return
+
+    logger.warning("mcp_package_missing", hint="attempting auto-install")
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "mcp>=1.0.0"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # Invalidate import cache so the fresh install is visible
+        importlib.invalidate_caches()
+        logger.info("mcp_package_auto_installed")
+    except Exception as e:
+        logger.error("mcp_package_auto_install_failed", error=str(e))
+        raise ImportError(_MCP_INSTALL_HINT) from e
 
 
 @dataclass
@@ -88,6 +117,7 @@ class MCPServerConnection:
 
     async def _connect_sse(self) -> None:
         """Connect via SSE (HTTP endpoint with Server-Sent Events)."""
+        _ensure_mcp_package()
         from mcp import ClientSession
         from mcp.client.sse import sse_client
 
@@ -104,6 +134,7 @@ class MCPServerConnection:
 
     async def _connect_streamable_http(self) -> None:
         """Connect via Streamable HTTP (HTTP POST + optional SSE streaming)."""
+        _ensure_mcp_package()
         from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 

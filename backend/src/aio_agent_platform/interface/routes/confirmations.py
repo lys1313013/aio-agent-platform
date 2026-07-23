@@ -5,13 +5,11 @@ from __future__ import annotations
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.core.confirmation import confirmation_manager
-from aio_agent_platform.db.connection import get_db
 
 logger = structlog.get_logger()
 

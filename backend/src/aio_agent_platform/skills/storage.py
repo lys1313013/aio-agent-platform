@@ -280,7 +280,6 @@ class SkillStorage:
                 ],
             }
         """
-        import re
 
         buf = io.BytesIO(zip_bytes)
         with zipfile.ZipFile(buf, "r") as zf:

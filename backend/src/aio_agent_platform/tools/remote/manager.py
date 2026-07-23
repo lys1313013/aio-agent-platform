@@ -7,7 +7,6 @@ from uuid import UUID
 
 import structlog
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.db.models import RemoteTool
 from aio_agent_platform.tools.registry import Tool, ToolRegistry

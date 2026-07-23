@@ -39,6 +39,8 @@ async def auth_client(client: AsyncClient, db_session: AsyncSession):
     yield client
     # client fixture clears dependency_overrides on teardown
 
+TEST_USER_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
 
 @pytest.mark.asyncio
 async def test_stats_returns_200_for_valid_agent(
@@ -46,7 +48,7 @@ async def test_stats_returns_200_for_valid_agent(
     db_session: AsyncSession,
 ):
     """Stats endpoint returns 200 — catches missing-import crashes (500)."""
-    agent = Agent(id=uuid.uuid4(), name="stats-agent", is_active=True)
+    agent = Agent(id=uuid.uuid4(), name="stats-agent", is_active=True, created_by=TEST_USER_ID)
     db_session.add(agent)
     await db_session.flush()
 
@@ -63,7 +65,7 @@ async def test_stats_returns_correct_shape(
     db_session: AsyncSession,
 ):
     """Response contains total_sessions, total_messages, last_active_at."""
-    agent = Agent(id=uuid.uuid4(), name="stats-shape-agent", is_active=True)
+    agent = Agent(id=uuid.uuid4(), name="stats-shape-agent", is_active=True, created_by=TEST_USER_ID)
     db_session.add(agent)
     await db_session.flush()
 
@@ -84,7 +86,7 @@ async def test_stats_counts_sessions_and_messages(
 ):
     """Counts match the actual sessions and messages for this user + agent."""
     user_id = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    agent = Agent(id=uuid.uuid4(), name="stats-count-agent", is_active=True)
+    agent = Agent(id=uuid.uuid4(), name="stats-count-agent", is_active=True, created_by=TEST_USER_ID)
     db_session.add(agent)
     await db_session.flush()
 
@@ -129,7 +131,7 @@ async def test_stats_excludes_other_users_sessions(
     db_session.add(other_user)
     await db_session.flush()
 
-    agent = Agent(id=uuid.uuid4(), name="stats-isolation-agent", is_active=True)
+    agent = Agent(id=uuid.uuid4(), name="stats-isolation-agent", is_active=True, created_by=TEST_USER_ID)
     db_session.add(agent)
     await db_session.flush()
 
@@ -158,7 +160,7 @@ async def test_stats_zero_sessions(
     db_session: AsyncSession,
 ):
     """Agent with no sessions returns zeros and null last_active_at."""
-    agent = Agent(id=uuid.uuid4(), name="stats-empty-agent", is_active=True)
+    agent = Agent(id=uuid.uuid4(), name="stats-empty-agent", is_active=True, created_by=TEST_USER_ID)
     db_session.add(agent)
     await db_session.flush()
 

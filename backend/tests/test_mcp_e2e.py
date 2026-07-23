@@ -13,6 +13,10 @@ down the expected differences.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mcp", reason="mcp is an optional dependency; install with: pip install mcp")
+
 import asyncio
 import json
 import socket

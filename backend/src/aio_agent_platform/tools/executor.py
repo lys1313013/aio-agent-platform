@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from aio_agent_platform.db.sanitize import sanitize_pg_text
@@ -17,8 +16,8 @@ if TYPE_CHECKING:
     from aio_agent_platform.core.agent import DelegationContext
     from aio_agent_platform.sandbox import SandboxManager
     from aio_agent_platform.tools.mcp.manager import MCPManager
-    from aio_agent_platform.tools.remote.manager import RemoteToolManager
     from aio_agent_platform.tools.remote.executor import RemoteToolExecutor
+    from aio_agent_platform.tools.remote.manager import RemoteToolManager
 
 
 class SecurityError(Exception):
@@ -51,7 +50,7 @@ class ToolExecutor:
 
     MAX_OUTPUT_SIZE = 10_000
 
-    DANGEROUS_COMMANDS = [
+    DANGEROUS_COMMANDS = (
         "rm -rf /",
         "mkfs",
         "dd if=/dev/zero",
@@ -63,7 +62,7 @@ class ToolExecutor:
         "curl|sh",
         "nc -l",
         "ncat -l",
-    ]
+    )
 
     def __init__(
         self,
@@ -299,7 +298,7 @@ class ToolExecutor:
 
         if tool_name == "run_shell":
             command = args.get("command", "")
-            result = await self.sandbox_mgr.execute(sandbox, f"bash -c {repr(command)}")
+            result = await self.sandbox_mgr.execute(sandbox, f"bash -c {command!r}")
             return self._format_exec_result(result)
 
         elif tool_name == "run_code":
@@ -760,7 +759,7 @@ elif isinstance(data, list):
             else:
                 cmd = f"tar tf {qp} 2>/dev/null | head -100"
             r = await self.sandbox_mgr.execute(sandbox, cmd)
-            tree = [l.strip() for l in r.stdout.strip().split("\n") if l.strip()]
+            tree = [line.strip() for line in r.stdout.strip().split("\n") if line.strip()]
             result["file_tree"] = tree
             result["file_count"] = len(tree)
         except Exception:
@@ -872,8 +871,8 @@ path = '/workspace/{path}'
 try:
     with open(path, 'r') as f:
         content = f.read()
-    old = {repr(old_str)}
-    new = {repr(new_str)}
+    old = {old_str!r}
+    new = {new_str!r}
     if old not in content:
         print(f'ERROR: old_str not found in {{path}}', file=sys.stderr)
         sys.exit(1)
@@ -885,7 +884,7 @@ except Exception as e:
     print(f'ERROR: {{e}}', file=sys.stderr)
     sys.exit(1)
 """
-        result = await self.sandbox_mgr.execute(sandbox, f"python3 -c {repr(python_code)}")
+        result = await self.sandbox_mgr.execute(sandbox, f"python3 -c {python_code!r}")
         return self._format_exec_result(result)
 
     async def _execute_direct(

@@ -1,7 +1,6 @@
 """JWT token handling."""
 
-from datetime import datetime, timedelta, timezone
-from typing import Annotated
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import jwt
@@ -31,7 +30,7 @@ class TokenPair(BaseModel):
 
 def create_access_token(user_id: UUID, role: str) -> str:
     """Create a short-lived access token (15 min default)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expire = now + timedelta(minutes=settings.jwt.access_token_expire_minutes)
     payload = {
         "sub": str(user_id),
@@ -45,7 +44,7 @@ def create_access_token(user_id: UUID, role: str) -> str:
 
 def create_refresh_token(user_id: UUID) -> str:
     """Create a long-lived refresh token (7 days default)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expire = now + timedelta(days=settings.jwt.refresh_token_expire_days)
     payload = {
         "sub": str(user_id),

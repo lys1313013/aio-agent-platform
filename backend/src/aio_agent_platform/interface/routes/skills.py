@@ -17,8 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.db.connection import get_db
-from aio_agent_platform.db.models import Skill, SkillVersion
-from aio_agent_platform.skills.service import SkillService, TYPE_TO_DIR
+from aio_agent_platform.db.models import Skill
+from aio_agent_platform.skills.service import SkillService
 from aio_agent_platform.skills.storage import SCRIPT_EXTENSIONS, SkillStorage
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -225,7 +225,7 @@ async def import_skill(
         )
 
     # Validate it's a zip
-    if not data[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
+    if data[:4] not in (b"PK\x03\x04", b"PK\x05\x06"):
         raise HTTPException(status_code=400, detail="Not a valid zip file")
 
     storage = _get_storage()

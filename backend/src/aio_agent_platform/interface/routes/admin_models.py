@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.dependencies import AdminUser
-from aio_agent_platform.db.models import LLMModel, LLMProvider
 from aio_agent_platform.db.connection import get_db
+from aio_agent_platform.db.models import LLMModel, LLMProvider
 
 router = APIRouter(prefix="/api/admin/models", tags=["admin-models"])
 
@@ -229,7 +229,7 @@ async def fetch_remote_models(
             detail=f"供应商 API 返回 {e.response.status_code}：{e.response.text[:200]}",
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"请求失败：{str(e)}")
+        raise HTTPException(status_code=502, detail=f"请求失败：{e!s}")
 
     # Parse response — OpenAI-compatible: {"data": [{"id": "gpt-4o", ...}]}
     model_ids: list[str] = []
@@ -284,7 +284,7 @@ async def batch_create_models(
 
         # If no default model exists, set the first one as default
         default_result = await db.execute(
-            select(LLMModel).where(LLMModel.is_default == True)
+            select(LLMModel).where(LLMModel.is_default)
         )
         if not default_result.scalar_one_or_none() and created:
             created[0].is_default = True
@@ -359,7 +359,7 @@ async def create_model(
 
     # If this is the first model, make it default
     count_result = await db.execute(
-        select(LLMModel).where(LLMModel.is_default == True)
+        select(LLMModel).where(LLMModel.is_default)
     )
     if not count_result.scalar_one_or_none():
         model.is_default = True
@@ -455,7 +455,7 @@ async def delete_model(
     if was_default:
         fallback = await db.execute(
             select(LLMModel)
-            .where(LLMModel.is_active == True)
+            .where(LLMModel.is_active)
             .limit(1)
         )
         fallback_model = fallback.scalar_one_or_none()
@@ -483,7 +483,7 @@ async def set_default_model(
 
     # Clear all defaults, set this one
     await db.execute(
-        update(LLMModel).where(LLMModel.is_default == True).values(is_default=False)
+        update(LLMModel).where(LLMModel.is_default).values(is_default=False)
     )
     model.is_default = True
     await db.flush()

@@ -118,7 +118,7 @@ class RemoteToolExecutor:
                     query[query_param] = remaining_args[tool_param]
         elif config.method.upper() in ("GET", "DELETE"):
             # Auto: all remaining args become query params
-            query = {k: v for k, v in remaining_args.items()}
+            query = dict(remaining_args.items())
 
         return query
 

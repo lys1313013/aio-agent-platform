@@ -58,7 +58,7 @@ async def handle_knowledge_retrieval(
             )
             .where(
                 AgentKnowledgeBase.agent_id == UUID(agent_id),
-                KnowledgeBase.is_active == True,
+                KnowledgeBase.is_active,
             )
         )
         kb_rows = kb_result.all()

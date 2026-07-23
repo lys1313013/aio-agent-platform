@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
@@ -20,7 +20,7 @@ from aio_agent_platform.core.context import current_agent_id
 from aio_agent_platform.core.prompt import build_system_prompt
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
 from aio_agent_platform.db.models import Agent, AgentRelationship, Delegation, LLMModel, Session
-from aio_agent_platform.llm import LLMMessage, create_provider
+from aio_agent_platform.llm import create_provider
 from aio_agent_platform.memory.service import MemoryService
 from aio_agent_platform.skills.service import SkillService
 from aio_agent_platform.tools.executor import ToolExecutor
@@ -226,7 +226,7 @@ async def handle_delegate_task(
             delegation_record.status = "completed"
             delegation_record.result = final_output
             delegation_record.duration_ms = duration
-            delegation_record.completed_at = datetime.now(timezone.utc)
+            delegation_record.completed_at = datetime.now(UTC)
             await db.commit()
 
             # Notify frontend: delegation completed
@@ -248,7 +248,7 @@ async def handle_delegate_task(
             delegation_record.status = "failed"
             delegation_record.error = str(e)
             delegation_record.duration_ms = duration
-            delegation_record.completed_at = datetime.now(timezone.utc)
+            delegation_record.completed_at = datetime.now(UTC)
             await db.commit()
 
             if event_queue:
@@ -399,7 +399,7 @@ async def _build_child_provider(db: AsyncSession, child_agent: Agent):
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.id == child_agent.model_id, LLMModel.is_active == True)
+            .where(LLMModel.id == child_agent.model_id, LLMModel.is_active)
         )
         model_to_use = result.scalar_one_or_none()
 
@@ -407,7 +407,7 @@ async def _build_child_provider(db: AsyncSession, child_agent: Agent):
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default == True, LLMModel.is_active == True)
+            .where(LLMModel.is_default, LLMModel.is_active)
             .limit(1)
         )
         model_to_use = result.scalar_one_or_none()

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Annotated
 from uuid import UUID, uuid4
@@ -23,7 +22,12 @@ from sqlalchemy.orm import selectinload
 from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser
 from aio_agent_platform.core.agent import AgentLoop, AgentStep
 from aio_agent_platform.core.config import settings
-from aio_agent_platform.core.context import current_agent_id, prepare_context, is_context_overflow_error, emergency_compress
+from aio_agent_platform.core.context import (
+    current_agent_id,
+    emergency_compress,
+    is_context_overflow_error,
+    prepare_context,
+)
 from aio_agent_platform.core.prompt import build_system_prompt
 from aio_agent_platform.db import Message, Session
 from aio_agent_platform.db.connection import get_db
@@ -109,7 +113,7 @@ async def _load_agent_with_relations(db: AsyncSession, agent_id: UUID) -> Agent 
             selectinload(Agent.children),
             selectinload(Agent.knowledge_bases),
         )
-        .where(Agent.id == agent_id, Agent.is_active == True)
+        .where(Agent.id == agent_id, Agent.is_active)
     )
     return result.scalar_one_or_none()
 
@@ -118,7 +122,7 @@ async def _get_active_version(db: AsyncSession, agent_id: UUID) -> AgentVersion 
     """Get the currently active published version for an agent."""
     result = await db.execute(
         select(AgentVersion)
-        .where(AgentVersion.agent_id == agent_id, AgentVersion.is_active == True)
+        .where(AgentVersion.agent_id == agent_id, AgentVersion.is_active)
         .order_by(AgentVersion.published_at.desc())
         .limit(1)
     )
@@ -142,7 +146,7 @@ async def _build_agent_loop_for_version(
             result = await db.execute(
                 select(LLMModel)
                 .options(selectinload(LLMModel.provider))
-                .where(LLMModel.id == model_uuid, LLMModel.is_active == True)
+                .where(LLMModel.id == model_uuid, LLMModel.is_active)
             )
             model_to_use = result.scalar_one_or_none()
         except (ValueError, AttributeError):
@@ -152,7 +156,7 @@ async def _build_agent_loop_for_version(
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default == True, LLMModel.is_active == True)
+            .where(LLMModel.is_default, LLMModel.is_active)
             .limit(1)
         )
         model_to_use = result.scalar_one_or_none()
@@ -210,7 +214,7 @@ def _filter_tools_for_agent(tool_executor: ToolExecutor, config_snapshot: dict) 
     mcp_manager = tool_executor.mcp_manager
     if mcp_manager:
         mcp_server_ids = config_snapshot.get("mcp_server_ids", [])
-        allowed_server_ids = set(str(sid) for sid in mcp_server_ids) if mcp_server_ids else None
+        allowed_server_ids = {str(sid) for sid in mcp_server_ids} if mcp_server_ids else None
         enabled_set = set(enabled_tools) if enabled_tools else None
 
         for full_name, tool_info in mcp_manager.list_all_tools():
@@ -302,7 +306,7 @@ async def publish_version(
     # Deactivate previous active versions
     await db.execute(
         update(AgentVersion)
-        .where(AgentVersion.agent_id == agent_id, AgentVersion.is_active == True)
+        .where(AgentVersion.agent_id == agent_id, AgentVersion.is_active)
         .values(is_active=False)
     )
 

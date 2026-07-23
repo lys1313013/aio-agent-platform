@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.dependencies import CurrentUser
-from aio_agent_platform.db import Message, Session
+from aio_agent_platform.db import Session
 from aio_agent_platform.db.connection import get_db
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])

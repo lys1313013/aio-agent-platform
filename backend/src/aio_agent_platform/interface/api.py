@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from aio_agent_platform.auth import auth_router
 from aio_agent_platform.core.config import settings
+from aio_agent_platform.cron_jobs.handlers import CRON_JOB_HANDLERS
 from aio_agent_platform.db.connection import close_db, init_db
 from aio_agent_platform.delegation import DELEGATION_HANDLERS
 from aio_agent_platform.interaction import INTERACTION_HANDLERS
@@ -28,9 +29,8 @@ from aio_agent_platform.interface.routes import (
     skills_router,
     tools_router,
 )
-from aio_agent_platform.memory.handlers import MEMORY_HANDLERS
 from aio_agent_platform.knowledge.handlers import KNOWLEDGE_HANDLERS
-from aio_agent_platform.cron_jobs.handlers import CRON_JOB_HANDLERS
+from aio_agent_platform.memory.handlers import MEMORY_HANDLERS
 from aio_agent_platform.observation import init_langfuse, shutdown_langfuse
 from aio_agent_platform.portrait.handlers import PORTRAIT_HANDLERS
 from aio_agent_platform.sandbox import SandboxManager
@@ -153,8 +153,8 @@ async def lifespan(app: FastAPI):
     tool_executor.mcp_manager = mcp_manager
 
     # 11. Remote Tool Manager — load remote HTTP tools from DB
-    from aio_agent_platform.tools.remote.manager import RemoteToolManager
     from aio_agent_platform.tools.remote.executor import RemoteToolExecutor
+    from aio_agent_platform.tools.remote.manager import RemoteToolManager
 
     remote_manager = RemoteToolManager(registry)
     try:
@@ -187,7 +187,6 @@ async def lifespan(app: FastAPI):
 
     async def _cron_job_executor(job, db):
         """Execute a cron job by running its agent with the configured message."""
-        from aio_agent_platform.db.connection import get_session_factory
         from aio_agent_platform.db.models import Session as ChatSession
         from aio_agent_platform.interface.routes.chat import (
             _build_agent_loop,
@@ -232,7 +231,6 @@ async def lifespan(app: FastAPI):
 
         # Prepare context and run
         from aio_agent_platform.core.context import prepare_context
-        from aio_agent_platform.llm import LLMMessage
 
         prepared_messages, _ = await prepare_context(
             system_prompt=system_prompt,

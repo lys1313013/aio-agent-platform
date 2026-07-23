@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
@@ -92,7 +92,7 @@ def build_system_prompt(
         if workspace_files and len(workspace_files) > 0:
             parts.append(_build_files_section(workspace_files))
 
-        parts.append(f"\nCurrent time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+        parts.append(f"\nCurrent time: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}")
 
         # Inject child agents for delegation awareness
         if child_agents:
@@ -115,7 +115,7 @@ def build_system_prompt(
         relevant_memories=relevant_memories,
         relevant_skills=relevant_skills,
         child_agents=child_agents or [],
-        current_datetime=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        current_datetime=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
         user_name=user_name or "User",
         user_portrait=user_portrait or "",
     )
@@ -165,13 +165,13 @@ def _build_files_section(files: list) -> str:
             size_str = f"{size / (1024*1024):.1f} MB"
         elif size > 1024:
             size_str = f"{size / 1024:.1f} KB"
-        lines.append(f"{i}. **{name}** — {size_str}，路径: `{path}`（相对于 /workspace）")
+        lines.append(f"{i}. **{name}** — {size_str}, 路径: `{path}` (相对于 /workspace)")
         if mime:
             lines.append(f"   类型: {mime}")
         lines.append("")
     lines.append(
-        "使用 `file_info` 查看文件详细结构，使用 `file_read`/`file_grep`/`file_query` "
-        "按需访问内容。PDF 文件用 `read_pdf` 提取正文（大文件按页码范围读取）。"
+        "使用 `file_info` 查看文件详细结构, 使用 `file_read`/`file_grep`/`file_query` "
+        "按需访问内容。PDF 文件用 `read_pdf` 提取正文 (大文件按页码范围读取)。"
         "**不要直接读取大文件全文。**"
     )
     return "\n".join(lines)

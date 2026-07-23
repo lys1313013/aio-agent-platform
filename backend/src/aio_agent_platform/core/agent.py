@@ -7,12 +7,17 @@ import json
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC
 from uuid import UUID
 
 import structlog
 
-from aio_agent_platform.core.context import ContextBudget, compress_early_tool_results, estimate_messages_tokens
 from aio_agent_platform.core.confirmation import confirmation_manager
+from aio_agent_platform.core.context import (
+    ContextBudget,
+    compress_early_tool_results,
+    estimate_messages_tokens,
+)
 from aio_agent_platform.llm import (
     LLMMessage,
     LLMProvider,
@@ -590,7 +595,7 @@ class AgentLoop:
         4. 推送 confirmation_resolved → event_queue
         5. 保存结果到 self._last_ask_user_output
         """
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         args = tc.arguments or {}
         question = (args.get("question", "") or "").strip()
@@ -701,7 +706,7 @@ class AgentLoop:
                 "selected_options": response.get("selected_options", []),
                 "user_input": response.get("user_input"),
                 "table_data": response.get("table_data"),
-                "resolved_at": datetime.now(timezone.utc).isoformat(),
+                "resolved_at": datetime.now(UTC).isoformat(),
             })
 
         # ---- Step 5: 格式化输出，保存供调用方使用 ----

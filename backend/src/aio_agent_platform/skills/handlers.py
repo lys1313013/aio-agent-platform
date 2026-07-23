@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -164,9 +164,9 @@ async def handle_view_skill(arguments: dict, user_id: str, session_id: str,
 
         # Update usage stats
         skill.use_count += 1
-        skill.last_used_at = datetime.now(timezone.utc)
+        skill.last_used_at = datetime.now(UTC)
         _append_execution_log(skill, {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "action": "viewed",
             "session_id": session_id,
         })
@@ -186,7 +186,7 @@ async def handle_view_skill(arguments: dict, user_id: str, session_id: str,
                         workspace_id=workspace_id or user_id,
                     )
                     _append_execution_log(skill, {
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": datetime.now(UTC).isoformat(),
                         "action": "files_deployed",
                         "session_id": session_id,
                         "files": deployed_files,
@@ -363,7 +363,7 @@ async def handle_deploy_skill_files(arguments: dict, user_id: str, session_id: s
             return f"Error deploying files: {e}"
 
         _append_execution_log(skill, {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "action": "files_redeployed",
             "session_id": session_id,
             "files": deployed,
@@ -407,9 +407,9 @@ async def handle_report_skill_result(arguments: dict, user_id: str, session_id: 
         if success:
             skill.success_count += 1
 
-        skill.last_used_at = datetime.now(timezone.utc)
+        skill.last_used_at = datetime.now(UTC)
         _append_execution_log(skill, {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "action": "result_reported",
             "success": success,
             "note": note,

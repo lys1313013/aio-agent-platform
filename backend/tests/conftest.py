@@ -28,9 +28,7 @@ def get_test_database_url():
             return url
     except Exception:
         pass
-    raise RuntimeError(
-        "DATABASE_URL must be set in environment or alembic.ini for tests"
-    )
+    return None
 
 
 @pytest.fixture(scope="session")
@@ -43,14 +41,27 @@ def event_loop():
 
 @pytest_asyncio.fixture
 async def engine():
-    """Create a test database engine for each test."""
+    """Create a test database engine for each test.
+
+    Skips the test when no database URL is configured or the database
+    is unreachable (e.g. CI without a PostgreSQL service).
+    """
     database_url = get_test_database_url()
+    if not database_url:
+        pytest.skip("DATABASE_URL not configured")
     engine = create_async_engine(
         database_url,
         echo=False,
         pool_size=1,
         max_overflow=0,
     )
+    try:
+        async with asyncio.timeout(5):
+            async with engine.connect():
+                pass
+    except Exception:
+        await engine.dispose()
+        pytest.skip(f"test database not reachable: {database_url}")
     yield engine
     await engine.dispose()
 

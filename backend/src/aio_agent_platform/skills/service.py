@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import os
-from datetime import datetime, timezone
 from uuid import UUID
 
 import rjieba
@@ -13,7 +12,7 @@ from sqlalchemy import func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.db.models import Skill, SkillVersion
-from aio_agent_platform.skills.storage import SKILL_FILE_DIRS, SCRIPT_EXTENSIONS, SkillStorage
+from aio_agent_platform.skills.storage import SCRIPT_EXTENSIONS, SkillStorage
 
 logger = structlog.get_logger()
 

@@ -115,7 +115,7 @@ class ChatAttachmentStorage:
             if long_side > max_long_side:
                 ratio = max_long_side / long_side
                 new_w, new_h = int(w * ratio), int(h * ratio)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
+                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)

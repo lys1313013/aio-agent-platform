@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.db.models import CronJob
@@ -133,7 +133,7 @@ class CronJobService:
         result = await db.execute(select(CronJob).where(CronJob.id == job_id))
         job = result.scalar_one_or_none()
         if job:
-            job.last_run_at = datetime.now(timezone.utc)
+            job.last_run_at = datetime.now(UTC)
             await db.flush()
 
     @staticmethod
@@ -142,6 +142,6 @@ class CronJobService:
     ) -> list[CronJob]:
         """Get all active jobs across all users (for scheduler)."""
         result = await db.execute(
-            select(CronJob).where(CronJob.is_active == True)
+            select(CronJob).where(CronJob.is_active)
         )
         return list(result.scalars().all())

@@ -7,13 +7,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import AdminUser
 from aio_agent_platform.db.connection import get_db
 from aio_agent_platform.db.models import AgentKnowledgeBase, KnowledgeBase, SystemConfig
-from aio_agent_platform.knowledge.ragflow_client import RagflowError, test_connection, retrieve
+from aio_agent_platform.knowledge.ragflow_client import RagflowError, retrieve, test_connection
 
 router = APIRouter(tags=["knowledge"])
 

@@ -6,11 +6,10 @@ via WorkspaceStorage on container creation and destruction.
 """
 
 import asyncio
-import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
-from uuid import UUID, uuid4
+from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import docker
 import structlog
@@ -162,14 +161,14 @@ class SandboxManager:
 
     async def destroy_all_for_user(self, user_id: str) -> None:
         """Destroy all active sandboxes for a user."""
-        for key, sandbox in list(self._active.items()):
+        for _key, sandbox in list(self._active.items()):
             if sandbox.user_id == user_id:
                 await self.destroy(sandbox)
 
     async def cleanup_expired(self) -> int:
         """Destroy all expired sandboxes. Returns count destroyed."""
         destroyed = 0
-        for key, sandbox in list(self._active.items()):
+        for _key, sandbox in list(self._active.items()):
             if sandbox.is_expired():
                 await self.destroy(sandbox)
                 destroyed += 1
@@ -235,7 +234,7 @@ class SandboxManager:
         }
 
         loop = asyncio.get_event_loop()
-        container: "docker.models.containers.Container" = await loop.run_in_executor(
+        container: docker.models.containers.Container = await loop.run_in_executor(
             None,
             lambda: self._client.containers.run(
                 settings.sandbox.image,

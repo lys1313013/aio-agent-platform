@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import AdminUser
 from aio_agent_platform.db.connection import get_db
-from aio_agent_platform.db.models import RemoteTool, Agent
+from aio_agent_platform.db.models import Agent, RemoteTool
 from aio_agent_platform.tools.remote.manager import RemoteToolConfig
 
 logger = structlog.get_logger()
@@ -118,7 +118,7 @@ def _mask_auth_config(auth_config: dict | None) -> dict | None:
         if isinstance(v, str):
             masked[k] = "****"
         elif isinstance(v, dict):
-            masked[k] = {sk: "****" for sk in v}
+            masked[k] = dict.fromkeys(v, "****")
         else:
             masked[k] = v
     return masked

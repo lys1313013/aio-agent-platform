@@ -12,8 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser
-from aio_agent_platform.db.models import Agent, AgentKnowledgeBase, AgentRelationship, AgentSkill, LLMModel
 from aio_agent_platform.db.connection import get_db
+from aio_agent_platform.db.models import (
+    Agent,
+    AgentKnowledgeBase,
+    AgentRelationship,
+    AgentSkill,
+    LLMModel,
+)
 
 router = APIRouter(tags=["agents"])
 
@@ -349,7 +355,7 @@ async def list_agents(
             selectinload(Agent.children),
             selectinload(Agent.parents),
         )
-        .where(Agent.is_active == True)
+        .where(Agent.is_active)
         .order_by(Agent.created_at)
     )
     agents = result.scalars().all()
@@ -371,7 +377,7 @@ async def get_agent(
             selectinload(Agent.children),
             selectinload(Agent.parents),
         )
-        .where(Agent.id == agent_id, Agent.is_active == True)
+        .where(Agent.id == agent_id, Agent.is_active)
     )
     agent = result.scalar_one_or_none()
     if not agent:
@@ -387,7 +393,7 @@ async def get_agent_stats(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Get usage statistics for an agent (current user's sessions only)."""
-    from aio_agent_platform.db.models import Session, Message
+    from aio_agent_platform.db.models import Message, Session
 
     # Total sessions for this agent owned by current user
     sessions_result = await db.execute(
@@ -441,7 +447,7 @@ async def get_agent_children(
         )
         .where(
             AgentRelationship.parent_id == agent_id,
-            Agent.is_active == True,
+            Agent.is_active,
         )
         .order_by(Agent.created_at)
     )

@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import logging
-import re
 import unicodedata
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
+import anthropic
 import jinja2
 import openai
-import anthropic
 
 from aio_agent_platform.core.config import settings
 from aio_agent_platform.llm.client import LLMMessage, LLMProvider

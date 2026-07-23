@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -26,7 +26,7 @@ class PendingConfirmation:
     context: dict[str, Any]
     event: asyncio.Event = field(default_factory=asyncio.Event)
     response: dict[str, Any] | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     timeout_seconds: int = 300
     table_schema: dict[str, Any] | None = None
 

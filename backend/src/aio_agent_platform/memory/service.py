@@ -278,10 +278,11 @@ class MemoryService:
             prompt_text = template.render(messages=messages)
 
             # 2. Call LLM (non-streaming, low temperature for structured extraction)
-            from aio_agent_platform.llm import LLMMessage, create_provider
-            from aio_agent_platform.db.models import LLMModel
-            from aio_agent_platform.db.connection import get_session_factory as _get_session_factory
             from sqlalchemy.orm import selectinload
+
+            from aio_agent_platform.db.connection import get_session_factory as _get_session_factory
+            from aio_agent_platform.db.models import LLMModel
+            from aio_agent_platform.llm import LLMMessage, create_provider
 
             # Query default model from DB
             _factory = _get_session_factory()
@@ -289,7 +290,7 @@ class MemoryService:
                 _result = await _db.execute(
                     select(LLMModel)
                     .options(selectinload(LLMModel.provider))
-                    .where(LLMModel.is_default == True, LLMModel.is_active == True)
+                    .where(LLMModel.is_default, LLMModel.is_active)
                     .limit(1)
                 )
                 _model = _result.scalar_one_or_none()

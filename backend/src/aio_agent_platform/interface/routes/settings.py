@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import CurrentUser
-from aio_agent_platform.db import User, UserProfile, UserConfig, PortraitVersion
+from aio_agent_platform.db import PortraitVersion, User, UserConfig, UserProfile
 from aio_agent_platform.db.connection import get_db
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])

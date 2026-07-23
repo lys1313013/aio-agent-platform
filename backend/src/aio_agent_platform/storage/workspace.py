@@ -18,7 +18,6 @@ import tarfile
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
-from uuid import UUID
 
 import structlog
 
@@ -94,8 +93,8 @@ class WorkspaceStorage:
 
     async def inject_files(
         self,
-        sandbox_mgr: "SandboxManager",
-        sandbox: "Sandbox",
+        sandbox_mgr: SandboxManager,
+        sandbox: Sandbox,
         workspace_id: str,
     ) -> SyncStats:
         """
@@ -164,8 +163,8 @@ class WorkspaceStorage:
 
     async def _inject_chunked(
         self,
-        sandbox_mgr: "SandboxManager",
-        sandbox: "Sandbox",
+        sandbox_mgr: SandboxManager,
+        sandbox: Sandbox,
         b64_data: str,
         stats: SyncStats,
     ) -> None:
@@ -198,8 +197,8 @@ class WorkspaceStorage:
 
     async def extract_and_sync(
         self,
-        sandbox_mgr: "SandboxManager",
-        sandbox: "Sandbox",
+        sandbox_mgr: SandboxManager,
+        sandbox: Sandbox,
         workspace_id: str,
     ) -> SyncStats:
         """
@@ -261,7 +260,7 @@ class WorkspaceStorage:
 
             # 5. Upload changed/new files
             for rel_path, data in container_files.items():
-                sha256 = hashlib.sha256(data).hexdigest()
+                hashlib.sha256(data).hexdigest()
                 existing = existing_objects.get(rel_path)
 
                 # Compare by checking if file exists and size matches
@@ -305,8 +304,8 @@ class WorkspaceStorage:
 
     async def _read_file_as_base64(
         self,
-        sandbox_mgr: "SandboxManager",
-        sandbox: "Sandbox",
+        sandbox_mgr: SandboxManager,
+        sandbox: Sandbox,
         filepath: str,
     ) -> str:
         """Read a file from the sandbox as base64, handling large files via chunks."""
@@ -336,8 +335,8 @@ class WorkspaceStorage:
 
     async def _read_file_chunked(
         self,
-        sandbox_mgr: "SandboxManager",
-        sandbox: "Sandbox",
+        sandbox_mgr: SandboxManager,
+        sandbox: Sandbox,
         filepath: str,
         file_size: int,
     ) -> str:

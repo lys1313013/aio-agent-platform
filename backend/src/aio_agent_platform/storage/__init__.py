@@ -1,12 +1,12 @@
 """Generic object storage layer — wraps MinIO/S3 client."""
 
-from aio_agent_platform.storage.client import ObjectStorage, ObjectInfo
-from aio_agent_platform.storage.workspace import WorkspaceStorage, SyncStats, FileEntry
+from aio_agent_platform.storage.client import ObjectInfo, ObjectStorage
+from aio_agent_platform.storage.workspace import FileEntry, SyncStats, WorkspaceStorage
 
 __all__ = [
-    "ObjectStorage",
-    "ObjectInfo",
-    "WorkspaceStorage",
-    "SyncStats",
     "FileEntry",
+    "ObjectInfo",
+    "ObjectStorage",
+    "SyncStats",
+    "WorkspaceStorage",
 ]

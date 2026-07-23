@@ -21,25 +21,21 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import StreamingResponse
+from langfuse._client.propagation import propagate_attributes
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select, update as sql_update
+from sqlalchemy import select
+from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.auth.jwt_handler import TokenExpiredError, decode_token
-from aio_agent_platform.core.context import current_agent_id
 from aio_agent_platform.core.agent import AgentLoop, AgentStep, DelegationContext
 from aio_agent_platform.core.config import settings
-from aio_agent_platform.observation import (
-    get_langfuse_client,
-    set_current_observation,
-)
-from langfuse._client.propagation import propagate_attributes
 from aio_agent_platform.core.context import (
     ContextBudget,
+    current_agent_id,
     emergency_compress,
-    estimate_messages_tokens,
     generate_summary,
     is_context_overflow_error,
     prepare_context,
@@ -48,16 +44,26 @@ from aio_agent_platform.core.prompt import build_system_prompt
 from aio_agent_platform.db import Message, Session
 from aio_agent_platform.db.connection import current_user_id, get_db, get_session_factory
 from aio_agent_platform.db.models import Agent, LLMModel, UserConfig
-from aio_agent_platform.llm import LLMMessage, ToolCall, build_image_url_refs, build_user_content, create_provider
+from aio_agent_platform.llm import (
+    LLMMessage,
+    ToolCall,
+    build_image_url_refs,
+    build_user_content,
+    create_provider,
+)
 from aio_agent_platform.memory.service import MemoryService
+from aio_agent_platform.observation import (
+    get_langfuse_client,
+    set_current_observation,
+)
 from aio_agent_platform.skills.service import SkillService
 from aio_agent_platform.storage.chat_attachments import (
     ALLOWED_MIME,
     MAX_BYTES,
     ChatAttachmentStorage,
 )
-from aio_agent_platform.storage.workspace import WorkspaceStorage
 from aio_agent_platform.storage.client import ObjectStorage
+from aio_agent_platform.storage.workspace import WorkspaceStorage
 from aio_agent_platform.tools.executor import ToolExecutor
 
 logger = structlog.get_logger()
@@ -75,11 +81,11 @@ class ChatRequest(BaseModel):
     session_id: UUID | None = None
     agent_id: UUID | None = None
     message: str = Field("", max_length=50000)
-    attachments: list["AttachmentOut"] | None = None
-    file_attachments: list["FileAttachmentRef"] | None = None
+    attachments: list[AttachmentOut] | None = None
+    file_attachments: list[FileAttachmentRef] | None = None
 
     @model_validator(mode="after")
-    def _require_content(self) -> "ChatRequest":
+    def _require_content(self) -> ChatRequest:
         if not self.message.strip() and not self.attachments and not self.file_attachments:
             raise ValueError("message、attachments 或 file_attachments 至少需要一个")
         return self
@@ -194,8 +200,9 @@ def _compress_image(data: bytes, mime: str) -> tuple[bytes, str]:
         return data, mime
 
     try:
-        from PIL import Image
         import io
+
+        from PIL import Image
 
         img = Image.open(io.BytesIO(data))
 
@@ -215,7 +222,7 @@ def _compress_image(data: bytes, mime: str) -> tuple[bytes, str]:
         if long_side > _COMPRESS_MAX_LONG_SIDE:
             ratio = _COMPRESS_MAX_LONG_SIDE / long_side
             new_w, new_h = int(w * ratio), int(h * ratio)
-            img = img.resize((new_w, new_h), Image.LANCZOS)
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=_COMPRESS_JPEG_QUALITY, optimize=True)
@@ -295,7 +302,7 @@ async def _load_agent(db: AsyncSession, agent_id: UUID | None) -> Agent | None:
             selectinload(Agent.children),
             selectinload(Agent.knowledge_bases),
         )
-        .where(Agent.id == agent_id, Agent.is_active == True)
+        .where(Agent.id == agent_id, Agent.is_active)
     )
     return result.scalar_one_or_none()
 
@@ -388,7 +395,7 @@ def _filter_tools_by_agent(
         allowed_server_ids = None
         if agent and agent.mcp_server_ids is not None:
             try:
-                allowed_server_ids = set(str(sid) for sid in agent.mcp_server_ids)
+                allowed_server_ids = {str(sid) for sid in agent.mcp_server_ids}
             except Exception:
                 allowed_server_ids = set()
 
@@ -541,10 +548,7 @@ async def _update_context_summary(
 ) -> None:
     """Update session context_summary if conversation is long enough."""
     # Add current exchange to history for counting
-    all_messages = list(history) + [
-        LLMMessage(role="user", content=user_message),
-        LLMMessage(role="assistant", content=assistant_output),
-    ]
+    all_messages = [*list(history), LLMMessage(role="user", content=user_message), LLMMessage(role="assistant", content=assistant_output)]
 
     # Only generate summary if conversation has enough substance
     if len(all_messages) < 10:
@@ -708,7 +712,7 @@ async def _build_agent_loop(
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.id == agent_model_id, LLMModel.is_active == True)
+            .where(LLMModel.id == agent_model_id, LLMModel.is_active)
         )
         model_to_use = result.scalar_one_or_none()
 
@@ -716,7 +720,7 @@ async def _build_agent_loop(
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default == True, LLMModel.is_active == True)
+            .where(LLMModel.is_default, LLMModel.is_active)
             .limit(1)
         )
         model_to_use = result.scalar_one_or_none()
@@ -1001,7 +1005,7 @@ async def chat(
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default == True, LLMModel.is_active == True)
+            .where(LLMModel.is_default, LLMModel.is_active)
             .limit(1)
         )
         _resolved_model = result.scalar_one_or_none()
@@ -1284,8 +1288,6 @@ async def chat_stream(
 
     # Resolve model/provider info for provider-specific content formatting
     agent_model_id = agent.model_id if agent else None
-    agent_temperature = agent.temperature if agent else None
-    agent_max_iterations = agent.max_iterations if agent else None
     agent_enable_retry = agent.enable_retry if agent else True
     provider_type_for_content = "openai"
     _resolved_model = None
@@ -1298,7 +1300,7 @@ async def chat_stream(
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default == True, LLMModel.is_active == True)
+            .where(LLMModel.is_default, LLMModel.is_active)
             .limit(1)
         )
         _resolved_model = result.scalar_one_or_none()
@@ -1561,7 +1563,7 @@ async def chat_stream(
                         if tc["name"] == "delegate_task" and tc["id"] in delegations_map:
                             tc["delegation"] = delegations_map[tc["id"]]
                     ask_tcs = [tc for tc in tool_calls_list if tc["name"] == "AskUserQuestion"]
-                    for tc, c_id in zip(ask_tcs, confirmations_order):
+                    for tc, c_id in zip(ask_tcs, confirmations_order, strict=False):
                         tc["confirmation"] = confirmations_map.get(c_id)
 
                 async def _rescue_partial() -> None:
@@ -1950,6 +1952,10 @@ async def chat_websocket(
             await websocket.send_json({"type": "error", "message": "Session not found"})
             await websocket.close(code=4004)
             return
+
+        # Load agent
+        agent = await _load_agent(db, session.agent_id)
+        agent_enable_retry = agent.enable_retry if agent else True
 
         try:
             while True:

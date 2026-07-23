@@ -1,7 +1,7 @@
 """Auth routes: register, login, refresh, logout."""
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import UUID
 
@@ -48,7 +48,7 @@ async def _store_refresh_token(
     db: AsyncSession, user_id: UUID, token: str, expire_days: int
 ) -> None:
     """Persist a refresh token hash to the database."""
-    expires_at = datetime.now(timezone.utc) + timedelta(days=expire_days)
+    expires_at = datetime.now(UTC) + timedelta(days=expire_days)
     db.add(
         RefreshToken(
             user_id=user_id,
@@ -168,7 +168,7 @@ async def refresh(
     result = await db.execute(
         select(RefreshToken).where(
             RefreshToken.token_hash == token_hash,
-            RefreshToken.expires_at > datetime.now(timezone.utc),
+            RefreshToken.expires_at > datetime.now(UTC),
         )
     )
     token_record = result.scalar_one_or_none()
