@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import AdminUser
@@ -27,6 +27,10 @@ class KnowledgeBaseOut(BaseModel):
     dataset_id: str
     description: str | None = None
     is_active: bool
+    tenant_id: UUID
+    created_by: UUID
+    visibility: str = "tenant"
+    can_edit: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -36,6 +40,7 @@ class KnowledgeBaseCreate(BaseModel):
     dataset_id: str = Field(..., min_length=1, max_length=256)
     description: str | None = None
     is_active: bool = True
+    visibility: str = Field(default="tenant", pattern="^(tenant|private)$")
 
 
 class KnowledgeBaseUpdate(BaseModel):
@@ -43,6 +48,7 @@ class KnowledgeBaseUpdate(BaseModel):
     dataset_id: str | None = Field(default=None, min_length=1, max_length=256)
     description: str | None = None
     is_active: bool | None = None
+    visibility: str | None = Field(default=None, pattern="^(tenant|private)$")
 
 
 class RagflowSettingsOut(BaseModel):
@@ -84,12 +90,26 @@ class RetrievalResult(BaseModel):
 # ---- Knowledge Base CRUD ----
 
 
+def _knowledge_base_visible_to(user):
+    return (
+        (KnowledgeBase.tenant_id == user.tenant_id)
+        & or_(
+            KnowledgeBase.visibility == "tenant",
+            KnowledgeBase.created_by == user.id,
+        )
+    )
+
+
 @router.get("/api/admin/knowledge-bases", response_model=list[KnowledgeBaseOut])
 async def list_knowledge_bases(
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
-    result = await db.execute(select(KnowledgeBase).order_by(KnowledgeBase.created_at))
+    result = await db.execute(
+        select(KnowledgeBase)
+        .where(_knowledge_base_visible_to(admin))
+        .order_by(KnowledgeBase.created_at)
+    )
     items = result.scalars().all()
     return [
         {
@@ -98,6 +118,10 @@ async def list_knowledge_bases(
             "dataset_id": kb.dataset_id,
             "description": kb.description,
             "is_active": kb.is_active,
+            "tenant_id": kb.tenant_id,
+            "created_by": kb.created_by,
+            "visibility": kb.visibility,
+            "can_edit": kb.created_by == admin.id,
         }
         for kb in items
     ]
@@ -106,7 +130,7 @@ async def list_knowledge_bases(
 @router.post("/api/admin/knowledge-bases", response_model=KnowledgeBaseOut)
 async def create_knowledge_base(
     req: KnowledgeBaseCreate,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     kb = KnowledgeBase(
@@ -114,6 +138,9 @@ async def create_knowledge_base(
         dataset_id=req.dataset_id,
         description=req.description,
         is_active=req.is_active,
+        tenant_id=admin.tenant_id,
+        created_by=admin.id,
+        visibility=req.visibility,
     )
     db.add(kb)
     await db.flush()
@@ -123,6 +150,10 @@ async def create_knowledge_base(
         "dataset_id": kb.dataset_id,
         "description": kb.description,
         "is_active": kb.is_active,
+        "tenant_id": kb.tenant_id,
+        "created_by": kb.created_by,
+        "visibility": kb.visibility,
+        "can_edit": True,
     }
 
 
@@ -130,13 +161,19 @@ async def create_knowledge_base(
 async def update_knowledge_base(
     kb_id: UUID,
     req: KnowledgeBaseUpdate,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    result = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
+    result = await db.execute(
+        select(KnowledgeBase).where(
+            KnowledgeBase.id == kb_id, KnowledgeBase.tenant_id == admin.tenant_id
+        )
+    )
     kb = result.scalar_one_or_none()
     if not kb:
         raise HTTPException(status_code=404, detail="知识库不存在")
+    if kb.created_by != admin.id:
+        raise HTTPException(status_code=403, detail="只有知识库创建者可以修改配置")
 
     if req.name is not None:
         kb.name = req.name
@@ -146,6 +183,8 @@ async def update_knowledge_base(
         kb.description = req.description
     if req.is_active is not None:
         kb.is_active = req.is_active
+    if req.visibility is not None:
+        kb.visibility = req.visibility
 
     await db.flush()
     return {
@@ -154,19 +193,29 @@ async def update_knowledge_base(
         "dataset_id": kb.dataset_id,
         "description": kb.description,
         "is_active": kb.is_active,
+        "tenant_id": kb.tenant_id,
+        "created_by": kb.created_by,
+        "visibility": kb.visibility,
+        "can_edit": True,
     }
 
 
 @router.delete("/api/admin/knowledge-bases/{kb_id}")
 async def delete_knowledge_base(
     kb_id: UUID,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    result = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
+    result = await db.execute(
+        select(KnowledgeBase).where(
+            KnowledgeBase.id == kb_id, KnowledgeBase.tenant_id == admin.tenant_id
+        )
+    )
     kb = result.scalar_one_or_none()
     if not kb:
         raise HTTPException(status_code=404, detail="知识库不存在")
+    if kb.created_by != admin.id:
+        raise HTTPException(status_code=403, detail="只有知识库创建者可以删除")
 
     # Clean up agent bindings
     await db.execute(
@@ -183,11 +232,15 @@ async def delete_knowledge_base(
 @router.post("/api/admin/knowledge-bases/{kb_id}/test", response_model=TestResultOut)
 async def test_knowledge_base(
     kb_id: UUID,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Test connection by querying RAGFlow with a dummy query."""
-    result = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
+    result = await db.execute(
+        select(KnowledgeBase).where(
+            KnowledgeBase.id == kb_id, _knowledge_base_visible_to(admin)
+        )
+    )
     kb = result.scalar_one_or_none()
     if not kb:
         raise HTTPException(status_code=404, detail="知识库不存在")
@@ -228,7 +281,7 @@ async def test_knowledge_base(
 async def retrieval_knowledge_base(
     kb_id: UUID,
     req: RetrievalRequest,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Test retrieval by querying RAGFlow with a custom query."""
@@ -236,7 +289,11 @@ async def retrieval_knowledge_base(
 
     start = time.time()
 
-    result = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
+    result = await db.execute(
+        select(KnowledgeBase).where(
+            KnowledgeBase.id == kb_id, _knowledge_base_visible_to(admin)
+        )
+    )
     kb = result.scalar_one_or_none()
     if not kb:
         raise HTTPException(status_code=404, detail="知识库不存在")

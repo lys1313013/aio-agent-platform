@@ -10,7 +10,7 @@ interface AuthState {
   username: string | null;
 
   login: (usernameOrEmail: string, password: string) => Promise<boolean>;
-  register: (username: string, email: string, password: string) => Promise<boolean>;
+  register: (username: string, email: string, password: string, tenantName?: string) => Promise<boolean>;
   logout: () => Promise<void>;
   checkAuth: () => boolean;
   clearError: () => void;
@@ -51,10 +51,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
-  register: async (username, email, password) => {
+  register: async (username, email, password, tenantName) => {
     set({ isLoading: true, error: null });
     try {
-      const tokens = await authApi.register(username, email, password);
+      const tokens = await authApi.register(username, email, password, tenantName);
       tokenStorage.set(tokens.access_token, tokens.refresh_token);
       set({ isAuthenticated: true, isLoading: false, role: getUserRole() });
       set({ username });

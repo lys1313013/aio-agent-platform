@@ -61,7 +61,7 @@ type AuthType = 'none' | 'bearer' | 'api_key' | 'basic' | 'custom_header';
 export default function RemoteToolManagementPage() {
   const { message } = App.useApp();
   const role = useAuthStore((s) => s.role);
-  const isAdmin = role === 'admin';
+  const isAdmin = role === 'admin' || role === 'superadmin';
 
   // ---- List state ----
   const [tools, setTools] = useState<RemoteTool[]>([]);

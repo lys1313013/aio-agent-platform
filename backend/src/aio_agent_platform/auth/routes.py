@@ -3,12 +3,13 @@
 import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.jwt_handler import (
     TokenPair,
@@ -18,7 +19,14 @@ from aio_agent_platform.auth.jwt_handler import (
 )
 from aio_agent_platform.auth.password import hash_password, verify_password
 from aio_agent_platform.core.config import settings
-from aio_agent_platform.db import RefreshToken, User, UserConfig, UserProfile
+from aio_agent_platform.db import (
+    RefreshToken,
+    Tenant,
+    TenantMembership,
+    User,
+    UserConfig,
+    UserProfile,
+)
 from aio_agent_platform.db.connection import get_db
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -28,6 +36,7 @@ class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=64)
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
+    tenant_name: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class LoginRequest(BaseModel):
@@ -81,15 +90,26 @@ async def register(
     total_users = await db.execute(select(User))
     is_first_user = len(total_users.scalars().all()) == 0
 
+    # Public registration creates an isolated tenant. Joining an existing tenant
+    # must go through an administrator-controlled membership flow.
+    tenant = Tenant(
+        name=req.tenant_name or f"{req.username} 的租户",
+        slug=f"{req.username.lower()[:40]}-{uuid4().hex[:12]}",
+    )
+    db.add(tenant)
+    await db.flush()
+
     # Create user
     user = User(
         username=req.username,
         email=req.email,
         password_hash=hash_password(req.password),
-        role="admin" if is_first_user else "user",
+        role="superadmin" if is_first_user else "user",
+        tenant_id=tenant.id,
     )
     db.add(user)
     await db.flush()
+    db.add(TenantMembership(tenant_id=tenant.id, user_id=user.id))
 
     # Create profile + config
     db.add(UserProfile(user_id=user.id))
@@ -114,7 +134,7 @@ async def login(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TokenPair:
     result = await db.execute(
-        select(User).where(
+        select(User).options(selectinload(User.tenant)).where(
             (User.username == req.username_or_email) | (User.email == req.username_or_email)
         )
     )
@@ -126,7 +146,7 @@ async def login(
             detail="Invalid credentials",
         )
 
-    if not user.is_active:
+    if not user.is_active or not user.tenant.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is disabled",
@@ -179,9 +199,11 @@ async def refresh(
         )
 
     # Fetch user
-    user_result = await db.execute(select(User).where(User.id == UUID(payload.sub)))
+    user_result = await db.execute(
+        select(User).options(selectinload(User.tenant)).where(User.id == UUID(payload.sub))
+    )
     user = user_result.scalar_one()
-    if not user.is_active:
+    if not user.is_active or not user.tenant.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
     # Delete old refresh token (rotate)

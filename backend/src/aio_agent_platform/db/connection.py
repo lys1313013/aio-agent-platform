@@ -93,6 +93,68 @@ async def init_db() -> None:
 async def _run_manual_migrations(conn) -> None:
     """Idempotent column additions for existing tables."""
     migrations = [
+        # Tenant isolation. Existing installations are moved into one default tenant
+        # so their current sharing behaviour is preserved after upgrading.
+        """CREATE TABLE IF NOT EXISTS tenants (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            name VARCHAR(128) NOT NULL,
+            slug VARCHAR(64) NOT NULL UNIQUE,
+            is_active BOOLEAN NOT NULL DEFAULT true,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""",
+        """INSERT INTO tenants (id, name, slug, is_active, created_at, updated_at)
+           VALUES (
+               '00000000-0000-0000-0000-000000000001',
+               '默认租户',
+               'default',
+               true,
+               now(),
+               now()
+           )
+           ON CONFLICT (slug) DO NOTHING""",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id UUID",
+        """UPDATE users SET tenant_id = '00000000-0000-0000-0000-000000000001'
+           WHERE tenant_id IS NULL""",
+        "ALTER TABLE users ALTER COLUMN tenant_id SET NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_users_tenant ON users (tenant_id)",
+        """CREATE TABLE IF NOT EXISTS tenant_memberships (
+            tenant_id UUID NOT NULL,
+            user_id UUID NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (tenant_id, user_id)
+        )""",
+        """INSERT INTO tenant_memberships (tenant_id, user_id)
+           SELECT tenant_id, id FROM users
+           ON CONFLICT (tenant_id, user_id) DO NOTHING""",
+        """CREATE INDEX IF NOT EXISTS idx_tenant_memberships_user
+           ON tenant_memberships (user_id)""",
+        """UPDATE users SET role = 'superadmin'
+           WHERE id = (
+               SELECT id FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1
+           )
+           AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'superadmin')""",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS tenant_id UUID",
+        """UPDATE agents a SET tenant_id = u.tenant_id
+           FROM users u WHERE a.created_by = u.id AND a.tenant_id IS NULL""",
+        """UPDATE agents SET tenant_id = '00000000-0000-0000-0000-000000000001'
+           WHERE tenant_id IS NULL""",
+        "ALTER TABLE agents ALTER COLUMN tenant_id SET NOT NULL",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'tenant'",
+        "CREATE INDEX IF NOT EXISTS idx_agents_tenant_visibility ON agents (tenant_id, visibility)",
+        "CREATE INDEX IF NOT EXISTS idx_agents_creator ON agents (created_by)",
+        "ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS tenant_id UUID",
+        """UPDATE knowledge_bases SET tenant_id = '00000000-0000-0000-0000-000000000001'
+           WHERE tenant_id IS NULL""",
+        "ALTER TABLE knowledge_bases ALTER COLUMN tenant_id SET NOT NULL",
+        "ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS created_by UUID",
+        """UPDATE knowledge_bases SET created_by = (
+               SELECT id FROM users ORDER BY created_at LIMIT 1
+           ) WHERE created_by IS NULL""",
+        "ALTER TABLE knowledge_bases ALTER COLUMN created_by SET NOT NULL",
+        "ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'tenant'",
+        """CREATE INDEX IF NOT EXISTS idx_knowledge_bases_tenant_visibility
+           ON knowledge_bases (tenant_id, visibility)""",
         "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS personal_portrait TEXT",
         # Portrait version history table
         """CREATE TABLE IF NOT EXISTS portrait_versions (

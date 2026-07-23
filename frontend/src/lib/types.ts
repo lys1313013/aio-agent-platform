@@ -340,6 +340,10 @@ export interface Agent {
   parent_ids: string[];
   child_ids: string[];
   children_count: number;
+  tenant_id: string;
+  created_by: string;
+  visibility: 'tenant' | 'private';
+  can_edit: boolean;
 }
 
 export interface AgentStats {
@@ -483,4 +487,3 @@ export interface CronJobListResponse {
   items: CronJob[];
   total: number;
 }
-

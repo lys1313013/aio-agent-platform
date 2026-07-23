@@ -165,10 +165,10 @@ async function request<T>(
 // ---- Auth ----
 
 export const authApi = {
-  register(username: string, email: string, password: string) {
+  register(username: string, email: string, password: string, tenantName?: string) {
     return request<TokenPair>('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ username, email, password }),
+      body: JSON.stringify({ username, email, password, tenant_name: tenantName }),
     });
   },
 
@@ -419,6 +419,118 @@ export const chatApi = {
   },
 };
 
+// ---- Super admin: Tenants ----
+
+export interface Tenant {
+  id: string;
+  name: string;
+  slug: string;
+  is_active: boolean;
+  users_count: number;
+  agents_count: number;
+  knowledge_bases_count: number;
+  created_at: string;
+}
+
+export interface TenantUser {
+  id: string;
+  tenant_id: string;
+  username: string;
+  email: string;
+  display_name: string | null;
+  role: 'user' | 'admin' | 'superadmin';
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface AdminUser {
+  id: string;
+  username: string;
+  email: string;
+  display_name: string | null;
+  role: 'user' | 'admin' | 'superadmin';
+  is_active: boolean;
+  active_tenant_id: string;
+  tenant_ids: string[];
+  created_at: string;
+}
+
+export const tenantsApi = {
+  list() {
+    return request<Tenant[]>('/admin/tenants');
+  },
+
+  create(data: { name: string; slug: string }) {
+    return request<Tenant>('/admin/tenants', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  update(id: string, data: { name?: string; slug?: string; is_active?: boolean }) {
+    return request<Tenant>(`/admin/tenants/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  delete(id: string) {
+    return request<void>(`/admin/tenants/${id}`, { method: 'DELETE' });
+  },
+
+  listUsers(tenantId: string) {
+    return request<TenantUser[]>(`/admin/tenants/${tenantId}/users`);
+  },
+
+  assignUsers(tenantId: string, userIds: string[]) {
+    return request<{ message: string; added_count: number }>(`/admin/tenants/${tenantId}/users`, {
+      method: 'PUT',
+      body: JSON.stringify({ user_ids: userIds }),
+    });
+  },
+
+  removeUser(tenantId: string, userId: string) {
+    return request<void>(`/admin/tenants/${tenantId}/users/${userId}`, {
+      method: 'DELETE',
+    });
+  },
+};
+
+export const usersApi = {
+  list() {
+    return request<AdminUser[]>('/admin/users');
+  },
+
+  create(data: {
+    username: string;
+    email: string;
+    display_name?: string;
+    password: string;
+    role?: 'user' | 'admin';
+    tenant_ids: string[];
+    active_tenant_id?: string;
+  }) {
+    return request<AdminUser>('/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  update(userId: string, data: {
+    username?: string;
+    email?: string;
+    display_name?: string | null;
+    password?: string;
+    role?: 'user' | 'admin';
+    is_active?: boolean;
+  }) {
+    return request<AdminUser>(`/admin/users/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+};
+
 // ---- Settings ----
 
 export const settingsApi = {
@@ -428,7 +540,32 @@ export const settingsApi = {
       username: string;
       email: string;
       display_name: string | null;
+      tenant_id: string;
+      tenant_name: string;
     }>('/settings/profile');
+  },
+
+  listTenants() {
+    return request<Array<{
+      id: string;
+      name: string;
+      slug: string;
+      is_active: boolean;
+      is_current: boolean;
+    }>>('/settings/tenants');
+  },
+
+  switchTenant(tenantId: string) {
+    return request<{
+      username: string;
+      email: string;
+      display_name: string | null;
+      tenant_id: string;
+      tenant_name: string;
+    }>('/settings/active-tenant', {
+      method: 'PUT',
+      body: JSON.stringify({ tenant_id: tenantId }),
+    });
   },
 
   updateProfile(data: { display_name?: string; username?: string; email?: string }) {
@@ -436,6 +573,8 @@ export const settingsApi = {
       username: string;
       email: string;
       display_name: string | null;
+      tenant_id: string;
+      tenant_name: string;
     }>('/settings/profile', {
       method: 'PUT',
       body: JSON.stringify(data),
@@ -713,6 +852,10 @@ export interface KnowledgeBase {
   dataset_id: string;
   description: string | null;
   is_active: boolean;
+  tenant_id: string;
+  created_by: string;
+  visibility: 'tenant' | 'private';
+  can_edit: boolean;
 }
 
 export interface RagflowSettings {
@@ -750,6 +893,7 @@ export const knowledgeApi = {
     dataset_id: string;
     description?: string;
     is_active?: boolean;
+    visibility?: 'tenant' | 'private';
   }) {
     return request<KnowledgeBase>('/admin/knowledge-bases', {
       method: 'POST',
@@ -762,6 +906,7 @@ export const knowledgeApi = {
     dataset_id?: string;
     description?: string;
     is_active?: boolean;
+    visibility?: 'tenant' | 'private';
   }) {
     return request<KnowledgeBase>(`/admin/knowledge-bases/${id}`, {
       method: 'PUT',
@@ -1090,6 +1235,7 @@ export const agentsApi = {
     enabled_tools?: string[];
     mcp_server_ids?: string[];
     skill_ids?: string[];
+    visibility?: 'tenant' | 'private';
   }) {
     return request<Agent>('/admin/agents', {
       method: 'POST',
@@ -1113,6 +1259,7 @@ export const agentsApi = {
     max_iterations?: number | null;
     temperature?: number | null;
     welcome_message?: string | null;
+    visibility?: 'tenant' | 'private';
   }) {
     return request<Agent>(`/admin/agents/${id}`, {
       method: 'PUT',
@@ -1226,4 +1373,3 @@ export const cronJobsApi = {
     return request<void>(`/cron-jobs/${id}`, { method: 'DELETE' });
   },
 };
-

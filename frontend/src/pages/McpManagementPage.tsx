@@ -54,7 +54,7 @@ type TransportType = 'sse' | 'streamable-http';
 export default function McpManagementPage() {
   const { message } = App.useApp();
   const role = useAuthStore((s) => s.role);
-  const isAdmin = role === 'admin';
+  const isAdmin = role === 'admin' || role === 'superadmin';
 
   // ---- List state ----
   const [servers, setServers] = useState<McpServer[]>([]);

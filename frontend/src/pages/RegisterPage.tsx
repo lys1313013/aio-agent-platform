@@ -6,6 +6,7 @@ import { Form, Input, Button, Alert, Typography } from 'antd';
 const { Title, Text } = Typography;
 
 interface RegisterForm {
+  tenantName: string;
   username: string;
   email: string;
   password: string;
@@ -17,7 +18,7 @@ export default function RegisterPage() {
   const [form] = Form.useForm<RegisterForm>();
 
   const handleSubmit = async (values: RegisterForm) => {
-    const ok = await register(values.username, values.email, values.password);
+    const ok = await register(values.username, values.email, values.password, values.tenantName);
     if (ok) navigate('/', { replace: true });
   };
 
@@ -59,6 +60,17 @@ export default function RegisterPage() {
           )}
 
           <Form.Item
+            name="tenantName"
+            label="租户名称"
+            rules={[
+              { required: true, message: '请输入租户名称' },
+              { max: 128, message: '租户名称最多 128 个字符' },
+            ]}
+          >
+            <Input placeholder="例如：示例科技" size="large" autoFocus />
+          </Form.Item>
+
+          <Form.Item
             name="username"
             label="用户名"
             rules={[
@@ -67,7 +79,7 @@ export default function RegisterPage() {
               { max: 64, message: '用户名最多 64 个字符' },
             ]}
           >
-            <Input placeholder="alice" size="large" autoFocus />
+            <Input placeholder="alice" size="large" />
           </Form.Item>
 
           <Form.Item
