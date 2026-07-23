@@ -11,6 +11,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
+# Provide required settings so app modules import cleanly in environments
+# without a .env (e.g. CI). DB-dependent tests skip when unreachable.
+os.environ.setdefault(
+    "DATABASE_URL", "postgresql+asyncpg://agent_user:changeme@localhost:5435/aio_agent_platform"
+)
+os.environ.setdefault("JWT_SECRET", "ci-test-secret-key-0123456789abcdef")
+
 from aio_agent_platform.db.models import Base
 from aio_agent_platform.interface.api import app
 
