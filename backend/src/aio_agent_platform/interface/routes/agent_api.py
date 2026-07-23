@@ -15,9 +15,9 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, with_loader_criteria
 
 from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser
 from aio_agent_platform.core.agent import AgentLoop, AgentStep
@@ -31,7 +31,7 @@ from aio_agent_platform.core.context import (
 from aio_agent_platform.core.prompt import build_system_prompt
 from aio_agent_platform.db import Message, Session
 from aio_agent_platform.db.connection import get_db
-from aio_agent_platform.db.models import Agent, AgentVersion, LLMModel, User
+from aio_agent_platform.db.models import Agent, AgentVersion, KnowledgeBase, LLMModel, User
 from aio_agent_platform.llm import LLMMessage, create_provider
 from aio_agent_platform.memory.service import MemoryService
 from aio_agent_platform.tools.executor import ToolExecutor
@@ -103,7 +103,9 @@ class AgentApiDoc(BaseModel):
 # ---- Helpers ----
 
 
-async def _load_agent_with_relations(db: AsyncSession, agent_id: UUID) -> Agent | None:
+async def _load_agent_with_relations(
+    db: AsyncSession, agent_id: UUID, user: User
+) -> Agent | None:
     """Load agent with skills, model, children, knowledge_bases."""
     result = await db.execute(
         select(Agent)
@@ -112,8 +114,22 @@ async def _load_agent_with_relations(db: AsyncSession, agent_id: UUID) -> Agent 
             selectinload(Agent.model),
             selectinload(Agent.children),
             selectinload(Agent.knowledge_bases),
+            with_loader_criteria(
+                KnowledgeBase,
+                (KnowledgeBase.tenant_id == user.tenant_id)
+                & or_(
+                    KnowledgeBase.visibility == "tenant",
+                    KnowledgeBase.created_by == user.id,
+                ),
+                include_aliases=True,
+            ),
         )
-        .where(Agent.id == agent_id, Agent.is_active)
+        .where(
+            Agent.id == agent_id,
+            Agent.is_active,
+            Agent.tenant_id == user.tenant_id,
+            or_(Agent.visibility == "tenant", Agent.created_by == user.id),
+        )
     )
     return result.scalar_one_or_none()
 
@@ -289,7 +305,7 @@ async def publish_version(
     Creates a snapshot of the current agent configuration.
     """
     # Load agent with relations for snapshot
-    agent = await _load_agent_with_relations(db, agent_id)
+    agent = await _load_agent_with_relations(db, agent_id, user)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
@@ -349,7 +365,7 @@ async def get_api_doc(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AgentApiDoc:
     """Get API documentation metadata for an agent."""
-    agent = await _load_agent_with_relations(db, agent_id)
+    agent = await _load_agent_with_relations(db, agent_id, user)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
@@ -430,7 +446,7 @@ async def _execute_agent_inner(
     config_snapshot = active_version.config_snapshot
 
     # Load agent with relations
-    agent = await _load_agent_with_relations(db, agent_id)
+    agent = await _load_agent_with_relations(db, agent_id, user)
     if not agent:
         raise HTTPException(
             status_code=404,
@@ -585,7 +601,7 @@ async def create_external_session(
 ) -> CreateSessionResponse:
     """Create a new session for external API calls (SSE streaming)."""
     # Verify agent exists and has a published version
-    agent = await _load_agent_with_relations(db, agent_id)
+    agent = await _load_agent_with_relations(db, agent_id, user)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
@@ -656,7 +672,7 @@ async def sse_chat(
     config_snapshot = active_version.config_snapshot
 
     # Load agent
-    agent = await _load_agent_with_relations(db, agent_id)
+    agent = await _load_agent_with_relations(db, agent_id, user)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 

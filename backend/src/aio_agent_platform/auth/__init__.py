@@ -3,8 +3,10 @@
 from aio_agent_platform.auth.dependencies import (
     CurrentUser,
     DbSession,
+    SuperAdminUser,
     get_current_user,
     require_admin,
+    require_superadmin,
 )
 from aio_agent_platform.auth.jwt_handler import (
     InvalidTokenError,
@@ -22,6 +24,7 @@ __all__ = [
     "CurrentUser",
     "DbSession",
     "InvalidTokenError",
+    "SuperAdminUser",
     "TokenError",
     "TokenExpiredError",
     "TokenPair",
@@ -32,5 +35,6 @@ __all__ = [
     "get_current_user",
     "hash_password",
     "require_admin",
+    "require_superadmin",
     "verify_password",
 ]

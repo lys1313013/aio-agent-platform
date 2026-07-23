@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { useThemeStore } from '@/stores/themeStore';
@@ -21,19 +21,33 @@ import {
   GlobalOutlined,
   IdcardOutlined,
   ClockCircleOutlined,
+  UsergroupAddOutlined,
+  TeamOutlined,
 } from '@ant-design/icons';
-import { Dropdown, Avatar } from 'antd';
+import { Dropdown, Avatar, Select } from 'antd';
 import type { MenuProps } from 'antd';
 import { cn } from '@/lib/utils';
+import { settingsApi } from '@/lib/api';
 
 export default function AppLayout() {
   const { logout, role, username } = useAuthStore();
   const { theme, setTheme } = useThemeStore();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [tenantOptions, setTenantOptions] = useState<Array<{
+    id: string;
+    name: string;
+    is_active: boolean;
+    is_current: boolean;
+  }>>([]);
   const location = useLocation();
   const navigate = useNavigate();
 
-  const isAdmin = role === 'admin';
+  const isAdmin = role === 'admin' || role === 'superadmin';
+  const isSuperAdmin = role === 'superadmin';
+
+  useEffect(() => {
+    settingsApi.listTenants().then(setTenantOptions).catch(() => {});
+  }, []);
 
   const navItems = [
     { path: '/dashboard', icon: <DashboardOutlined />, label: '仪表盘' },
@@ -47,6 +61,12 @@ export default function AppLayout() {
           { path: '/knowledge', icon: <DatabaseOutlined />, label: '知识库' },
           { path: '/remote-tools', icon: <GlobalOutlined />, label: '远程工具' },
           { path: '/cron-jobs', icon: <ClockCircleOutlined />, label: '定时任务' },
+        ]
+      : []),
+    ...(isSuperAdmin
+      ? [
+          { path: '/users', icon: <TeamOutlined />, label: '用户管理' },
+          { path: '/tenants', icon: <UsergroupAddOutlined />, label: '租户管理' },
         ]
       : []),
     { path: '/portrait', icon: <IdcardOutlined />, label: '个人画像' },
@@ -97,12 +117,29 @@ export default function AppLayout() {
           <h1 className="text-sm font-bold tracking-tight text-foreground">智能体平台</h1>
         </div>
 
-        <Dropdown menu={{ items: userMenuItems }} trigger={['click']} placement="bottomRight">
-          <button className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-muted">
-            <Avatar size={28} icon={<UserOutlined />} className="bg-primary/20 text-primary" />
-            <span className="text-sm text-foreground">{username || '用户'}</span>
-          </button>
-        </Dropdown>
+        <div className="flex items-center gap-2">
+          {tenantOptions.length > 0 && (
+            <Select
+              aria-label="当前租户"
+              size="small"
+              className="min-w-32 max-w-52"
+              value={tenantOptions.find((tenant) => tenant.is_current)?.id}
+              options={tenantOptions
+                .filter((tenant) => tenant.is_active)
+                .map((tenant) => ({ value: tenant.id, label: tenant.name }))}
+              onChange={async (tenantId) => {
+                await settingsApi.switchTenant(tenantId);
+                window.location.reload();
+              }}
+            />
+          )}
+          <Dropdown menu={{ items: userMenuItems }} trigger={['click']} placement="bottomRight">
+            <button className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-muted">
+              <Avatar size={28} icon={<UserOutlined />} className="bg-primary/20 text-primary" />
+              <span className="text-sm text-foreground">{username || '用户'}</span>
+            </button>
+          </Dropdown>
+        </div>
       </header>
 
       {/* Below header: sidebar + content */}

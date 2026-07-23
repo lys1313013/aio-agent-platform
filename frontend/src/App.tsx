@@ -17,6 +17,8 @@ import McpManagementPage from '@/pages/McpManagementPage';
 import KnowledgeManagementPage from '@/pages/KnowledgeManagementPage';
 import RemoteToolManagementPage from '@/pages/RemoteToolManagementPage';
 import CronJobsPage from '@/pages/CronJobsPage';
+import TenantManagementPage from '@/pages/TenantManagementPage';
+import UserManagementPage from '@/pages/UserManagementPage';
 import AppLayout from '@/components/layout/AppLayout';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -89,6 +91,8 @@ export default function App() {
         <Route path="/knowledge" element={<KnowledgeManagementPage />} />
         <Route path="/remote-tools" element={<RemoteToolManagementPage />} />
         <Route path="/cron-jobs" element={<CronJobsPage />} />
+        <Route path="/tenants" element={<TenantManagementPage />} />
+        <Route path="/users" element={<UserManagementPage />} />
       </Route>
 
       {/* Catch all */}

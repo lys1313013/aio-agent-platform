@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -19,7 +19,14 @@ from aio_agent_platform.core.config import settings
 from aio_agent_platform.core.context import current_agent_id
 from aio_agent_platform.core.prompt import build_system_prompt
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
-from aio_agent_platform.db.models import Agent, AgentRelationship, Delegation, LLMModel, Session
+from aio_agent_platform.db.models import (
+    Agent,
+    AgentRelationship,
+    Delegation,
+    LLMModel,
+    Session,
+    User,
+)
 from aio_agent_platform.llm import create_provider
 from aio_agent_platform.memory.service import MemoryService
 from aio_agent_platform.skills.service import SkillService
@@ -83,7 +90,7 @@ async def handle_delegate_task(
         await _set_rls_context(db, user_id)
 
         # 1. Load and validate child agent
-        child_agent = await _load_child_agent(db, child_uuid, parent_agent_id)
+        child_agent = await _load_child_agent(db, child_uuid, parent_agent_id, UUID(user_id))
         if not child_agent:
             return f"Error: child agent {child_agent_id} not found or not related to parent"
 
@@ -264,7 +271,7 @@ async def handle_delegate_task(
 
 
 async def _load_child_agent(
-    db: AsyncSession, child_id: UUID, parent_id: UUID
+    db: AsyncSession, child_id: UUID, parent_id: UUID, user_id: UUID
 ) -> Agent | None:
     """Load child agent and validate the parent-child relationship."""
     # Check relationship exists
@@ -277,6 +284,10 @@ async def _load_child_agent(
     if not rel_result.scalar_one_or_none():
         return None
 
+    tenant_id = await db.scalar(select(User.tenant_id).where(User.id == user_id))
+    if not tenant_id:
+        return None
+
     # Load child agent with relationships
     result = await db.execute(
         select(Agent)
@@ -286,7 +297,11 @@ async def _load_child_agent(
             selectinload(Agent.children),
             selectinload(Agent.knowledge_bases),
         )
-        .where(Agent.id == child_id)
+        .where(
+            Agent.id == child_id,
+            Agent.tenant_id == tenant_id,
+            or_(Agent.visibility == "tenant", Agent.created_by == user_id),
+        )
     )
     return result.scalar_one_or_none()
 

@@ -27,7 +27,9 @@ from aio_agent_platform.interface.routes import (
     sessions_router,
     settings_router,
     skills_router,
+    tenants_router,
     tools_router,
+    users_router,
 )
 from aio_agent_platform.knowledge.handlers import KNOWLEDGE_HANDLERS
 from aio_agent_platform.memory.handlers import MEMORY_HANDLERS
@@ -343,6 +345,8 @@ def create_app() -> FastAPI:
     app.include_router(agent_api_router)
     app.include_router(remote_tools_router)
     app.include_router(cron_jobs_router)
+    app.include_router(tenants_router)
+    app.include_router(users_router)
 
     # Health check
     @app.get("/health")

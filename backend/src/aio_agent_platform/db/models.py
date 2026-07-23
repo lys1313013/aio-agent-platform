@@ -28,6 +28,7 @@ from aio_agent_platform.db.sanitize import sanitize_pg_text
 
 # Type alias for UUID columns
 GUID = Annotated[UUID, "uuid"]
+DEFAULT_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 class Base(DeclarativeBase):
@@ -39,6 +40,42 @@ class Base(DeclarativeBase):
 # ---- User & Auth ----
 
 
+class Tenant(Base):
+    __tablename__ = "tenants"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    name: Mapped[str] = mapped_column(String(128), nullable=False, comment="租户名称")
+    slug: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="租户唯一标识")
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", comment="是否激活"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+        comment="更新时间",
+    )
+
+    memberships: Mapped[list["TenantMembership"]] = relationship(
+        back_populates="tenant",
+        primaryjoin="Tenant.id == TenantMembership.tenant_id",
+        foreign_keys="[TenantMembership.tenant_id]",
+    )
+    users: Mapped[list["User"]] = relationship(
+        secondary="tenant_memberships",
+        primaryjoin="Tenant.id == TenantMembership.tenant_id",
+        secondaryjoin="TenantMembership.user_id == User.id",
+        foreign_keys="[TenantMembership.tenant_id, TenantMembership.user_id]",
+        viewonly=True,
+    )
+
+    __table_args__ = ({"comment": "租户表"},)
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -46,7 +83,12 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="用户名")
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, comment="邮箱地址")
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False, comment="密码哈希")
-    role: Mapped[str] = mapped_column(String(16), default="user", comment="角色: user/admin")
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=DEFAULT_TENANT_ID, comment="所属租户ID"
+    )
+    role: Mapped[str] = mapped_column(
+        String(16), default="user", comment="角色: user/admin/superadmin"
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否激活")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="创建时间")
     updated_at: Mapped[datetime] = mapped_column(
@@ -57,6 +99,22 @@ class User(Base):
         back_populates="user", uselist=False,
         primaryjoin="User.id == UserProfile.user_id",
         foreign_keys="[UserProfile.user_id]",
+    )
+    tenant: Mapped["Tenant"] = relationship(
+        primaryjoin="User.tenant_id == Tenant.id",
+        foreign_keys="[User.tenant_id]",
+    )
+    memberships: Mapped[list["TenantMembership"]] = relationship(
+        back_populates="user",
+        primaryjoin="User.id == TenantMembership.user_id",
+        foreign_keys="[TenantMembership.user_id]",
+    )
+    tenants: Mapped[list["Tenant"]] = relationship(
+        secondary="tenant_memberships",
+        primaryjoin="User.id == TenantMembership.user_id",
+        secondaryjoin="TenantMembership.tenant_id == Tenant.id",
+        foreign_keys="[TenantMembership.user_id, TenantMembership.tenant_id]",
+        viewonly=True,
     )
     config: Mapped["UserConfig | None"] = relationship(
         back_populates="user", uselist=False,
@@ -99,7 +157,42 @@ class User(Base):
         foreign_keys="[RefreshToken.user_id]",
     )
 
-    __table_args__ = ({"comment": "用户表"},)
+    __table_args__ = (
+        Index("idx_users_tenant", "tenant_id"),
+        {"comment": "用户表"},
+    )
+
+
+class TenantMembership(Base):
+    """Many-to-many membership between users and tenants."""
+
+    __tablename__ = "tenant_memberships"
+
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, comment="租户ID"
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, comment="用户ID"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="加入时间"
+    )
+
+    tenant: Mapped["Tenant"] = relationship(
+        back_populates="memberships",
+        primaryjoin="TenantMembership.tenant_id == Tenant.id",
+        foreign_keys="[TenantMembership.tenant_id]",
+    )
+    user: Mapped["User"] = relationship(
+        back_populates="memberships",
+        primaryjoin="TenantMembership.user_id == User.id",
+        foreign_keys="[TenantMembership.user_id]",
+    )
+
+    __table_args__ = (
+        Index("idx_tenant_memberships_user", "user_id"),
+        {"comment": "租户用户成员关系表"},
+    )
 
 
 class RefreshToken(Base):
@@ -265,6 +358,9 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=DEFAULT_TENANT_ID, comment="所属租户ID"
+    )
     name: Mapped[str] = mapped_column(String(128), nullable=False, comment="智能体名称")
     description: Mapped[str | None] = mapped_column(Text, comment="描述")
     icon: Mapped[str] = mapped_column(String(64), default="robot", comment="图标标识")
@@ -291,6 +387,9 @@ class Agent(Base):
     created_by: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         comment="创建者用户ID",
+    )
+    visibility: Mapped[str] = mapped_column(
+        String(16), default="tenant", server_default="tenant", comment="可见范围: tenant/private"
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="创建时间")
     updated_at: Mapped[datetime] = mapped_column(
@@ -335,7 +434,11 @@ class Agent(Base):
         foreign_keys="[AgentKnowledgeBase.agent_id, AgentKnowledgeBase.knowledge_base_id]",
     )
 
-    __table_args__ = ({"comment": "智能体表"},)
+    __table_args__ = (
+        Index("idx_agents_tenant_visibility", "tenant_id", "visibility"),
+        Index("idx_agents_creator", "created_by"),
+        {"comment": "智能体表"},
+    )
 
 
 class AgentRelationship(Base):
@@ -924,10 +1027,17 @@ class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=DEFAULT_TENANT_ID, comment="所属租户ID"
+    )
     name: Mapped[str] = mapped_column(String(128), nullable=False, comment="知识库名称")
     dataset_id: Mapped[str] = mapped_column(String(256), nullable=False, comment="RAGFlow dataset ID")
     description: Mapped[str | None] = mapped_column(Text, comment="描述")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否启用")
+    created_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="创建者用户ID")
+    visibility: Mapped[str] = mapped_column(
+        String(16), default="tenant", server_default="tenant", comment="可见范围: tenant/private"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="创建时间")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now(), onupdate=func.now(), comment="更新时间"
@@ -943,6 +1053,7 @@ class KnowledgeBase(Base):
 
     __table_args__ = (
         Index("idx_knowledge_bases_dataset_id", "dataset_id"),
+        Index("idx_knowledge_bases_tenant_visibility", "tenant_id", "visibility"),
         {"comment": "知识库表"},
     )
 
@@ -1002,5 +1113,3 @@ class RemoteTool(Base):
         Index("idx_remote_tools_active", "is_active"),
         {"comment": "自定义远程工具配置表"},
     )
-
-

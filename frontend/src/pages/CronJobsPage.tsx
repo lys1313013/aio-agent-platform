@@ -36,7 +36,7 @@ const { TextArea } = Input;
 export default function CronJobsPage() {
   const { message } = App.useApp();
   const role = useAuthStore((s) => s.role);
-  const isAdmin = role === 'admin';
+  const isAdmin = role === 'admin' || role === 'superadmin';
 
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);

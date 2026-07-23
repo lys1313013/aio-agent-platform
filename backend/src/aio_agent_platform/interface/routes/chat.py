@@ -23,10 +23,10 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from langfuse._client.propagation import propagate_attributes
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, with_loader_criteria
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.auth.jwt_handler import TokenExpiredError, decode_token
@@ -43,7 +43,7 @@ from aio_agent_platform.core.context import (
 from aio_agent_platform.core.prompt import build_system_prompt
 from aio_agent_platform.db import Message, Session
 from aio_agent_platform.db.connection import current_user_id, get_db, get_session_factory
-from aio_agent_platform.db.models import Agent, LLMModel, UserConfig
+from aio_agent_platform.db.models import Agent, KnowledgeBase, LLMModel, User, UserConfig
 from aio_agent_platform.llm import (
     LLMMessage,
     ToolCall,
@@ -290,7 +290,9 @@ async def _resolve_workspace_id(
     return workspace.id
 
 
-async def _load_agent(db: AsyncSession, agent_id: UUID | None) -> Agent | None:
+async def _load_agent(
+    db: AsyncSession, agent_id: UUID | None, user: User
+) -> Agent | None:
     """Load agent with its skills, model, children, and knowledge_bases relationships."""
     if not agent_id:
         return None
@@ -301,8 +303,22 @@ async def _load_agent(db: AsyncSession, agent_id: UUID | None) -> Agent | None:
             selectinload(Agent.model),
             selectinload(Agent.children),
             selectinload(Agent.knowledge_bases),
+            with_loader_criteria(
+                KnowledgeBase,
+                (KnowledgeBase.tenant_id == user.tenant_id)
+                & or_(
+                    KnowledgeBase.visibility == "tenant",
+                    KnowledgeBase.created_by == user.id,
+                ),
+                include_aliases=True,
+            ),
         )
-        .where(Agent.id == agent_id, Agent.is_active)
+        .where(
+            Agent.id == agent_id,
+            Agent.is_active,
+            Agent.tenant_id == user.tenant_id,
+            or_(Agent.visibility == "tenant", Agent.created_by == user.id),
+        )
     )
     return result.scalar_one_or_none()
 
@@ -969,7 +985,9 @@ async def chat(
     tool_executor: ToolExecutor = request.app.state.tool_executor
 
     # Load agent
-    agent = await _load_agent(db, req.agent_id)
+    agent = await _load_agent(db, req.agent_id, user)
+    if req.agent_id and not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
     if agent:
         current_agent_id.set(str(agent.id))
 
@@ -1248,7 +1266,9 @@ async def chat_stream(
     )
 
     # Load agent
-    agent = await _load_agent(db, req.agent_id)
+    agent = await _load_agent(db, req.agent_id, user)
+    if req.agent_id and not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
     if agent:
         current_agent_id.set(str(agent.id))
     logger.debug(
@@ -1943,6 +1963,11 @@ async def chat_websocket(
     # Get DB session
     factory = get_session_factory()
     async with factory() as db:
+        user_result = await db.execute(select(User).where(User.id == user_id))
+        websocket_user = user_result.scalar_one_or_none()
+        if not websocket_user:
+            await websocket.close(code=4001, reason="User not found")
+            return
         # Verify session belongs to user
         result = await db.execute(
             select(Session).where(Session.id == session_id, Session.user_id == user_id)
@@ -1954,7 +1979,11 @@ async def chat_websocket(
             return
 
         # Load agent
-        agent = await _load_agent(db, session.agent_id)
+        agent = await _load_agent(db, session.agent_id, websocket_user)
+        if session.agent_id and not agent:
+            await websocket.send_json({"type": "error", "message": "Agent not found"})
+            await websocket.close(code=4004)
+            return
         agent_enable_retry = agent.enable_retry if agent else True
 
         try:

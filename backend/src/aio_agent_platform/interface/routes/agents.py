@@ -7,17 +7,18 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, with_loader_criteria
 
-from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser
+from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.db.connection import get_db
 from aio_agent_platform.db.models import (
     Agent,
     AgentKnowledgeBase,
     AgentRelationship,
     AgentSkill,
+    KnowledgeBase,
     LLMModel,
 )
 
@@ -61,6 +62,10 @@ class AgentOut(BaseModel):
     parent_ids: list[str] = []
     child_ids: list[str] = []
     children_count: int = 0
+    tenant_id: UUID | None = None
+    created_by: UUID | None = None
+    visibility: str = "tenant"
+    can_edit: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -82,6 +87,7 @@ class AgentCreate(BaseModel):
     skill_ids: list[str] = Field(default_factory=list)
     knowledge_base_ids: list[str] = Field(default_factory=list)
     child_ids: list[str] = Field(default_factory=list)
+    visibility: str = Field(default="tenant", pattern="^(tenant|private)$")
 
 
 class AgentUpdate(BaseModel):
@@ -102,6 +108,7 @@ class AgentUpdate(BaseModel):
     knowledge_base_ids: list[str] | None = None
     is_active: bool | None = None
     child_ids: list[str] | None = None
+    visibility: str | None = Field(default=None, pattern="^(tenant|private)$")
 
     def is_set(self, field_name: str) -> bool:
         """Check if a field was explicitly provided in the request (even if null)."""
@@ -113,7 +120,7 @@ class AgentUpdate(BaseModel):
 
 @router.get("/api/admin/agents", response_model=list[AgentOut])
 async def admin_list_agents(
-    _user: CurrentUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
     result = await db.execute(
@@ -124,11 +131,13 @@ async def admin_list_agents(
             selectinload(Agent.knowledge_bases),
             selectinload(Agent.children),
             selectinload(Agent.parents),
+            with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
         )
+        .where(_agent_visible_to(user))
         .order_by(Agent.created_at)
     )
     agents = result.scalars().all()
-    return [_agent_to_dict(a) for a in agents]
+    return [_agent_to_dict(a, user=user) for a in agents]
 
 
 @router.post("/api/admin/agents", response_model=AgentOut)
@@ -159,6 +168,8 @@ async def admin_create_agent(
         enable_memory_extraction=req.enable_memory_extraction,
         enable_retry=req.enable_retry,
         created_by=user.id,
+        tenant_id=user.tenant_id,
+        visibility=req.visibility,
     )
     db.add(agent)
     await db.flush()
@@ -171,13 +182,14 @@ async def admin_create_agent(
 
     # Bind knowledge bases
     if req.knowledge_base_ids:
+        await _validate_knowledge_bases(db, user, req.knowledge_base_ids)
         for kb_id in req.knowledge_base_ids:
             kb_uuid = UUID(kb_id) if isinstance(kb_id, str) else kb_id
             db.add(AgentKnowledgeBase(agent_id=agent.id, knowledge_base_id=kb_uuid))
 
     # Bind child relationships
     if req.child_ids:
-        await _set_child_relationships(db, agent.id, req.child_ids)
+        await _set_child_relationships(db, agent.id, req.child_ids, user)
 
     await db.flush()
 
@@ -190,18 +202,19 @@ async def admin_create_agent(
             selectinload(Agent.knowledge_bases),
             selectinload(Agent.children),
             selectinload(Agent.parents),
+            with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
         )
         .where(Agent.id == agent.id)
     )
     agent = result.scalar_one()
-    return _agent_to_dict(agent)
+    return _agent_to_dict(agent, user=user)
 
 
 @router.put("/api/admin/agents/{agent_id}", response_model=AgentOut)
 async def admin_update_agent(
     agent_id: UUID,
     req: AgentUpdate,
-    _user: CurrentUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     result = await db.execute(
@@ -212,12 +225,15 @@ async def admin_update_agent(
             selectinload(Agent.knowledge_bases),
             selectinload(Agent.children),
             selectinload(Agent.parents),
+            with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
         )
-        .where(Agent.id == agent_id)
+        .where(Agent.id == agent_id, Agent.tenant_id == user.tenant_id)
     )
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="智能体不存在")
+    if agent.created_by != user.id:
+        raise HTTPException(status_code=403, detail="只有智能体创建者可以修改配置")
 
     if req.is_set("name"):
         agent.name = req.name
@@ -253,6 +269,8 @@ async def admin_update_agent(
         agent.enable_retry = req.enable_retry
     if req.is_set("is_active"):
         agent.is_active = req.is_active
+    if req.is_set("visibility"):
+        agent.visibility = req.visibility
 
     # Update skill bindings if provided
     if req.is_set("skill_ids"):
@@ -274,13 +292,14 @@ async def admin_update_agent(
             )
         )
         if req.knowledge_base_ids:
+            await _validate_knowledge_bases(db, user, req.knowledge_base_ids)
             for kb_id in req.knowledge_base_ids:
                 kb_uuid = UUID(kb_id) if isinstance(kb_id, str) else kb_id
                 db.add(AgentKnowledgeBase(agent_id=agent_id, knowledge_base_id=kb_uuid))
 
     # Update child relationships if provided
     if req.is_set("child_ids"):
-        await _set_child_relationships(db, agent_id, req.child_ids or [])
+        await _set_child_relationships(db, agent_id, req.child_ids or [], user)
 
     await db.flush()
 
@@ -293,23 +312,28 @@ async def admin_update_agent(
             selectinload(Agent.knowledge_bases),
             selectinload(Agent.children),
             selectinload(Agent.parents),
+            with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
         )
         .where(Agent.id == agent_id)
     )
     agent = result.scalar_one()
-    return _agent_to_dict(agent)
+    return _agent_to_dict(agent, user=user)
 
 
 @router.delete("/api/admin/agents/{agent_id}")
 async def admin_delete_agent(
     agent_id: UUID,
-    _admin: AdminUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.tenant_id == user.tenant_id)
+    )
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="智能体不存在")
+    if agent.created_by != user.id:
+        raise HTTPException(status_code=403, detail="只有智能体创建者可以删除")
 
     # Clean up relationships (both directions)
     await db.execute(
@@ -343,7 +367,7 @@ async def admin_delete_agent(
 
 @router.get("/api/agents", response_model=list[AgentOut])
 async def list_agents(
-    _user: CurrentUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
     result = await db.execute(
@@ -354,18 +378,19 @@ async def list_agents(
             selectinload(Agent.knowledge_bases),
             selectinload(Agent.children),
             selectinload(Agent.parents),
+            with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
         )
-        .where(Agent.is_active)
+        .where(Agent.is_active, _agent_visible_to(user))
         .order_by(Agent.created_at)
     )
     agents = result.scalars().all()
-    return [_agent_to_dict(a, include_prompt=False) for a in agents]
+    return [_agent_to_dict(a, include_prompt=False, user=user) for a in agents]
 
 
 @router.get("/api/agents/{agent_id}", response_model=AgentOut)
 async def get_agent(
     agent_id: UUID,
-    _user: CurrentUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     result = await db.execute(
@@ -376,14 +401,15 @@ async def get_agent(
             selectinload(Agent.knowledge_bases),
             selectinload(Agent.children),
             selectinload(Agent.parents),
+            with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
         )
-        .where(Agent.id == agent_id, Agent.is_active)
+        .where(Agent.id == agent_id, Agent.is_active, _agent_visible_to(user))
     )
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="智能体不存在")
 
-    return _agent_to_dict(agent, include_prompt=False)
+    return _agent_to_dict(agent, include_prompt=False, user=user)
 
 
 @router.get("/api/agents/{agent_id}/stats")
@@ -394,6 +420,14 @@ async def get_agent_stats(
 ) -> dict:
     """Get usage statistics for an agent (current user's sessions only)."""
     from aio_agent_platform.db.models import Message, Session
+
+    visible = await db.scalar(
+        select(func.count()).select_from(Agent).where(
+            Agent.id == agent_id, _agent_visible_to(user)
+        )
+    )
+    if not visible:
+        raise HTTPException(status_code=404, detail="智能体不存在")
 
     # Total sessions for this agent owned by current user
     sessions_result = await db.execute(
@@ -435,7 +469,7 @@ async def get_agent_stats(
 @router.get("/api/agents/{agent_id}/children", response_model=list[AgentBrief])
 async def get_agent_children(
     agent_id: UUID,
-    _user: CurrentUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
     """Get all direct children of an agent."""
@@ -448,6 +482,7 @@ async def get_agent_children(
         .where(
             AgentRelationship.parent_id == agent_id,
             Agent.is_active,
+            _agent_visible_to(user),
         )
         .order_by(Agent.created_at)
     )
@@ -467,14 +502,17 @@ async def get_agent_children(
 @router.get("/api/agents/{agent_id}/tree")
 async def get_agent_tree(
     agent_id: UUID,
-    _user: CurrentUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Get the full hierarchy tree rooted at the specified agent."""
     result = await db.execute(
         select(Agent)
-        .options(selectinload(Agent.children))
-        .where(Agent.id == agent_id)
+        .options(
+            selectinload(Agent.children),
+            with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
+        )
+        .where(Agent.id == agent_id, _agent_visible_to(user))
     )
     root = result.scalar_one_or_none()
     if not root:
@@ -487,7 +525,7 @@ async def get_agent_tree(
 
 
 async def _set_child_relationships(
-    db: AsyncSession, parent_id: UUID, child_ids: list[str]
+    db: AsyncSession, parent_id: UUID, child_ids: list[str], user
 ) -> None:
     """Set child relationships for a parent agent (replaces existing)."""
     # Remove existing child relationships for this parent
@@ -505,7 +543,7 @@ async def _set_child_relationships(
         child_uuids.append(child_uuid)
 
     result = await db.execute(
-        select(Agent.id).where(Agent.id.in_(child_uuids))
+        select(Agent.id).where(Agent.id.in_(child_uuids), _agent_visible_to(user))
     )
     existing_ids = set(result.scalars().all())
 
@@ -588,7 +626,31 @@ def _build_tree(agent: Agent, visited: set) -> dict:
     return node
 
 
-def _agent_to_dict(agent: Agent, include_prompt: bool = True) -> dict:
+def _agent_visible_to(user):
+    return (
+        (Agent.tenant_id == user.tenant_id)
+        & or_(Agent.visibility == "tenant", Agent.created_by == user.id)
+    )
+
+
+async def _validate_knowledge_bases(
+    db: AsyncSession, user, knowledge_base_ids: list[str]
+) -> None:
+    ids = [UUID(value) if isinstance(value, str) else value for value in knowledge_base_ids]
+    if not ids:
+        return
+    result = await db.execute(
+        select(KnowledgeBase.id).where(
+            KnowledgeBase.id.in_(ids),
+            KnowledgeBase.tenant_id == user.tenant_id,
+            or_(KnowledgeBase.visibility == "tenant", KnowledgeBase.created_by == user.id),
+        )
+    )
+    if set(result.scalars().all()) != set(ids):
+        raise HTTPException(status_code=404, detail="知识库不存在或无权访问")
+
+
+def _agent_to_dict(agent: Agent, include_prompt: bool = True, user=None) -> dict:
     d = {
         "id": agent.id,
         "name": agent.name,
@@ -610,6 +672,10 @@ def _agent_to_dict(agent: Agent, include_prompt: bool = True) -> dict:
         "parent_ids": [str(p.id) for p in agent.parents] if agent.parents else [],
         "child_ids": [str(c.id) for c in agent.children] if agent.children else [],
         "children_count": len(agent.children) if agent.children else 0,
+        "tenant_id": agent.tenant_id,
+        "created_by": agent.created_by,
+        "visibility": agent.visibility or "tenant",
+        "can_edit": bool(user and agent.created_by == user.id),
     }
     if include_prompt:
         d["system_prompt"] = agent.system_prompt

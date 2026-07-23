@@ -52,7 +52,7 @@ const VISIBLE_MODEL_COUNT = 5;
 export default function ModelManagementPage() {
   const { message } = App.useApp();
   const role = useAuthStore((s) => s.role);
-  const isAdmin = role === 'admin';
+  const isAdmin = role === 'admin' || role === 'superadmin';
 
   // Track which providers have their model list expanded
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());

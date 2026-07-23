@@ -30,6 +30,7 @@ import {
   InputNumber,
   Alert,
   Divider,
+  Select,
 } from 'antd';
 import { knowledgeApi, ragflowSettingsApi } from '@/lib/api';
 import type { KnowledgeBase, RagflowSettings, RetrievalRecord } from '@/lib/api';
@@ -43,7 +44,7 @@ const { TextArea } = Input;
 export default function KnowledgeManagementPage() {
   const { message } = App.useApp();
   const role = useAuthStore((s) => s.role);
-  const isAdmin = role === 'admin';
+  const isAdmin = role === 'admin' || role === 'superadmin';
 
   // ---- List state ----
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
@@ -125,11 +126,12 @@ export default function KnowledgeManagementPage() {
         dataset_id: kb.dataset_id,
         description: kb.description || '',
         is_active: kb.is_active,
+        visibility: kb.visibility,
       });
     } else {
       setEditingKb(null);
       form.resetFields();
-      form.setFieldsValue({ is_active: true });
+      form.setFieldsValue({ is_active: true, visibility: 'tenant' });
     }
     setModalOpen(true);
   };
@@ -143,6 +145,7 @@ export default function KnowledgeManagementPage() {
         dataset_id: values.dataset_id,
         description: values.description || undefined,
         is_active: values.is_active,
+        visibility: values.visibility,
       };
 
       if (editingKb) {
@@ -312,6 +315,9 @@ export default function KnowledgeManagementPage() {
                     <Tag color={kb.is_active ? 'success' : 'default'}>
                       {kb.is_active ? '已启用' : '已禁用'}
                     </Tag>
+                    <Tag color={kb.visibility === 'private' ? 'gold' : 'cyan'}>
+                      {kb.visibility === 'private' ? '只有我可见' : '租户内可见'}
+                    </Tag>
                   </div>
                 }
                 extra={
@@ -329,6 +335,7 @@ export default function KnowledgeManagementPage() {
                         type="text"
                         size="small"
                         icon={<EditOutlined />}
+                        disabled={!kb.can_edit}
                         onClick={() => openModal(kb)}
                       />
                     </Tooltip>
@@ -341,7 +348,7 @@ export default function KnowledgeManagementPage() {
                       cancelText="取消"
                     >
                       <Tooltip title="删除">
-                        <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+                        <Button type="text" size="small" danger icon={<DeleteOutlined />} disabled={!kb.can_edit} />
                       </Tooltip>
                     </Popconfirm>
                   </Space>
@@ -379,7 +386,7 @@ export default function KnowledgeManagementPage() {
           <Form
             form={form}
             layout="vertical"
-            initialValues={{ is_active: true }}
+            initialValues={{ is_active: true, visibility: 'tenant' }}
             className="mt-4"
           >
             <Form.Item
@@ -412,6 +419,19 @@ export default function KnowledgeManagementPage() {
               valuePropName="checked"
             >
               <Switch />
+            </Form.Item>
+
+            <Form.Item
+              name="visibility"
+              label="可见范围"
+              tooltip="只有创建者可以调整此设置"
+            >
+              <Select
+                options={[
+                  { value: 'tenant', label: '租户内可见' },
+                  { value: 'private', label: '只有我可见' },
+                ]}
+              />
             </Form.Item>
           </Form>
         </Modal>

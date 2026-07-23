@@ -11,7 +11,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import CurrentUser
-from aio_agent_platform.db import PortraitVersion, User, UserConfig, UserProfile
+from aio_agent_platform.db import (
+    PortraitVersion,
+    Tenant,
+    TenantMembership,
+    User,
+    UserConfig,
+    UserProfile,
+)
 from aio_agent_platform.db.connection import get_db
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -24,6 +31,8 @@ class ProfileOut(BaseModel):
     username: str
     email: str
     display_name: str | None = None
+    tenant_id: UUID
+    tenant_name: str
 
     model_config = {"from_attributes": True}
 
@@ -32,6 +41,18 @@ class ProfileUpdate(BaseModel):
     display_name: str | None = None
     username: str | None = None
     email: str | None = None
+
+
+class TenantOptionOut(BaseModel):
+    id: UUID
+    name: str
+    slug: str
+    is_active: bool
+    is_current: bool
+
+
+class ActiveTenantUpdate(BaseModel):
+    tenant_id: UUID
 
 
 class PersonalPortraitOut(BaseModel):
@@ -116,6 +137,8 @@ async def get_profile(
         "username": user.username,
         "email": user.email,
         "display_name": profile.display_name,
+        "tenant_id": user.tenant_id,
+        "tenant_name": user.tenant.name,
     }
 
 
@@ -150,6 +173,60 @@ async def update_profile(
         "username": user.username,
         "email": user.email,
         "display_name": profile.display_name,
+        "tenant_id": user.tenant_id,
+        "tenant_name": user.tenant.name,
+    }
+
+
+@router.get("/tenants", response_model=list[TenantOptionOut])
+async def list_my_tenants(
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[dict]:
+    result = await db.execute(
+        select(Tenant)
+        .join(TenantMembership, TenantMembership.tenant_id == Tenant.id)
+        .where(TenantMembership.user_id == user.id)
+        .order_by(Tenant.name)
+    )
+    return [
+        {
+            "id": tenant.id,
+            "name": tenant.name,
+            "slug": tenant.slug,
+            "is_active": tenant.is_active,
+            "is_current": tenant.id == user.tenant_id,
+        }
+        for tenant in result.scalars().all()
+    ]
+
+
+@router.put("/active-tenant", response_model=ProfileOut)
+async def switch_active_tenant(
+    req: ActiveTenantUpdate,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    tenant = await db.scalar(
+        select(Tenant)
+        .join(TenantMembership, TenantMembership.tenant_id == Tenant.id)
+        .where(
+            Tenant.id == req.tenant_id,
+            TenantMembership.user_id == user.id,
+            Tenant.is_active,
+        )
+    )
+    if not tenant:
+        raise HTTPException(status_code=404, detail="租户不存在、已停用或用户不属于该租户")
+    user.tenant_id = tenant.id
+    await db.flush()
+    profile = await _get_or_create_profile(db, user.id)
+    return {
+        "username": user.username,
+        "email": user.email,
+        "display_name": profile.display_name,
+        "tenant_id": tenant.id,
+        "tenant_name": tenant.name,
     }
 
 

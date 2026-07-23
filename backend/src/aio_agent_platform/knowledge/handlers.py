@@ -6,7 +6,7 @@ from collections.abc import Callable
 from uuid import UUID
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from aio_agent_platform.core.context import current_agent_id
 from aio_agent_platform.db.connection import get_session_factory
@@ -14,6 +14,7 @@ from aio_agent_platform.db.models import (
     AgentKnowledgeBase,
     KnowledgeBase,
     SystemConfig,
+    User,
 )
 from aio_agent_platform.knowledge.ragflow_client import retrieve
 
@@ -49,6 +50,12 @@ async def handle_knowledge_retrieval(
 
     factory = get_session_factory()
     async with factory() as db:
+        tenant_id = await db.scalar(
+            select(User.tenant_id).where(User.id == UUID(user_id))
+        )
+        if not tenant_id:
+            return "Error: user tenant not found"
+
         # 1. 查询 agent 绑定的活跃知识库 → dataset_ids
         kb_result = await db.execute(
             select(KnowledgeBase.dataset_id, KnowledgeBase.name)
@@ -59,6 +66,11 @@ async def handle_knowledge_retrieval(
             .where(
                 AgentKnowledgeBase.agent_id == UUID(agent_id),
                 KnowledgeBase.is_active,
+                KnowledgeBase.tenant_id == tenant_id,
+                or_(
+                    KnowledgeBase.visibility == "tenant",
+                    KnowledgeBase.created_by == UUID(user_id),
+                ),
             )
         )
         kb_rows = kb_result.all()

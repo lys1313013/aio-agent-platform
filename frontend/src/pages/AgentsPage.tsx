@@ -68,11 +68,12 @@ export default function AgentsPage() {
         name: agent.name,
         description: agent.description || '',
         icon: agent.icon,
+        visibility: agent.visibility,
       });
     } else {
       setEditingAgent(null);
       form.resetFields();
-      form.setFieldsValue({ icon: 'robot' });
+      form.setFieldsValue({ icon: 'robot', visibility: 'tenant' });
     }
     setModalOpen(true);
   };
@@ -84,6 +85,7 @@ export default function AgentsPage() {
         name: values.name,
         description: values.description || undefined,
         icon: values.icon,
+        visibility: values.visibility,
       };
       if (editingAgent) {
         await agentsApi.adminUpdate(editingAgent.id, payload);
@@ -189,6 +191,9 @@ export default function AgentsPage() {
                     {agent.model_name && (
                       <Tag className="text-xs">{agent.model_name}</Tag>
                     )}
+                    <Tag color={agent.visibility === 'private' ? 'gold' : 'cyan'} className="text-xs">
+                      {agent.visibility === 'private' ? '只有我可见' : '租户内可见'}
+                    </Tag>
                     {(() => {
                       const builtinCount = getBuiltinToolCount(agent);
                       return builtinCount > 0 && (
@@ -219,6 +224,7 @@ export default function AgentsPage() {
                             key: 'edit',
                             label: '编辑',
                             icon: <EditOutlined />,
+                            disabled: !agent.can_edit,
                             onClick: () => openModal(agent),
                           },
                           {
@@ -233,6 +239,7 @@ export default function AgentsPage() {
                             label: '删除',
                             icon: <DeleteOutlined />,
                             danger: true,
+                            disabled: !agent.can_edit,
                             onClick: () => {
                               Modal.confirm({
                                 title: '确定删除该智能体？',
@@ -298,7 +305,7 @@ export default function AgentsPage() {
           <Form
             form={form}
             layout="vertical"
-            initialValues={{ icon: 'robot' }}
+            initialValues={{ icon: 'robot', visibility: 'tenant' }}
           >
             <Form.Item
               name="name"
@@ -323,6 +330,19 @@ export default function AgentsPage() {
                   </Option>
                 ))}
               </Select>
+            </Form.Item>
+
+            <Form.Item
+              name="visibility"
+              label="可见范围"
+              tooltip="只有创建者可以调整此设置"
+            >
+              <Select
+                options={[
+                  { value: 'tenant', label: '租户内可见' },
+                  { value: 'private', label: '只有我可见' },
+                ]}
+              />
             </Form.Item>
           </Form>
           <div className="text-xs text-muted-foreground mt-2 -mb-2">
