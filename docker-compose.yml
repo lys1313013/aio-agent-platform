@@ -1,46 +1,74 @@
-version: "3.9"
+name: aio-agent-platform
+
+# Application deployment (external PostgreSQL and object storage):
+#   1. Create a .env file with DATABASE_URL, JWT_SECRET and STORAGE_* settings.
+#   2. Optionally set BACKEND_IMAGE / FRONTEND_IMAGE to use Alibaba Cloud ACR.
+#   3. Run: docker compose pull && docker compose up -d
 
 services:
-  postgres:
-    image: postgres:16-alpine
+  backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/lys1313013/aio-agent-platform-backend:latest}
+    pull_policy: always
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: aio_agent_platform
-      POSTGRES_USER: agent_user
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
-    ports:
-      - "5435:5432"
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      AGENT_MAX_ITERATIONS: ${AGENT_MAX_ITERATIONS:-20}
+      AGENT_TEMPERATURE: ${AGENT_TEMPERATURE:-0.7}
+      AGENT_TRUST_LEVEL: ${AGENT_TRUST_LEVEL:-ask_dangerous}
+      AGENT_MEMORY_TOP_K: ${AGENT_MEMORY_TOP_K:-5}
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-aio-agent-platform/sandbox:latest}
+      SANDBOX_CPU_LIMIT: ${SANDBOX_CPU_LIMIT:-1.0}
+      SANDBOX_MEMORY_LIMIT: ${SANDBOX_MEMORY_LIMIT:-512m}
+      SANDBOX_SESSION_TTL: ${SANDBOX_SESSION_TTL:-3600}
+      SANDBOX_COMMAND_TIMEOUT: ${SANDBOX_COMMAND_TIMEOUT:-60}
+      SANDBOX_WORKSPACE_QUOTA_MB: ${SANDBOX_WORKSPACE_QUOTA_MB:-500}
+      SANDBOX_NETWORK_DISABLED: ${SANDBOX_NETWORK_DISABLED:-true}
+      STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:?Set STORAGE_ENDPOINT in .env}
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:?Set STORAGE_ACCESS_KEY in .env}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:?Set STORAGE_SECRET_KEY in .env}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-skills}
+      STORAGE_SECURE: ${STORAGE_SECURE:-false}
+      HOST: 0.0.0.0
+      PORT: 8100
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      SERVER_URL: ${SERVER_URL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://localhost:3000}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agent_user -d aio_agent_platform"]
-      interval: 5s
+      test: ["CMD", "curl", "--fail", "http://localhost:8100/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - app-network
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-ghcr.io/lys1313013/aio-agent-platform-frontend:latest}
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/ || exit 1"]
+      interval: 15s
       timeout: 5s
       retries: 5
+    networks:
+      - app-network
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-    ports:
-      - "9010:9000"
-      - "9011:9001"
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  sandbox-build:
-    build:
-      context: ./backend/sandbox
-      dockerfile: Dockerfile
-    image: aio-agent-platform/sandbox:latest
-    profiles: ["build"]
-
-volumes:
-  pgdata:
-  minio_data:
+networks:
+  app-network:
+    driver: bridge
