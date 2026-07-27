@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useChatStore } from '@/stores/chatStore';
 import { chatApi } from '@/lib/api';
 import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import AgentConfigSidebar from '@/components/AgentConfigSidebar';
+import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
 import { Alert, App, Typography, Spin, Tag, Button } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { agentsApi } from '@/lib/api';
@@ -441,6 +442,11 @@ export default function AgentChatPage() {
 
   const currentMessages = activeSessionId ? messages[activeSessionId] || [] : [];
 
+  const activeSession = useMemo(
+    () => sessions.find((s) => s.id === activeSessionId) ?? null,
+    [sessions, activeSessionId],
+  );
+
   if (agentLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -511,6 +517,9 @@ export default function AgentChatPage() {
             onStarterPromptClick={handleSend}
           />
         </div>
+
+        {/* Sandbox file panel */}
+        <SandboxFilePanel workspaceId={activeSession?.workspace_id ?? null} />
       </div>
     </div>
   );

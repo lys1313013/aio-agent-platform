@@ -261,31 +261,16 @@ async def _resolve_workspace_id(
     """
     Resolve the workspace_id for a chat session.
 
-    Isolation model: per-session by default.
-
-    Priority:
-    1. Session.workspace_id (if explicitly set — shared workspace)
-    2. Auto-create a dedicated workspace for this session (per-session isolation)
-
-    This means each session gets its own isolated file space by default.
-    Users can opt into sharing by explicitly setting workspace_id on session creation.
+    Sandbox is user-bound: all sessions use the user's default workspace.
+    Always uses the default workspace, overriding any previously assigned value.
     """
     from aio_agent_platform.workspaces.service import WorkspaceService
 
-    if session.workspace_id:
-        return session.workspace_id
+    workspace = await WorkspaceService.get_or_create_default(db=db, user_id=user_id)
 
-    # Per-session isolation: create a dedicated workspace for this session
-    name = session.title or "Untitled Session"
-    workspace = await WorkspaceService.create_workspace(
-        db=db,
-        user_id=user_id,
-        name=name,
-    )
-
-    # Persist the association so future requests skip this creation
-    session.workspace_id = workspace.id
-    await db.flush()
+    if session.workspace_id != workspace.id:
+        session.workspace_id = workspace.id
+        await db.flush()
 
     return workspace.id
 

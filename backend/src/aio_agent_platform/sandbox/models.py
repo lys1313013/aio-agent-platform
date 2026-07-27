@@ -52,26 +52,25 @@ class Sandbox:
 
 class SandboxManager:
     """
-    Manages ephemeral Docker sandbox containers per user/session/workspace.
+    Manages ephemeral Docker sandbox containers per user.
 
     Principles:
     1. All commands run in containers, never touch the host.
     2. Containers are fully ephemeral — /workspace is tmpfs (no Docker volumes).
     3. Files persisted via MinIO (WorkspaceStorage injects on create, extracts on destroy).
-    4. Same session reuses the same container (preserves pip install, etc.).
-    5. Different sessions get fully isolated containers.
-    6. Periodic sync protects against container crashes.
+    4. User-bound: all sessions for the same user share one container.
+    5. Periodic sync protects against container crashes.
     """
 
     def __init__(self, workspace_storage: "WorkspaceStorage | None" = None):
         self._client = docker.from_env()
-        # key: "{workspace_id}:{session_id}"
+        # key: "user:{user_id}" — sandbox is user-bound, shared across sessions
         self._active: dict[str, Sandbox] = {}
         self._workspace_storage = workspace_storage
         self._sync_task: asyncio.Task | None = None
 
-    def _key(self, workspace_id: str, session_id: str) -> str:
-        return f"{workspace_id}:{session_id}"
+    def _key(self, user_id: str) -> str:
+        return f"user:{user_id}"
 
     # ---- Public API ----
 
@@ -81,10 +80,10 @@ class SandboxManager:
         session_id: str,
         workspace_id: str,
     ) -> Sandbox:
-        """Get or create a sandbox for the given user/session/workspace."""
-        key = self._key(workspace_id, session_id)
+        """Get or create a sandbox for the given user (user-bound, shared across sessions)."""
+        key = self._key(user_id)
 
-        # Reuse existing sandbox
+        # Reuse existing sandbox (user-level)
         if key in self._active:
             sandbox = self._active[key]
             if not sandbox.is_expired():
@@ -95,6 +94,14 @@ class SandboxManager:
         sandbox = await self._create(user_id, session_id, workspace_id)
         self._active[key] = sandbox
         return sandbox
+
+    def get_active_for_user(self, user_id: str) -> Sandbox | None:
+        """Find a live (non-expired) sandbox for the given user."""
+        key = self._key(user_id)
+        sandbox = self._active.get(key)
+        if sandbox is not None and not sandbox.is_expired():
+            return sandbox
+        return None
 
     async def execute(
         self,
@@ -144,7 +151,7 @@ class SandboxManager:
                     error=str(e),
                 )
 
-        key = self._key(sandbox.workspace_id, sandbox.session_id)
+        key = self._key(sandbox.user_id)
         self._active.pop(key, None)
 
         try:

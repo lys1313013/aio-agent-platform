@@ -26,6 +26,7 @@ export interface Session {
   id: string;
   title: string | null;
   agent_id: string | null;
+  workspace_id: string | null;
   is_pinned: boolean;
   is_archived: boolean;
   created_at: string;

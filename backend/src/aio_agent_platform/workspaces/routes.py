@@ -7,13 +7,14 @@ from typing import Annotated
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.db.connection import get_db
+from aio_agent_platform.sandbox.models import Sandbox
 from aio_agent_platform.storage.client import ObjectStorage
 from aio_agent_platform.storage.workspace import WorkspaceStorage
 from aio_agent_platform.workspaces.service import WorkspaceService
@@ -33,6 +34,18 @@ def _get_workspace_storage() -> WorkspaceStorage | None:
         return WorkspaceStorage(storage)
     except Exception as e:
         logger.warning("workspace_storage_unavailable", error=str(e))
+        return None
+
+
+def _get_live_sandbox(request: Request, user_id: UUID) -> Sandbox | None:
+    """Return the user's running sandbox, if any."""
+    mgr = getattr(request.app.state, "sandbox_mgr", None)
+    if mgr is None:
+        return None
+    try:
+        return mgr.get_active_for_user(str(user_id))
+    except Exception as e:
+        logger.warning("live_sandbox_lookup_failed", error=str(e))
         return None
 
 
@@ -68,6 +81,11 @@ class FileEntryOut(BaseModel):
     path: str
     size: int
     is_dir: bool = False
+
+
+class FileListOut(BaseModel):
+    entries: list[FileEntryOut]
+    source: str  # "sandbox" (live container) | "storage" (MinIO)
 
 
 class PresignedUrlOut(BaseModel):
@@ -168,27 +186,46 @@ async def delete_workspace(
 # ---- File browsing ----
 
 
-@router.get("/{workspace_id}/files", response_model=list[FileEntryOut])
+@router.get("/{workspace_id}/files", response_model=FileListOut)
 async def list_files(
+    request: Request,
     workspace_id: UUID,
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     path: str = Query("", description="Subdirectory path to list"),
-) -> list[FileEntryOut]:
-    """List files and directories in a workspace (reads from MinIO, no container needed)."""
+) -> FileListOut:
+    """
+    List files and directories in a workspace.
+
+    Prefers reading live from the running sandbox container (freshest view);
+    falls back to MinIO when no sandbox is active or the live read fails.
+    """
     workspace = await WorkspaceService.get_workspace(db, workspace_id, user.id)
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
+
+    mgr = getattr(request.app.state, "sandbox_mgr", None)
+    sandbox = _get_live_sandbox(request, user.id)
+    if sandbox is not None and mgr is not None:
+        try:
+            entries = await WorkspaceStorage.list_files_live(mgr, sandbox, path)
+            if entries is not None:
+                return FileListOut(
+                    entries=[FileEntryOut(path=e.path, size=e.size, is_dir=e.is_dir) for e in entries],
+                    source="sandbox",
+                )
+        except Exception as e:
+            logger.warning("live_list_failed", workspace_id=str(workspace_id), error=str(e))
 
     ws_storage = _get_workspace_storage()
     if not ws_storage:
         raise HTTPException(status_code=503, detail="Object storage unavailable")
 
     entries = ws_storage.list_files(str(workspace_id), path)
-    return [
-        FileEntryOut(path=e.path, size=e.size, is_dir=e.is_dir)
-        for e in entries
-    ]
+    return FileListOut(
+        entries=[FileEntryOut(path=e.path, size=e.size, is_dir=e.is_dir) for e in entries],
+        source="storage",
+    )
 
 
 # ---- Presigned URL upload/download ----
@@ -251,6 +288,7 @@ async def presign_download(
 
 @router.post("/{workspace_id}/files/content", status_code=201)
 async def upload_file_content(
+    request: Request,
     workspace_id: UUID,
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -269,11 +307,21 @@ async def upload_file_content(
     content = await file.read()
     ws_storage.put_file(str(workspace_id), path, content)
 
+    # Mirror into the live sandbox so the running agent sees it immediately
+    mgr = getattr(request.app.state, "sandbox_mgr", None)
+    sandbox = _get_live_sandbox(request, user.id)
+    if sandbox is not None and mgr is not None:
+        try:
+            await WorkspaceStorage.write_file_live(mgr, sandbox, path, content)
+        except Exception as e:
+            logger.warning("live_write_failed", workspace_id=str(workspace_id), error=str(e))
+
     return {"path": path, "size": len(content)}
 
 
 @router.get("/{workspace_id}/files/content")
 async def download_file_content(
+    request: Request,
     workspace_id: UUID,
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -284,6 +332,20 @@ async def download_file_content(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
+    filename = path.rsplit("/", 1)[-1] if "/" in path else path
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+    # Prefer the live sandbox — it may hold files not yet synced to MinIO
+    mgr = getattr(request.app.state, "sandbox_mgr", None)
+    sandbox = _get_live_sandbox(request, user.id)
+    if sandbox is not None and mgr is not None:
+        try:
+            content = await WorkspaceStorage.read_file_live(mgr, sandbox, path)
+            if content is not None:
+                return Response(content=content, media_type="application/octet-stream", headers=headers)
+        except Exception as e:
+            logger.warning("live_read_failed", workspace_id=str(workspace_id), error=str(e))
+
     ws_storage = _get_workspace_storage()
     if not ws_storage:
         raise HTTPException(status_code=503, detail="Object storage unavailable")
@@ -293,35 +355,37 @@ async def download_file_content(
 
     content = ws_storage.get_file(str(workspace_id), path)
 
-    # Guess filename from path
-    filename = path.rsplit("/", 1)[-1] if "/" in path else path
-
     return Response(
         content=content,
         media_type="application/octet-stream",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-        },
+        headers=headers,
     )
 
 
 @router.delete("/{workspace_id}/files", status_code=204)
 async def delete_file(
+    request: Request,
     workspace_id: UUID,
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     path: str = Query(..., description="File path to delete"),
 ) -> None:
-    """Delete a single file from the workspace."""
+    """Delete a file from the workspace (MinIO and live sandbox if running)."""
     workspace = await WorkspaceService.get_workspace(db, workspace_id, user.id)
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
+    mgr = getattr(request.app.state, "sandbox_mgr", None)
+    sandbox = _get_live_sandbox(request, user.id)
+    deleted_live = False
+    if sandbox is not None and mgr is not None:
+        try:
+            deleted_live = await WorkspaceStorage.delete_file_live(mgr, sandbox, path)
+        except Exception as e:
+            logger.warning("live_delete_failed", workspace_id=str(workspace_id), error=str(e))
+
     ws_storage = _get_workspace_storage()
-    if not ws_storage:
-        raise HTTPException(status_code=503, detail="Object storage unavailable")
-
-    if not ws_storage.file_exists(str(workspace_id), path):
+    if ws_storage and ws_storage.file_exists(str(workspace_id), path):
+        ws_storage.delete_file(str(workspace_id), path)
+    elif not deleted_live:
         raise HTTPException(status_code=404, detail="File not found in workspace")
-
-    ws_storage.delete_file(str(workspace_id), path)

@@ -92,11 +92,16 @@ async def create_session(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Session:
-    """Create a new conversation session, optionally linked to a workspace."""
+    """Create a new conversation session, auto-bound to user's default workspace."""
+    from aio_agent_platform.workspaces.service import WorkspaceService
+
+    default_ws = await WorkspaceService.get_or_create_default(db=db, user_id=user.id)
+    workspace_id = req.workspace_id or default_ws.id
+
     session = Session(
         user_id=user.id,
         agent_id=req.agent_id,
-        workspace_id=req.workspace_id,
+        workspace_id=workspace_id,
         title=req.title or "New Chat",
     )
     db.add(session)

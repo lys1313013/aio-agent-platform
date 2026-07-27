@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { chatApi } from '@/lib/api';
 import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import ChatHistorySidebar from '@/components/chat/ChatHistorySidebar';
+import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
 import { Alert, App, Button } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import type { StreamingState } from '@/lib/types';
@@ -392,6 +393,11 @@ export default function ChatPage() {
 
   const currentMessages = activeSessionId ? messages[activeSessionId] || [] : [];
 
+  const activeSession = useMemo(
+    () => sessions.find((s) => s.id === activeSessionId) ?? null,
+    [sessions, activeSessionId],
+  );
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Header with new chat button */}
@@ -433,6 +439,9 @@ export default function ChatPage() {
             isStreaming={streaming.isStreaming}
           />
         </div>
+
+        {/* Sandbox file panel */}
+        <SandboxFilePanel workspaceId={activeSession?.workspace_id ?? null} />
       </div>
     </div>
   );

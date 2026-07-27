@@ -1373,3 +1373,115 @@ export const cronJobsApi = {
     return request<void>(`/cron-jobs/${id}`, { method: 'DELETE' });
   },
 };
+
+// ---- Workspaces ----
+
+export interface Workspace {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  file_count: number;
+  total_size_bytes: number;
+  is_default: boolean;
+  last_synced_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceFileEntry {
+  path: string;
+  size: number;
+  is_dir: boolean;
+}
+
+export interface WorkspaceFileList {
+  entries: WorkspaceFileEntry[];
+  source: 'sandbox' | 'storage';
+}
+
+export const workspacesApi = {
+  list() {
+    return request<Workspace[]>('/workspaces');
+  },
+
+  create(name: string, description?: string) {
+    return request<Workspace>('/workspaces', {
+      method: 'POST',
+      body: JSON.stringify({ name, description: description || null }),
+    });
+  },
+
+  delete(id: string) {
+    return request<void>(`/workspaces/${id}`, { method: 'DELETE' });
+  },
+
+  listFiles(id: string, path: string) {
+    return request<WorkspaceFileList>(
+      `/workspaces/${id}/files?path=${encodeURIComponent(path)}`,
+    );
+  },
+
+  deleteFile(id: string, path: string) {
+    return request<void>(
+      `/workspaces/${id}/files?path=${encodeURIComponent(path)}`,
+      { method: 'DELETE' },
+    );
+  },
+
+  async uploadFile(id: string, path: string, file: File): Promise<{ path: string; size: number }> {
+    if (isTokenExpiringSoon(tokenStorage.getAccess())) {
+      const refreshed = await refreshAccessToken();
+      if (!refreshed && tokenStorage.getRefresh()) {
+        throw new ApiError(401, 'Session expired');
+      }
+    }
+
+    const form = new FormData();
+    form.append('file', file);
+
+    const token = tokenStorage.getAccess() || '';
+    const resp = await fetch(
+      `${API_BASE}/workspaces/${id}/files/content?path=${encodeURIComponent(path)}`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        // Do NOT set Content-Type — browser auto-sets multipart boundary
+        body: form,
+      },
+    );
+    if (!resp.ok) {
+      let errMsg = resp.statusText;
+      try {
+        const body = await resp.json();
+        errMsg = body.detail || errMsg;
+      } catch { /* ignore */ }
+      throw new ApiError(resp.status, errMsg);
+    }
+    return resp.json();
+  },
+
+  async downloadFile(id: string, path: string): Promise<Blob> {
+    if (isTokenExpiringSoon(tokenStorage.getAccess())) {
+      const refreshed = await refreshAccessToken();
+      if (!refreshed && tokenStorage.getRefresh()) {
+        throw new ApiError(401, 'Session expired');
+      }
+    }
+
+    const token = tokenStorage.getAccess() || '';
+    const resp = await fetch(
+      `${API_BASE}/workspaces/${id}/files/content?path=${encodeURIComponent(path)}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!resp.ok) {
+      let errMsg = resp.statusText;
+      try {
+        const body = await resp.json();
+        errMsg = body.detail || errMsg;
+      } catch { /* ignore */ }
+      throw new ApiError(resp.status, errMsg);
+    }
+    return resp.blob();
+  },
+};

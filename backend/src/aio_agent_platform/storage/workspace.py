@@ -14,6 +14,7 @@ import hashlib
 import io
 import json
 import posixpath
+import shlex
 import tarfile
 import time
 from dataclasses import dataclass, field
@@ -302,8 +303,8 @@ class WorkspaceStorage:
         stats.duration_ms = (time.monotonic() - t_start) * 1000
         return stats
 
+    @staticmethod
     async def _read_file_as_base64(
-        self,
         sandbox_mgr: SandboxManager,
         sandbox: Sandbox,
         filepath: str,
@@ -331,10 +332,10 @@ class WorkspaceStorage:
             return result.stdout.strip()
 
         # For large files, read in chunks
-        return await self._read_file_chunked(sandbox_mgr, sandbox, filepath, file_size)
+        return await WorkspaceStorage._read_file_chunked(sandbox_mgr, sandbox, filepath, file_size)
 
+    @staticmethod
     async def _read_file_chunked(
-        self,
         sandbox_mgr: SandboxManager,
         sandbox: Sandbox,
         filepath: str,
@@ -382,6 +383,119 @@ class WorkspaceStorage:
         meta_key = self._meta_key(workspace_id)
         meta_bytes = json.dumps(manifest, indent=2).encode()
         self._storage.put(meta_key, meta_bytes, "application/json")
+
+    # ================================================================
+    # Live sandbox operations (container must be running)
+    # ================================================================
+
+    @staticmethod
+    def _validate_rel_path(path: str) -> str:
+        """Normalize a workspace-relative path, rejecting traversal."""
+        parts = [seg for seg in path.strip().lstrip("/").split("/") if seg not in ("", ".")]
+        if any(seg == ".." for seg in parts):
+            raise ValueError("path traversal not allowed")
+        return "/".join(parts)
+
+    @staticmethod
+    async def list_files_live(
+        sandbox_mgr: SandboxManager,
+        sandbox: Sandbox,
+        path: str = "",
+    ) -> list[FileEntry] | None:
+        """
+        List directory contents directly from the running sandbox container.
+
+        Returns None if the directory cannot be listed (missing dir, dead container),
+        so callers can fall back to MinIO.
+        """
+        rel = WorkspaceStorage._validate_rel_path(path)
+        target = f"/workspace/{rel}" if rel else "/workspace"
+        script = (
+            "import os,json,sys\n"
+            "out=[]\n"
+            "for e in os.scandir(sys.argv[1]):\n"
+            "    d=e.is_dir(follow_symlinks=False)\n"
+            "    out.append({'path':e.name,'is_dir':d,'size':0 if d else e.stat(follow_symlinks=False).st_size})\n"
+            "print(json.dumps(out))"
+        )
+        cmd = f"python3 -c {shlex.quote(script)} {shlex.quote(target)}"
+        result = await sandbox_mgr.execute(sandbox, cmd)
+        if result.exit_code != 0:
+            return None
+        try:
+            raw = json.loads(result.stdout.strip() or "[]")
+        except json.JSONDecodeError:
+            return None
+        return [
+            FileEntry(path=item["path"], size=item["size"], is_dir=item["is_dir"])
+            for item in raw
+        ]
+
+    @staticmethod
+    async def read_file_live(
+        sandbox_mgr: SandboxManager,
+        sandbox: Sandbox,
+        path: str,
+    ) -> bytes | None:
+        """Read a file directly from the running sandbox. Returns None on failure."""
+        rel = WorkspaceStorage._validate_rel_path(path)
+        if not rel:
+            return None
+        b64 = await WorkspaceStorage._read_file_as_base64(sandbox_mgr, sandbox, f"/workspace/{rel}")
+        if not b64:
+            return None
+        try:
+            return base64.b64decode(b64)
+        except Exception:
+            return None
+
+    @staticmethod
+    async def write_file_live(
+        sandbox_mgr: SandboxManager,
+        sandbox: Sandbox,
+        path: str,
+        content: bytes,
+    ) -> bool:
+        """Write a file directly into the running sandbox, creating parent dirs."""
+        rel = WorkspaceStorage._validate_rel_path(path)
+        if not rel:
+            return False
+        target = f"/workspace/{rel}"
+        parent = posixpath.dirname(target)
+        await sandbox_mgr.execute(sandbox, f"mkdir -p {shlex.quote(parent)}")
+
+        b64_data = base64.b64encode(content).decode("ascii")
+        if len(b64_data) <= _CHUNK_SIZE:
+            cmd = f"echo {shlex.quote(b64_data)} | base64 -d > {shlex.quote(target)}"
+            result = await sandbox_mgr.execute(sandbox, cmd)
+            return result.exit_code == 0
+
+        tmp_file = "/tmp/_workspace_upload.b64"
+        await sandbox_mgr.execute(sandbox, f"rm -f {tmp_file}")
+        offset = 0
+        while offset < len(b64_data):
+            chunk = b64_data[offset:offset + _CHUNK_SIZE]
+            redirect = ">" if offset == 0 else ">>"
+            await sandbox_mgr.execute(sandbox, f"printf '%s' {shlex.quote(chunk)} {redirect} {tmp_file}")
+            offset += _CHUNK_SIZE
+        result = await sandbox_mgr.execute(
+            sandbox,
+            f"base64 -d {tmp_file} > {shlex.quote(target)} && rm -f {tmp_file}",
+        )
+        return result.exit_code == 0
+
+    @staticmethod
+    async def delete_file_live(
+        sandbox_mgr: SandboxManager,
+        sandbox: Sandbox,
+        path: str,
+    ) -> bool:
+        """Delete a file or directory from the running sandbox."""
+        rel = WorkspaceStorage._validate_rel_path(path)
+        if not rel:
+            return False
+        result = await sandbox_mgr.execute(sandbox, f"rm -rf -- {shlex.quote(f'/workspace/{rel}')}")
+        return result.exit_code == 0
 
     # ================================================================
     # File browsing (no container required — reads from MinIO)

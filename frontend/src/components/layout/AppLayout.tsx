@@ -23,6 +23,7 @@ import {
   ClockCircleOutlined,
   UsergroupAddOutlined,
   TeamOutlined,
+  FolderOpenOutlined,
 } from '@ant-design/icons';
 import { Dropdown, Avatar, Select } from 'antd';
 import type { MenuProps } from 'antd';
@@ -54,6 +55,7 @@ export default function AppLayout() {
     { path: '/agents', icon: <RobotOutlined />, label: '智能体' },
     { path: '/memory', icon: <BulbOutlined />, label: '记忆' },
     { path: '/skills', icon: <ThunderboltOutlined />, label: '技能' },
+    { path: '/workspaces', icon: <FolderOpenOutlined />, label: '工作区文件' },
     ...(isAdmin
       ? [
           { path: '/models', icon: <ApiOutlined />, label: '模型管理' },

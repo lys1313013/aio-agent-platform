@@ -10,6 +10,7 @@ import AgentApiPage from '@/pages/AgentApiPage';
 import DashboardPage from '@/pages/DashboardPage';
 import MemoryPage from '@/pages/MemoryPage';
 import SkillsPage from '@/pages/SkillsPage';
+import WorkspacesPage from '@/pages/WorkspacesPage';
 import SettingsPage from '@/pages/SettingsPage';
 import PortraitPage from '@/pages/PortraitPage';
 import ModelManagementPage from '@/pages/ModelManagementPage';
@@ -84,6 +85,7 @@ export default function App() {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/memory" element={<MemoryPage />} />
         <Route path="/skills" element={<SkillsPage />} />
+        <Route path="/workspaces" element={<WorkspacesPage />} />
         <Route path="/portrait" element={<PortraitPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/models" element={<ModelManagementPage />} />
