@@ -151,6 +151,7 @@ async def _build_agent_loop_for_version(
     db: AsyncSession,
     config_snapshot: dict,
     workspace_id: UUID | None = None,
+    workspace_slug: str | None = None,
 ) -> AgentLoop:
     """Create an AgentLoop using the version's config snapshot."""
     model_to_use = None
@@ -200,6 +201,7 @@ async def _build_agent_loop_for_version(
         max_iterations=config_snapshot.get("max_iterations") if config_snapshot.get("max_iterations") is not None else settings.agent.max_iterations,
         trust_level=settings.agent.trust_level,
         workspace_id=workspace_id,
+        workspace_slug=workspace_slug,
     )
 
 
@@ -509,9 +511,17 @@ async def _execute_agent_inner(
         user_portrait=user_portrait,
     )
 
+    # Resolve workspace (default workspace for user)
+    from aio_agent_platform.workspaces.service import WorkspaceService
+    workspace = await WorkspaceService.get_or_create_default(db=db, user_id=user.id)
+    workspace_id = workspace.id
+    workspace_slug = workspace.slug
+
     # Build agent loop
     agent_loop = await _build_agent_loop_for_version(
-        tool_executor, system_prompt, db, config_snapshot
+        tool_executor, system_prompt, db, config_snapshot,
+        workspace_id=workspace_id,
+        workspace_slug=workspace_slug,
     )
 
     # Prepare context
@@ -720,9 +730,17 @@ async def sse_chat(
                 user_portrait=user_portrait,
             )
 
+            # Resolve workspace (default workspace for user)
+            from aio_agent_platform.workspaces.service import WorkspaceService
+            workspace = await WorkspaceService.get_or_create_default(db=db_session, user_id=user.id)
+            workspace_id = workspace.id
+            workspace_slug = workspace.slug
+
             # Build agent loop
             agent_loop = await _build_agent_loop_for_version(
-                tool_executor, system_prompt, db_session, config_snapshot
+                tool_executor, system_prompt, db_session, config_snapshot,
+                workspace_id=workspace_id,
+                workspace_slug=workspace_slug,
             )
 
             # Prepare context

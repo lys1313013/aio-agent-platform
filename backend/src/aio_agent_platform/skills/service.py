@@ -502,16 +502,17 @@ class SkillService:
         user_id: str,
         session_id: str,
         workspace_id: str,
+        workspace_slug: str | None = None,
     ) -> list[str]:
         """Extract all files from the skill's zip and push them to the sandbox.
 
         Deploys preserving directory structure:
-            /workspace/skills/{skill_name}/scripts/
-            /workspace/skills/{skill_name}/references/
-            /workspace/skills/{skill_name}/assets/
+            /workspace/{workspace_slug}/skills/{skill_name}/scripts/
+            /workspace/{workspace_slug}/skills/{skill_name}/references/
+            /workspace/{workspace_slug}/skills/{skill_name}/assets/
 
         Returns:
-            List of deployed file paths (relative to /workspace).
+            List of deployed file paths (relative to /workspace/{workspace_slug}).
         """
         if not skill.files or not skill.object_key:
             return []
@@ -523,7 +524,8 @@ class SkillService:
             return []
 
         # Get or create sandbox
-        sandbox = await sandbox_mgr.get_or_create(user_id, session_id, workspace_id)
+        ws_slug = workspace_slug or "default"
+        sandbox = await sandbox_mgr.get_or_create(user_id, session_id, workspace_id, ws_slug)
 
         deployed_paths = []
         # Sanitize skill name for filesystem

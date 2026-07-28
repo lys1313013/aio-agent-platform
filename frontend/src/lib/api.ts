@@ -198,10 +198,10 @@ export const sessionsApi = {
     return request<SessionDetail>(`/sessions/${id}`);
   },
 
-  create(title?: string, agentId?: string | null) {
+  create(title?: string, agentId?: string | null, workspaceId?: string | null) {
     return request<Session>('/sessions', {
       method: 'POST',
-      body: JSON.stringify({ title, agent_id: agentId }),
+      body: JSON.stringify({ title, agent_id: agentId, workspace_id: workspaceId }),
     });
   },
 

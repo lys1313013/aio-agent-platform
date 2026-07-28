@@ -1,12 +1,18 @@
 import { create } from 'zustand';
-import { sessionsApi } from '@/lib/api';
+import { sessionsApi, workspacesApi } from '@/lib/api';
 import type { Session, Message } from '@/lib/types';
+import type { Workspace } from '@/lib/api';
 
 interface ChatState {
   sessions: Session[];
   activeSessionId: string | null;
   messages: Record<string, Message[]>;
   isSessionsLoading: boolean;
+
+  // Workspace selection
+  workspaces: Workspace[];
+  selectedWorkspaceId: string | null;
+  isWorkspacesLoading: boolean;
 
   // Actions
   loadSessions: (agentId?: string | null) => Promise<void>;
@@ -19,6 +25,10 @@ interface ChatState {
   renameSession: (id: string, title: string) => Promise<void>;
   pinSession: (id: string, isPinned: boolean) => Promise<void>;
   archiveSession: (id: string, isArchived: boolean) => Promise<void>;
+
+  // Workspace actions
+  loadWorkspaces: () => Promise<void>;
+  setSelectedWorkspace: (id: string | null) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -26,6 +36,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeSessionId: null,
   messages: {},
   isSessionsLoading: false,
+  workspaces: [],
+  selectedWorkspaceId: null,
+  isWorkspacesLoading: false,
 
   loadSessions: async (agentId) => {
     // Full reset — only use on initial page load / navigation
@@ -50,7 +63,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   createSession: async (title, agentId) => {
-    const session = await sessionsApi.create(title, agentId);
+    const workspaceId = get().selectedWorkspaceId;
+    const session = await sessionsApi.create(title, agentId, workspaceId);
     set((state) => ({
       sessions: [session, ...state.sessions],
       activeSessionId: session.id,
@@ -117,5 +131,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
         s.id === id ? { ...s, is_archived: isArchived } : s,
       ),
     }));
+  },
+
+  loadWorkspaces: async () => {
+    set({ isWorkspacesLoading: true });
+    try {
+      const workspaces = await workspacesApi.list();
+      // Default to the default workspace, or the first one
+      const defaultWs = workspaces.find((w) => w.is_default) || workspaces[0];
+      set({
+        workspaces,
+        selectedWorkspaceId: defaultWs?.id ?? null,
+        isWorkspacesLoading: false,
+      });
+    } catch {
+      set({ isWorkspacesLoading: false });
+    }
+  },
+
+  setSelectedWorkspace: (id) => {
+    set({ selectedWorkspaceId: id });
   },
 }));

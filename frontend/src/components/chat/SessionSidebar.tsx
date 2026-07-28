@@ -18,8 +18,9 @@ import {
   UndoOutlined,
   ReloadOutlined,
   HistoryOutlined,
+  FolderOutlined,
 } from '@ant-design/icons';
-import { Input, Dropdown, App, Tooltip, Spin } from 'antd';
+import { Input, Dropdown, App, Tooltip, Spin, Select } from 'antd';
 import type { MenuProps } from 'antd';
 
 export default function SessionSidebar({ agentId }: { agentId?: string | null }) {
@@ -36,6 +37,11 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
     archiveSession,
     refreshSessions,
     isSessionsLoading,
+    workspaces,
+    selectedWorkspaceId,
+    isWorkspacesLoading,
+    loadWorkspaces,
+    setSelectedWorkspace,
   } = useChatStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -43,6 +49,13 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
   const [editValue, setEditValue] = useState('');
   const [panelOpen, setPanelOpen] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
+
+  // Load workspaces on mount
+  useEffect(() => {
+    loadWorkspaces();
+  }, [loadWorkspaces]);
+
+  const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId);
 
   // Close panel on click outside
   useEffect(() => {
@@ -171,6 +184,18 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
           </button>
         </Tooltip>
 
+        <Tooltip title={`工作区: ${selectedWorkspace?.name ?? '未选择'}`} placement="right" mouseEnterDelay={0.5}>
+          <button
+            onClick={() => setPanelOpen(true)}
+            className={cn(
+              'flex items-center justify-center w-9 h-9 rounded-lg transition-colors',
+              'text-muted-foreground hover:bg-muted hover:text-foreground',
+            )}
+          >
+            <FolderOutlined />
+          </button>
+        </Tooltip>
+
         <Tooltip title="新对话" placement="right" mouseEnterDelay={0.5}>
           <button
             onClick={handleNewChat}
@@ -193,12 +218,13 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
       {/* Inline panel */}
       {panelOpen && (
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-          {/* Panel header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
-            <div className="flex items-center gap-2">
-              <HistoryOutlined className="text-primary" />
-              <span className="text-sm font-semibold">对话历史</span>
-            </div>
+          {/* Panel header with workspace selector */}
+          <div className="flex flex-col gap-2 px-4 py-3 border-b border-border/50">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <HistoryOutlined className="text-primary" />
+                <span className="text-sm font-semibold">对话历史</span>
+              </div>
             <button
               onClick={() => setPanelOpen(false)}
               className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
@@ -206,6 +232,23 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
               <CloseOutlined className="text-xs" />
             </button>
           </div>
+          {/* Workspace selector */}
+          <div className="flex items-center gap-2">
+            <FolderOutlined className="text-xs text-muted-foreground" />
+            <Select
+              size="small"
+              value={selectedWorkspaceId}
+              onChange={setSelectedWorkspace}
+              loading={isWorkspacesLoading}
+              style={{ flex: 1 }}
+              options={workspaces.map((ws) => ({
+                value: ws.id,
+                label: ws.is_default ? `${ws.name} (默认)` : ws.name,
+              }))}
+              placeholder="选择工作区"
+            />
+          </div>
+        </div>
 
           {/* Search */}
           <div className="px-3 py-2">

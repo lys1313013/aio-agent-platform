@@ -208,7 +208,7 @@ async def list_files(
     sandbox = _get_live_sandbox(request, user.id)
     if sandbox is not None and mgr is not None:
         try:
-            entries = await WorkspaceStorage.list_files_live(mgr, sandbox, path)
+            entries = await WorkspaceStorage.list_files_live(mgr, sandbox, path, workspace.slug)
             if entries is not None:
                 return FileListOut(
                     entries=[FileEntryOut(path=e.path, size=e.size, is_dir=e.is_dir) for e in entries],
@@ -312,7 +312,7 @@ async def upload_file_content(
     sandbox = _get_live_sandbox(request, user.id)
     if sandbox is not None and mgr is not None:
         try:
-            await WorkspaceStorage.write_file_live(mgr, sandbox, path, content)
+            await WorkspaceStorage.write_file_live(mgr, sandbox, path, content, workspace.slug)
         except Exception as e:
             logger.warning("live_write_failed", workspace_id=str(workspace_id), error=str(e))
 
@@ -340,7 +340,7 @@ async def download_file_content(
     sandbox = _get_live_sandbox(request, user.id)
     if sandbox is not None and mgr is not None:
         try:
-            content = await WorkspaceStorage.read_file_live(mgr, sandbox, path)
+            content = await WorkspaceStorage.read_file_live(mgr, sandbox, path, workspace.slug)
             if content is not None:
                 return Response(content=content, media_type="application/octet-stream", headers=headers)
         except Exception as e:
@@ -380,7 +380,7 @@ async def delete_file(
     deleted_live = False
     if sandbox is not None and mgr is not None:
         try:
-            deleted_live = await WorkspaceStorage.delete_file_live(mgr, sandbox, path)
+            deleted_live = await WorkspaceStorage.delete_file_live(mgr, sandbox, path, workspace.slug)
         except Exception as e:
             logger.warning("live_delete_failed", workspace_id=str(workspace_id), error=str(e))
 

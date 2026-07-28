@@ -97,9 +97,15 @@ class WorkspaceStorage:
         sandbox_mgr: SandboxManager,
         sandbox: Sandbox,
         workspace_id: str,
+        workspace_slug: str | None = None,
     ) -> SyncStats:
         """
         Pull workspace files from MinIO and inject them into the sandbox.
+
+        Args:
+            workspace_slug: Directory name in sandbox (e.g., "default").
+                           If None, extracts to /workspace/ (backward compat).
+                           Otherwise extracts to /workspace/{workspace_slug}/.
 
         Uses tar.gz + base64 over exec_run to transfer files efficiently.
         For large workspaces, splits into chunks to avoid shell argument limits.
@@ -107,6 +113,8 @@ class WorkspaceStorage:
         t_start = time.monotonic()
         stats = SyncStats()
         prefix = self._files_prefix(workspace_id)
+        # Determine extraction target directory
+        extract_dir = f"/workspace/{workspace_slug}" if workspace_slug else "/workspace"
 
         try:
             # 1. List all files in MinIO
@@ -140,17 +148,19 @@ class WorkspaceStorage:
 
             if len(b64_data) <= _CHUNK_SIZE:
                 # Single chunk — direct transfer
-                cmd = f"echo '{b64_data}' | base64 -d | tar xzf - -C /workspace"
+                cmd = f"mkdir -p {extract_dir} && echo '{b64_data}' | base64 -d | tar xzf - -C {extract_dir}"
                 result = await sandbox_mgr.execute(sandbox, cmd)
                 if result.exit_code != 0:
                     stats.errors.append(f"tar extract failed: {result.stderr}")
             else:
                 # Multi-chunk transfer
-                await self._inject_chunked(sandbox_mgr, sandbox, b64_data, stats)
+                await self._inject_chunked(sandbox_mgr, sandbox, b64_data, stats, extract_dir)
 
             logger.info(
                 "workspace_injected",
                 workspace_id=workspace_id,
+                workspace_slug=workspace_slug,
+                extract_dir=extract_dir,
                 files=stats.files_synced,
                 bytes=stats.bytes_transferred,
             )
@@ -168,6 +178,7 @@ class WorkspaceStorage:
         sandbox: Sandbox,
         b64_data: str,
         stats: SyncStats,
+        extract_dir: str = "/workspace",
     ) -> None:
         """Transfer a large base64 payload in chunks, then extract."""
         tmp_file = "/tmp/_workspace_inject.tar.gz.b64"
@@ -187,7 +198,7 @@ class WorkspaceStorage:
         # Decode and extract
         result = await sandbox_mgr.execute(
             sandbox,
-            f"base64 -d {tmp_file} | tar xzf - -C /workspace && rm -f {tmp_file}",
+            f"mkdir -p {extract_dir} && base64 -d {tmp_file} | tar xzf - -C {extract_dir} && rm -f {tmp_file}",
         )
         if result.exit_code != 0:
             stats.errors.append(f"chunked extract failed: {result.stderr}")
@@ -201,12 +212,18 @@ class WorkspaceStorage:
         sandbox_mgr: SandboxManager,
         sandbox: Sandbox,
         workspace_id: str,
+        workspace_slug: str | None = None,
     ) -> SyncStats:
         """
         Extract workspace files from the sandbox and sync to MinIO.
 
+        Args:
+            workspace_slug: Directory name in sandbox (e.g., "default").
+                           If None, extracts from /workspace/ (backward compat).
+                           Otherwise extracts from /workspace/{workspace_slug}/.
+
         Performs incremental sync:
-        1. Tar /workspace inside the container
+        1. Tar the workspace directory inside the container
         2. Read tar via base64 over exec_run
         3. Compare each file's hash with MinIO
         4. Upload only changed/new files
@@ -215,12 +232,14 @@ class WorkspaceStorage:
         t_start = time.monotonic()
         stats = SyncStats()
         prefix = self._files_prefix(workspace_id)
+        # Determine source directory in sandbox
+        source_dir = f"/workspace/{workspace_slug}" if workspace_slug else "/workspace"
 
         try:
-            # 1. Create tar.gz inside container
+            # 1. Create tar.gz inside container from the workspace directory
             result = await sandbox_mgr.execute(
                 sandbox,
-                "tar czf /tmp/_workspace_sync.tar.gz -C /workspace . 2>/dev/null; echo $?",
+                f"tar czf /tmp/_workspace_sync.tar.gz -C {source_dir} . 2>/dev/null; echo $?",
             )
             # tar exit code 1 means "files changed during read" — still OK
             # exit code 2 means actual error
@@ -401,15 +420,26 @@ class WorkspaceStorage:
         sandbox_mgr: SandboxManager,
         sandbox: Sandbox,
         path: str = "",
+        workspace_slug: str | None = None,
     ) -> list[FileEntry] | None:
         """
         List directory contents directly from the running sandbox container.
+
+        Args:
+            path: Relative path within the workspace
+            workspace_slug: Directory name in sandbox (e.g., "default").
+                           If None, lists from /workspace/{path} (backward compat).
+                           Otherwise lists from /workspace/{workspace_slug}/{path}.
 
         Returns None if the directory cannot be listed (missing dir, dead container),
         so callers can fall back to MinIO.
         """
         rel = WorkspaceStorage._validate_rel_path(path)
-        target = f"/workspace/{rel}" if rel else "/workspace"
+        # Build target path with workspace directory prefix
+        if workspace_slug:
+            target = f"/workspace/{workspace_slug}/{rel}" if rel else f"/workspace/{workspace_slug}"
+        else:
+            target = f"/workspace/{rel}" if rel else "/workspace"
         script = (
             "import os,json,sys\n"
             "out=[]\n"
@@ -436,12 +466,22 @@ class WorkspaceStorage:
         sandbox_mgr: SandboxManager,
         sandbox: Sandbox,
         path: str,
+        workspace_slug: str | None = None,
     ) -> bytes | None:
-        """Read a file directly from the running sandbox. Returns None on failure."""
+        """Read a file directly from the running sandbox. Returns None on failure.
+
+        Args:
+            path: Relative file path within the workspace
+            workspace_slug: Directory name in sandbox (e.g., "default").
+        """
         rel = WorkspaceStorage._validate_rel_path(path)
         if not rel:
             return None
-        b64 = await WorkspaceStorage._read_file_as_base64(sandbox_mgr, sandbox, f"/workspace/{rel}")
+        if workspace_slug:
+            full_path = f"/workspace/{workspace_slug}/{rel}"
+        else:
+            full_path = f"/workspace/{rel}"
+        b64 = await WorkspaceStorage._read_file_as_base64(sandbox_mgr, sandbox, full_path)
         if not b64:
             return None
         try:
@@ -455,12 +495,21 @@ class WorkspaceStorage:
         sandbox: Sandbox,
         path: str,
         content: bytes,
+        workspace_slug: str | None = None,
     ) -> bool:
-        """Write a file directly into the running sandbox, creating parent dirs."""
+        """Write a file directly into the running sandbox, creating parent dirs.
+
+        Args:
+            path: Relative file path within the workspace
+            workspace_slug: Directory name in sandbox (e.g., "default").
+        """
         rel = WorkspaceStorage._validate_rel_path(path)
         if not rel:
             return False
-        target = f"/workspace/{rel}"
+        if workspace_slug:
+            target = f"/workspace/{workspace_slug}/{rel}"
+        else:
+            target = f"/workspace/{rel}"
         parent = posixpath.dirname(target)
         await sandbox_mgr.execute(sandbox, f"mkdir -p {shlex.quote(parent)}")
 
@@ -489,12 +538,22 @@ class WorkspaceStorage:
         sandbox_mgr: SandboxManager,
         sandbox: Sandbox,
         path: str,
+        workspace_slug: str | None = None,
     ) -> bool:
-        """Delete a file or directory from the running sandbox."""
+        """Delete a file or directory from the running sandbox.
+
+        Args:
+            path: Relative file path within the workspace
+            workspace_slug: Directory name in sandbox (e.g., "default").
+        """
         rel = WorkspaceStorage._validate_rel_path(path)
         if not rel:
             return False
-        result = await sandbox_mgr.execute(sandbox, f"rm -rf -- {shlex.quote(f'/workspace/{rel}')}")
+        if workspace_slug:
+            full_path = f"/workspace/{workspace_slug}/{rel}"
+        else:
+            full_path = f"/workspace/{rel}"
+        result = await sandbox_mgr.execute(sandbox, f"rm -rf -- {shlex.quote(full_path)}")
         return result.exit_code == 0
 
     # ================================================================

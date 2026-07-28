@@ -153,6 +153,7 @@ async def handle_delegate_task(
             from aio_agent_platform.workspaces.service import WorkspaceService
 
             workspace_id = delegation.workspace_id if delegation else None
+            workspace_slug = delegation.workspace_slug if delegation else None
             if not workspace_id:
                 parent_session_result = await db.execute(
                     select(Session).where(Session.id == UUID(session_id))
@@ -160,11 +161,16 @@ async def handle_delegate_task(
                 parent_session = parent_session_result.scalar_one_or_none()
                 if parent_session and parent_session.workspace_id:
                     workspace_id = parent_session.workspace_id
+                    # Fetch slug for this workspace
+                    ws_obj = await WorkspaceService.get_workspace(db, workspace_id, UUID(user_id))
+                    if ws_obj:
+                        workspace_slug = ws_obj.slug
                 else:
                     # Fallback: create a dedicated per-session workspace
                     ws_name = (parent_session.title if parent_session else None) or "Delegation Session"
                     ws = await WorkspaceService.create_workspace(db, UUID(user_id), ws_name)
                     workspace_id = ws.id
+                    workspace_slug = ws.slug
                     if parent_session:
                         parent_session.workspace_id = ws.id
                         await db.flush()
@@ -176,6 +182,7 @@ async def handle_delegate_task(
                 max_depth=max_depth,
                 event_queue=event_queue,
                 workspace_id=workspace_id,
+                workspace_slug=workspace_slug,
             )
 
             child_loop = AgentLoop(
@@ -187,6 +194,7 @@ async def handle_delegate_task(
                 delegation=child_delegation,
                 event_queue=event_queue,
                 workspace_id=workspace_id,
+                workspace_slug=workspace_slug,
                 allowed_tools={t.name for t in child_tools_list},
             )
 

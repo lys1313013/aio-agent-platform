@@ -42,6 +42,7 @@ class Sandbox:
     user_id: str
     session_id: str
     workspace_id: str
+    workspace_slug: str
     created_at: datetime
 
     def is_expired(self) -> bool:
@@ -79,8 +80,14 @@ class SandboxManager:
         user_id: str,
         session_id: str,
         workspace_id: str,
+        workspace_slug: str,
     ) -> Sandbox:
-        """Get or create a sandbox for the given user (user-bound, shared across sessions)."""
+        """Get or create a sandbox for the given user (user-bound, shared across sessions).
+
+        Args:
+            workspace_slug: Directory name in sandbox (e.g., "default").
+                           Files are stored in /workspace/{workspace_slug}/.
+        """
         key = self._key(user_id)
 
         # Reuse existing sandbox (user-level)
@@ -91,7 +98,7 @@ class SandboxManager:
             await self.destroy(sandbox, sync=True)
 
         # Create new sandbox
-        sandbox = await self._create(user_id, session_id, workspace_id)
+        sandbox = await self._create(user_id, session_id, workspace_id, workspace_slug)
         self._active[key] = sandbox
         return sandbox
 
@@ -142,7 +149,9 @@ class SandboxManager:
         # Extract files before destroying container
         if sync and self._workspace_storage:
             try:
-                await self._workspace_storage.extract_and_sync(self, sandbox, sandbox.workspace_id)
+                await self._workspace_storage.extract_and_sync(
+                    self, sandbox, sandbox.workspace_id, sandbox.workspace_slug
+                )
             except Exception as e:
                 logger.warning(
                     "sandbox_destroy_sync_failed",
@@ -212,7 +221,7 @@ class SandboxManager:
                 if self._workspace_storage:
                     try:
                         stats = await self._workspace_storage.extract_and_sync(
-                            self, sandbox, sandbox.workspace_id
+                            self, sandbox, sandbox.workspace_id, sandbox.workspace_slug
                         )
                         if stats.files_synced > 0:
                             logger.info(
@@ -229,7 +238,7 @@ class SandboxManager:
 
     # ---- Internal ----
 
-    async def _create(self, user_id: str, session_id: str, workspace_id: str) -> Sandbox:
+    async def _create(self, user_id: str, session_id: str, workspace_id: str, workspace_slug: str) -> Sandbox:
         """Create a new sandbox container with tmpfs /workspace (no Docker volumes)."""
         container_name = f"aio-sandbox-{uuid4().hex[:8]}"
 
@@ -271,6 +280,7 @@ class SandboxManager:
             user_id=user_id,
             session_id=session_id,
             workspace_id=workspace_id,
+            workspace_slug=workspace_slug,
             created_at=datetime.utcnow(),
         )
 
@@ -279,16 +289,20 @@ class SandboxManager:
             container_id=container.id[:12],
             session_id=session_id,
             workspace_id=workspace_id,
+            workspace_slug=workspace_slug,
         )
 
-        # Inject workspace files from MinIO
+        # Inject workspace files from MinIO into /workspace/{workspace_slug}/
         if self._workspace_storage:
             try:
-                stats = await self._workspace_storage.inject_files(self, sandbox, workspace_id)
+                stats = await self._workspace_storage.inject_files(
+                    self, sandbox, workspace_id, workspace_slug
+                )
                 if stats.files_synced > 0:
                     logger.info(
                         "sandbox_files_injected",
                         workspace_id=workspace_id,
+                        workspace_slug=workspace_slug,
                         files=stats.files_synced,
                         bytes=stats.bytes_transferred,
                     )

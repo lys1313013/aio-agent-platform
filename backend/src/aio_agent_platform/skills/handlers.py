@@ -138,7 +138,7 @@ async def handle_search_skills(arguments: dict, user_id: str, session_id: str, *
 
 
 async def handle_view_skill(arguments: dict, user_id: str, session_id: str,
-                             tool_executor=None, workspace_id=None, **kwargs) -> str:
+                             tool_executor=None, workspace_id=None, workspace_slug=None, **kwargs) -> str:
     """Handle view_skill tool call — view full skill content and deploy files."""
     skill_id_str = arguments.get("skill_id", "")
 
@@ -184,6 +184,7 @@ async def handle_view_skill(arguments: dict, user_id: str, session_id: str,
                         user_id=user_id,
                         session_id=session_id,
                         workspace_id=workspace_id or user_id,
+                        workspace_slug=workspace_slug,
                     )
                     _append_execution_log(skill, {
                         "timestamp": datetime.now(UTC).isoformat(),
@@ -313,7 +314,7 @@ async def handle_create_skill(arguments: dict, user_id: str, session_id: str, **
 
 
 async def handle_deploy_skill_files(arguments: dict, user_id: str, session_id: str,
-                                     tool_executor=None, workspace_id=None, **kwargs) -> str:
+                                     tool_executor=None, workspace_id=None, workspace_slug=None, **kwargs) -> str:
     """Handle deploy_skill_files tool call — push skill files to sandbox."""
     skill_id_str = arguments.get("skill_id", "")
 
@@ -358,6 +359,7 @@ async def handle_deploy_skill_files(arguments: dict, user_id: str, session_id: s
                 user_id=user_id,
                 session_id=session_id,
                 workspace_id=workspace_id or user_id,
+                workspace_slug=workspace_slug,
             )
         except Exception as e:
             return f"Error deploying files: {e}"

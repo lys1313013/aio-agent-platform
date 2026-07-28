@@ -253,14 +253,15 @@ async def _get_memory_top_k(db: AsyncSession, user_id: UUID) -> int:
     return config.memory_top_k if config else settings.agent.memory_top_k
 
 
-async def _resolve_workspace_id(
+async def _resolve_workspace(
     db: AsyncSession,
     session: Session,
     user_id: UUID,
-) -> UUID:
+):
     """
-    Resolve the workspace_id for a chat session.
+    Resolve the workspace for a chat session.
 
+    Returns (workspace_id, workspace_slug).
     Sandbox is user-bound: all sessions use the user's default workspace.
     Always uses the default workspace, overriding any previously assigned value.
     """
@@ -272,7 +273,7 @@ async def _resolve_workspace_id(
         session.workspace_id = workspace.id
         await db.flush()
 
-    return workspace.id
+    return workspace.id, workspace.slug
 
 
 async def _load_agent(
@@ -702,6 +703,7 @@ async def _build_agent_loop(
     delegation: DelegationContext | None = None,
     event_queue: asyncio.Queue | None = None,
     workspace_id: UUID | None = None,
+    workspace_slug: str | None = None,
 ) -> AgentLoop:
     """Create an AgentLoop instance using the specified or default model from DB.
 
@@ -756,6 +758,7 @@ async def _build_agent_loop(
         delegation=delegation,
         event_queue=event_queue,
         workspace_id=workspace_id,
+        workspace_slug=workspace_slug,
     )
 
 
@@ -878,7 +881,7 @@ async def upload_workspace_file(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    workspace_id = await _resolve_workspace_id(db, session, user.id)
+    workspace_id, _workspace_slug = await _resolve_workspace(db, session, user.id)
 
     # Read file data
     data = await file.read()
@@ -1031,7 +1034,7 @@ async def chat(
     )
 
     # Build agent loop (using agent's model)
-    workspace_id = await _resolve_workspace_id(db, session, user.id)
+    workspace_id, workspace_slug = await _resolve_workspace(db, session, user.id)
     agent_loop = await _build_agent_loop(
         tool_executor, system_prompt, db,
         agent_model_id=agent_model_id,
@@ -1039,6 +1042,7 @@ async def chat(
         agent_max_iterations=agent_max_iterations,
         agent_enable_retry=agent_enable_retry,
         workspace_id=workspace_id,
+        workspace_slug=workspace_slug,
     )
 
     # Convert Pydantic AttachmentOut objects to dicts for JSONB storage and build_user_content
@@ -1387,7 +1391,7 @@ async def chat_stream(
                 agent_model_id = agent.model_id if agent else None
                 agent_temperature = agent.temperature if agent else None
                 agent_max_iterations = agent.max_iterations if agent else None
-                workspace_id = await _resolve_workspace_id(gen_db, session, user.id)
+                workspace_id, workspace_slug = await _resolve_workspace(gen_db, session, user.id)
                 # Commit workspace_id so it's persisted
                 await gen_db.commit()
 
@@ -1401,6 +1405,7 @@ async def chat_stream(
                         max_depth=settings.agent.max_delegation_depth,
                         event_queue=event_queue,
                         workspace_id=workspace_id,
+                        workspace_slug=workspace_slug,
                     )
 
                 # Build agent loop (using agent's model)
@@ -1413,6 +1418,7 @@ async def chat_stream(
                     delegation=delegation,
                     event_queue=event_queue,
                     workspace_id=workspace_id,
+                    workspace_slug=workspace_slug,
                 )
                 logger.info(
                     "stream_agent_loop_ready",
@@ -2009,7 +2015,7 @@ async def chat_websocket(
                 agent_model_id = agent.model_id if agent else None
                 agent_temperature = agent.temperature if agent else None
                 agent_max_iterations = agent.max_iterations if agent else None
-                workspace_id = await _resolve_workspace_id(db, session, user_id)
+                workspace_id, workspace_slug = await _resolve_workspace(db, session, user_id)
                 agent_loop = await _build_agent_loop(
                     tool_executor, system_prompt, db,
                     agent_model_id=agent_model_id,
@@ -2017,6 +2023,7 @@ async def chat_websocket(
                     agent_max_iterations=agent_max_iterations,
                     agent_enable_retry=agent_enable_retry,
                     workspace_id=workspace_id,
+                    workspace_slug=workspace_slug,
                 )
                 logger.info("Agent loop 已创建，开始处理...")
 

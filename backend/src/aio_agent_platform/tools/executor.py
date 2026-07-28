@@ -96,11 +96,14 @@ class ToolExecutor:
         delegation: DelegationContext | None = None,
         event_queue: asyncio.Queue | None = None,
         workspace_id: str | None = None,
+        workspace_slug: str | None = None,
         allowed_tools: set[str] | None = None,
     ) -> ToolResult:
         """Execute a tool with security checks and sandbox dispatch.
 
         Args:
+            workspace_id: Workspace ID for file operations
+            workspace_slug: Workspace slug (directory name in sandbox)
             allowed_tools: If set, only tools in this set can be executed.
                 None means all tools are allowed (default for parent agents).
         """
@@ -192,13 +195,14 @@ class ToolExecutor:
             # 3. Execute
             if tool.requires_sandbox:
                 output = await self._execute_in_sandbox(
-                    tool_name, arguments, user_id, session_id, workspace_id
+                    tool_name, arguments, user_id, session_id, workspace_id, workspace_slug
                 )
             else:
                 output = await self._execute_direct(
                     tool_name, arguments, user_id, session_id, delegation, event_queue,
                     tool_call_id=tool_call_id,
                     workspace_id=workspace_id,
+                    workspace_slug=workspace_slug,
                 )
 
             # 4. Truncate
@@ -290,11 +294,14 @@ class ToolExecutor:
         user_id: str,
         session_id: str,
         workspace_id: str | None = None,
+        workspace_slug: str | None = None,
     ) -> str:
         """Execute a tool inside the user's sandbox container."""
         # workspace_id is required for stateless sandbox; fall back to user_id for compat
         ws_id = workspace_id or user_id
-        sandbox = await self.sandbox_mgr.get_or_create(user_id, session_id, ws_id)
+        # workspace_slug is required; fall back to "default" for backward compat
+        ws_slug = workspace_slug or "default"
+        sandbox = await self.sandbox_mgr.get_or_create(user_id, session_id, ws_id, ws_slug)
 
         if tool_name == "run_shell":
             command = args.get("command", "")
@@ -305,15 +312,15 @@ class ToolExecutor:
             return await self._run_code(sandbox, args)
 
         elif tool_name == "read_file":
-            path = self._sandbox_path(args["path"])
+            path = self._sandbox_path(args["path"], ws_slug)
             offset = args.get("offset")
             limit = args.get("limit", 200)
 
             # Size guard: check file size before reading
-            file_size = await self._get_file_size(sandbox, path)
+            file_size = await self._get_file_size(sandbox, path, ws_slug)
             if file_size is not None and file_size > self.SAFE_READ_LIMIT:
                 if offset is None:
-                    preview = await self._read_file_range(sandbox, path, 0, 20)
+                    preview = await self._read_file_range(sandbox, path, 0, 20, ws_slug)
                     return (
                         f"⚠️ 文件 {path} 大小为 {file_size:,} 字节 ({file_size / (1024*1024):.1f} MB)，"
                         f"超过安全读取上限 ({self.SAFE_READ_LIMIT:,} 字节)。\n\n"
@@ -325,16 +332,16 @@ class ToolExecutor:
                         f"文件前 20 行预览:\n{preview}"
                     )
 
-            return await self._read_file_range(sandbox, path, offset or 0, limit)
+            return await self._read_file_range(sandbox, path, offset or 0, limit, ws_slug)
 
         elif tool_name == "write_file":
-            path = self._sandbox_path(args["path"])
+            path = self._sandbox_path(args["path"], ws_slug)
             content = args["content"]
             # Use base64 to avoid shell escaping issues
             import base64
 
             b64_content = base64.b64encode(content.encode()).decode()
-            qp = self._qpath(path)
+            qp = self._qpath(path, ws_slug)
             cmd = (
                 f"mkdir -p $(dirname {qp}) && "
                 f"echo '{b64_content}' | base64 -d > {qp}"
@@ -345,43 +352,43 @@ class ToolExecutor:
             )
 
         elif tool_name == "edit_file":
-            path = self._sandbox_path(args["path"])
+            path = self._sandbox_path(args["path"], ws_slug)
             old_str = args["old_str"]
             new_str = args["new_str"]
-            return await self._edit_file_in_sandbox(sandbox, path, old_str, new_str)
+            return await self._edit_file_in_sandbox(sandbox, path, old_str, new_str, ws_slug)
 
         elif tool_name == "list_directory":
-            path = self._sandbox_path(args.get("path", "."))
-            result = await self.sandbox_mgr.execute(sandbox, f"ls -la {self._qpath(path)}")
+            path = self._sandbox_path(args.get("path", "."), ws_slug)
+            result = await self.sandbox_mgr.execute(sandbox, f"ls -la {self._qpath(path, ws_slug)}")
             return self._format_exec_result(result)
 
         elif tool_name == "file_info":
-            path = self._sandbox_path(args["path"])
+            path = self._sandbox_path(args["path"], ws_slug)
             cache_key = f"{ws_id}:{path}"
             if cache_key in self._file_meta_cache:
                 return self._format_file_meta(self._file_meta_cache[cache_key])
-            meta = await self._analyze_file(sandbox, path)
+            meta = await self._analyze_file(sandbox, path, ws_slug)
             self._file_meta_cache[cache_key] = meta
             return self._format_file_meta(meta)
 
         elif tool_name == "file_grep":
-            path = self._sandbox_path(args["path"])
+            path = self._sandbox_path(args["path"], ws_slug)
             pattern = args["pattern"]
             context_lines = min(args.get("context_lines", 2), 10)
             max_matches = min(args.get("max_matches", 20), 100)
             ignore_case = args.get("ignore_case", True)
-            return await self._file_grep(sandbox, path, pattern, context_lines, max_matches, ignore_case)
+            return await self._file_grep(sandbox, path, pattern, context_lines, max_matches, ignore_case, ws_slug)
 
         elif tool_name == "file_query":
-            path = self._sandbox_path(args["path"])
+            path = self._sandbox_path(args["path"], ws_slug)
             query = args["query"]
             self._validate_sql(query)
             return await self._file_query(sandbox, path, query)
 
         elif tool_name == "read_pdf":
-            path = self._sandbox_path(args.get("path") or args.get("file_path") or "")
+            path = self._sandbox_path(args.get("path") or args.get("file_path") or "", ws_slug)
             return await self._read_pdf(
-                sandbox, path, args.get("start_page"), args.get("end_page")
+                sandbox, path, args.get("start_page"), args.get("end_page"), ws_slug
             )
 
         else:
@@ -390,14 +397,24 @@ class ToolExecutor:
     # ---- File helpers ----
 
     @staticmethod
-    def _sandbox_path(path: str) -> str:
+    def _sandbox_path(path: str, workspace_slug: str | None = None) -> str:
         """Normalize a file path for sandbox commands.
 
         Accepts both relative (uploads/file.csv) and absolute
-        (/workspace/uploads/file.csv) forms, always returning
-        a path relative to /workspace (e.g. uploads/file.csv).
+        (/workspace/uploads/file.csv or /workspace/{slug}/uploads/file.csv) forms,
+        always returning a path relative to the workspace directory.
+
+        Args:
+            path: The file path to normalize
+            workspace_slug: If provided, strips /workspace/{slug}/ prefix
         """
         p = path
+        if workspace_slug:
+            prefix = f"/workspace/{workspace_slug}/"
+            if p.startswith(prefix):
+                p = p[len(prefix):]
+            elif p == f"/workspace/{workspace_slug}":
+                p = ""
         if p.startswith("/workspace/"):
             p = p[len("/workspace/"):]
         elif p == "/workspace":
@@ -405,20 +422,26 @@ class ToolExecutor:
         return p.lstrip("/")
 
     @staticmethod
-    def _qpath(path: str) -> str:
+    def _qpath(path: str, workspace_slug: str | None = None) -> str:
         """Shell-quote a workspace path for safe interpolation into commands.
 
         Handles spaces and special characters in filenames and prevents
-        shell injection. ``path`` is relative to /workspace.
+        shell injection. ``path`` is relative to /workspace/{workspace_slug}.
+
+        Args:
+            path: Relative path within workspace
+            workspace_slug: Directory name in sandbox
         """
         import shlex
 
+        if workspace_slug:
+            return shlex.quote(f"/workspace/{workspace_slug}/{path}")
         return shlex.quote(f"/workspace/{path}")
 
-    async def _get_file_size(self, sandbox, path: str) -> int | None:
+    async def _get_file_size(self, sandbox, path: str, workspace_slug: str | None = None) -> int | None:
         """Get file size in bytes, or None if file doesn't exist."""
         result = await self.sandbox_mgr.execute(
-            sandbox, f"stat -c%s {self._qpath(path)} 2>/dev/null || echo ''"
+            sandbox, f"stat -c%s {self._qpath(path, workspace_slug)} 2>/dev/null || echo ''"
         )
         try:
             return int(result.stdout.strip())
@@ -426,7 +449,7 @@ class ToolExecutor:
             return None
 
     async def _read_file_range(
-        self, sandbox, path: str, offset: int, limit: int
+        self, sandbox, path: str, offset: int, limit: int, workspace_slug: str | None = None,
     ) -> str:
         """Read a line range from a file using sed."""
         limit = min(limit, 500)
@@ -434,12 +457,12 @@ class ToolExecutor:
         start = offset + 1
         end = offset + limit
         result = await self.sandbox_mgr.execute(
-            sandbox, f"sed -n '{start},{end}p' {self._qpath(path)}"
+            sandbox, f"sed -n '{start},{end}p' {self._qpath(path, workspace_slug)}"
         )
         output = self._format_exec_result(result)
         # Get total line count for context
         wc_result = await self.sandbox_mgr.execute(
-            sandbox, f"wc -l < {self._qpath(path)}"
+            sandbox, f"wc -l < {self._qpath(path, workspace_slug)}"
         )
         try:
             total_lines = int(wc_result.stdout.strip())
@@ -451,6 +474,7 @@ class ToolExecutor:
     async def _file_grep(
         self, sandbox, path: str, pattern: str,
         context_lines: int, max_matches: int, ignore_case: bool,
+        workspace_slug: str | None = None,
     ) -> str:
         """Search a file using grep with context lines."""
         # Escape single quotes in pattern for shell
@@ -458,7 +482,7 @@ class ToolExecutor:
         flags = "-i" if ignore_case else ""
         cmd = (
             f"grep -n {flags} -A {context_lines} -B {context_lines} "
-            f"-m {max_matches} '{escaped_pattern}' {self._qpath(path)}"
+            f"-m {max_matches} '{escaped_pattern}' {self._qpath(path, workspace_slug)}"
         )
         result = await self.sandbox_mgr.execute(sandbox, cmd)
         output = self._format_exec_result(result)
@@ -500,7 +524,7 @@ class ToolExecutor:
             if re.search(rf'\b{kw}\b', cleaned):
                 raise SecurityError(f"SQL 中禁止使用 {kw}（只允许 SELECT 查询）")
 
-    async def _analyze_file(self, sandbox, path: str) -> dict:
+    async def _analyze_file(self, sandbox, path: str, workspace_slug: str | None = None) -> dict:
         """Analyze a file in the sandbox and return structured metadata."""
         meta: dict = {
             "path": path,
@@ -512,13 +536,13 @@ class ToolExecutor:
         }
 
         # Get file size
-        file_size = await self._get_file_size(sandbox, path)
+        file_size = await self._get_file_size(sandbox, path, workspace_slug)
         if file_size is not None:
             meta["byte_size"] = file_size
 
         # Detect file type via 'file' command (fall back to extension)
         file_result = await self.sandbox_mgr.execute(
-            sandbox, f"file -b --mime-type {self._qpath(path)} 2>/dev/null || echo ''"
+            sandbox, f"file -b --mime-type {self._qpath(path, workspace_slug)} 2>/dev/null || echo ''"
         )
         mime = file_result.stdout.strip()
         if not mime:
@@ -529,7 +553,7 @@ class ToolExecutor:
 
         # Detect line count for text files
         wc_result = await self.sandbox_mgr.execute(
-            sandbox, f"wc -l < {self._qpath(path)} 2>/dev/null || echo '0'"
+            sandbox, f"wc -l < {self._qpath(path, workspace_slug)} 2>/dev/null || echo '0'"
         )
         try:
             meta["line_count"] = int(wc_result.stdout.strip())
@@ -538,14 +562,14 @@ class ToolExecutor:
 
         # Get encoding
         enc_result = await self.sandbox_mgr.execute(
-            sandbox, f"file -b --mime-encoding {self._qpath(path)}"
+            sandbox, f"file -b --mime-encoding {self._qpath(path, workspace_slug)}"
         )
         if enc_result.stdout.strip():
             meta["encoding"] = enc_result.stdout.strip()
 
         # Get preview (first 30 lines / 2000 chars)
         preview_result = await self.sandbox_mgr.execute(
-            sandbox, f"head -30 {self._qpath(path)} | cut -c1-2000"
+            sandbox, f"head -30 {self._qpath(path, workspace_slug)} | cut -c1-2000"
         )
         meta["preview"] = self._format_exec_result(preview_result)
 
@@ -553,35 +577,36 @@ class ToolExecutor:
         if mime == "text/csv" or path.lower().endswith((".csv", ".tsv")):
             meta["file_type"] = "csv"
             meta["csv_delimiter"] = "\t" if path.lower().endswith(".tsv") else ","
-            meta.update(await self._analyze_csv(sandbox, path))
+            meta.update(await self._analyze_csv(sandbox, path, workspace_slug))
         elif mime == "application/json" or path.lower().endswith(".json"):
             meta["file_type"] = "json"
-            meta.update(await self._analyze_json(sandbox, path))
+            meta.update(await self._analyze_json(sandbox, path, workspace_slug))
         elif path.lower().endswith(".jsonl"):
             meta["file_type"] = "jsonl"
-            meta.update(await self._analyze_jsonl(sandbox, path))
+            meta.update(await self._analyze_jsonl(sandbox, path, workspace_slug))
         elif mime == "application/pdf" or path.lower().endswith(".pdf"):
             meta["file_type"] = "pdf"
-            meta.update(await self._analyze_pdf(sandbox, path))
+            meta.update(await self._analyze_pdf(sandbox, path, workspace_slug))
         elif mime and mime.startswith("text/"):
             meta["file_type"] = "text"
         elif path.lower().endswith((".zip", ".tar", ".tar.gz", ".tgz")):
             meta["file_type"] = "archive"
-            meta.update(await self._analyze_archive(sandbox, path))
+            meta.update(await self._analyze_archive(sandbox, path, workspace_slug))
         elif path.lower().endswith(".log"):
             meta["file_type"] = "log"
 
         return meta
 
-    async def _analyze_csv(self, sandbox, path: str) -> dict:
+    async def _analyze_csv(self, sandbox, path: str, workspace_slug: str | None = None) -> dict:
         """Analyze CSV file structure."""
         import base64
 
+        ws_path = f"/workspace/{workspace_slug}/{path}" if workspace_slug else f"/workspace/{path}"
         result: dict = {"csv_columns": []}
         try:
             py_script = f"""
 import csv, io, sys
-path = '/workspace/{path}'
+path = {ws_path!r}
 with open(path, 'r', errors='replace') as f:
     sample = f.read(65536)
 dialect = csv.Sniffer().sniff(sample, delimiters=',;\\t|')
@@ -604,7 +629,7 @@ for i, h in enumerate(headers):
             if "CSV_PARSE_ERROR" in output:
                 # Fallback: just read header line
                 r2 = await self.sandbox_mgr.execute(
-                    sandbox, f"head -1 {self._qpath(path)}"
+                    sandbox, f"head -1 {self._qpath(path, workspace_slug)}"
                 )
                 headers = r2.stdout.strip().split(",")
                 result["csv_columns"] = [
@@ -629,15 +654,16 @@ for i, h in enumerate(headers):
             pass
         return result
 
-    async def _analyze_json(self, sandbox, path: str) -> dict:
+    async def _analyze_json(self, sandbox, path: str, workspace_slug: str | None = None) -> dict:
         """Analyze JSON file structure."""
         import base64
 
+        ws_path = f"/workspace/{workspace_slug}/{path}" if workspace_slug else f"/workspace/{path}"
         result: dict = {"json_top_type": "unknown"}
         try:
             py_script = f"""
 import json
-with open('/workspace/{path}', 'r') as f:
+with open({ws_path!r}, 'r') as f:
     data = json.load(f)
 t = type(data).__name__
 print(f"top_type:{{t}}")
@@ -663,12 +689,12 @@ elif isinstance(data, list):
             pass
         return result
 
-    async def _analyze_jsonl(self, sandbox, path: str) -> dict:
+    async def _analyze_jsonl(self, sandbox, path: str, workspace_slug: str | None = None) -> dict:
         """Analyze JSONL file structure."""
         result: dict = {}
         try:
             r = await self.sandbox_mgr.execute(
-                sandbox, f"head -1 {self._qpath(path)} | python3 -c "
+                sandbox, f"head -1 {self._qpath(path, workspace_slug)} | python3 -c "
                 f"\"import sys,json; d=json.loads(sys.stdin.read()); "
                 f"print('keys:'+'|'.join(list(d.keys())[:20]))\" 2>/dev/null || echo ''"
             )
@@ -678,12 +704,12 @@ elif isinstance(data, list):
             pass
         return result
 
-    async def _analyze_pdf(self, sandbox, path: str) -> dict:
+    async def _analyze_pdf(self, sandbox, path: str, workspace_slug: str | None = None) -> dict:
         """Analyze PDF file metadata."""
         result: dict = {}
         try:
             r = await self.sandbox_mgr.execute(
-                sandbox, f"pdfinfo {self._qpath(path)} 2>/dev/null || echo ''"
+                sandbox, f"pdfinfo {self._qpath(path, workspace_slug)} 2>/dev/null || echo ''"
             )
             for line in r.stdout.strip().split("\n"):
                 if ":" in line:
@@ -700,6 +726,7 @@ elif isinstance(data, list):
         path: str,
         start_page: int | None,
         end_page: int | None,
+        workspace_slug: str | None = None,
     ) -> str:
         """Extract text from a PDF using pdftotext (poppler-utils)."""
         if not path:
@@ -724,9 +751,7 @@ elif isinstance(data, list):
             range_flags += f" -l {end}"
 
         # -layout preserves the visual column/table layout; write to stdout (-)
-        import shlex
-
-        quoted = shlex.quote(f"/workspace/{path}")
+        quoted = self._qpath(path, workspace_slug)
         result = await self.sandbox_mgr.execute(
             sandbox,
             f"pdftotext -layout{range_flags} {quoted} - 2>&1",
@@ -746,12 +771,12 @@ elif isinstance(data, list):
             header += f" (页 {start or 1}–{end or '末'})"
         return self._truncate(f"{header}\n\n{text}")
 
-    async def _analyze_archive(self, sandbox, path: str) -> dict:
+    async def _analyze_archive(self, sandbox, path: str, workspace_slug: str | None = None) -> dict:
         """Analyze archive file structure."""
         result: dict = {"file_tree": []}
         try:
             ext = path.lower()
-            qp = self._qpath(path)
+            qp = self._qpath(path, workspace_slug)
             if ext.endswith(".zip"):
                 cmd = f"unzip -l {qp} 2>/dev/null | tail -n +4 | head -100"
             elif ext.endswith((".tar.gz", ".tgz")):
@@ -857,17 +882,18 @@ elif isinstance(data, list):
         result = await self.sandbox_mgr.execute(sandbox, run_cmd)
         return self._format_exec_result(result)
 
-    async def _edit_file_in_sandbox(self, sandbox, path: str, old_str: str, new_str: str) -> str:
+    async def _edit_file_in_sandbox(self, sandbox, path: str, old_str: str, new_str: str, workspace_slug: str | None = None) -> str:
         """
         Edit a file by reading, replacing, and writing back.
 
         Uses Python inside the sandbox for reliable string replacement
         (avoids fragile sed escaping).
         """
+        ws_path = f"/workspace/{workspace_slug}/{path}" if workspace_slug else f"/workspace/{path}"
         # Use Python for reliable string replacement
         python_code = f"""
 import sys
-path = '/workspace/{path}'
+path = {ws_path!r}
 try:
     with open(path, 'r') as f:
         content = f.read()
@@ -897,6 +923,7 @@ except Exception as e:
         event_queue: asyncio.Queue | None = None,
         tool_call_id: str | None = None,
         workspace_id: str | None = None,
+        workspace_slug: str | None = None,
     ) -> str:
         """Execute a non-sandbox tool via registered direct handlers."""
         handler = self.direct_handlers.get(tool_name)
@@ -910,6 +937,7 @@ except Exception as e:
                 event_queue=event_queue,
                 tool_call_id=tool_call_id,
                 workspace_id=workspace_id,
+                workspace_slug=workspace_slug,
             )
         return f"Tool '{tool_name}' is not yet implemented."
 

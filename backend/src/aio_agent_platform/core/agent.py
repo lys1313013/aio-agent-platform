@@ -38,6 +38,7 @@ class DelegationContext:
     max_depth: int
     event_queue: asyncio.Queue | None = None
     workspace_id: UUID | None = None
+    workspace_slug: str | None = None
 
 
 @dataclass
@@ -49,6 +50,7 @@ class ToolContext:
     trust_level: str = "ask_dangerous"
     delegation: DelegationContext | None = None
     workspace_id: UUID | None = None
+    workspace_slug: str | None = None
 
 
 @dataclass
@@ -183,6 +185,7 @@ class AgentLoop:
         delegation: DelegationContext | None = None,
         event_queue: asyncio.Queue | None = None,
         workspace_id: UUID | None = None,
+        workspace_slug: str | None = None,
         allowed_tools: set[str] | None = None,
     ):
         self.provider = provider
@@ -193,6 +196,7 @@ class AgentLoop:
         self.delegation = delegation
         self.event_queue = event_queue
         self.workspace_id = workspace_id
+        self.workspace_slug = workspace_slug
         self._last_ask_user_output: str = ""
         # Tool permission whitelist: None means all tools allowed (parent agent),
         # set of tool names means only those tools can be executed (child agents).
@@ -219,6 +223,7 @@ class AgentLoop:
             trust_level=self.trust_level,
             delegation=self.delegation,
             workspace_id=self.workspace_id,
+            workspace_slug=self.workspace_slug,
         )
 
         # Build message list
@@ -354,6 +359,7 @@ class AgentLoop:
                         delegation=ctx.delegation,
                         event_queue=self.event_queue,
                         workspace_id=str(ctx.workspace_id) if ctx.workspace_id else None,
+                        workspace_slug=ctx.workspace_slug,
                         allowed_tools=self.allowed_tools,
                     )
                 )
@@ -548,6 +554,7 @@ class AgentLoop:
                 delegation=ctx.delegation,
                 event_queue=self.event_queue,
                 workspace_id=str(ctx.workspace_id) if ctx.workspace_id else None,
+                workspace_slug=ctx.workspace_slug,
                 allowed_tools=self.allowed_tools,
             )
         except Exception as e:

@@ -1,7 +1,8 @@
-import { useState, useRef, useCallback, type FormEvent, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
-import { SendOutlined, StopOutlined, PictureOutlined, FileOutlined, CloseOutlined, LoadingOutlined, FileTextOutlined } from '@ant-design/icons';
-import { Input, Button, App, Image, Tooltip } from 'antd';
+import { useState, useRef, useCallback, useEffect, type FormEvent, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
+import { SendOutlined, StopOutlined, PictureOutlined, FileOutlined, CloseOutlined, LoadingOutlined, FileTextOutlined, FolderOutlined } from '@ant-design/icons';
+import { Input, Button, App, Image, Tooltip, Select } from 'antd';
 import { chatApi } from '@/lib/api';
+import { useChatStore } from '@/stores/chatStore';
 import type { ChatAttachment, FileAttachmentRef } from '@/lib/types';
 
 const { TextArea } = Input;
@@ -60,6 +61,14 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
   const imageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { message } = App.useApp();
+  const { workspaces, selectedWorkspaceId, isWorkspacesLoading, setSelectedWorkspace, loadWorkspaces } = useChatStore();
+
+  // Load workspaces on mount
+  useEffect(() => {
+    loadWorkspaces();
+  }, [loadWorkspaces]);
+
+  const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId);
 
   const readAsDataURL = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -426,6 +435,30 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
           />
         )}
       </form>
+
+      {/* Workspace selector */}
+      <div className="mx-auto max-w-3xl mt-2 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <FolderOutlined className="text-xs text-muted-foreground" />
+          <Select
+            size="small"
+            value={selectedWorkspaceId}
+            onChange={setSelectedWorkspace}
+            loading={isWorkspacesLoading}
+            style={{ minWidth: 160 }}
+            options={workspaces.map((ws) => ({
+              value: ws.id,
+              label: ws.is_default ? `${ws.name} (默认)` : ws.name,
+            }))}
+            placeholder="选择工作区"
+          />
+          {selectedWorkspace && (
+            <span className="text-xs text-muted-foreground">
+              文件将保存到 /workspace/{selectedWorkspace.slug}/
+            </span>
+          )}
+        </div>
+      </div>
 
       {isDragging && (
         <div className="fixed inset-0 bg-primary/10 border-2 border-dashed border-primary pointer-events-none z-50 flex items-center justify-center">
