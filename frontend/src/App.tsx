@@ -17,6 +17,7 @@ import ModelManagementPage from '@/pages/ModelManagementPage';
 import McpManagementPage from '@/pages/McpManagementPage';
 import KnowledgeManagementPage from '@/pages/KnowledgeManagementPage';
 import RemoteToolManagementPage from '@/pages/RemoteToolManagementPage';
+import ChannelsPage from '@/pages/ChannelsPage';
 import CronJobsPage from '@/pages/CronJobsPage';
 import TenantManagementPage from '@/pages/TenantManagementPage';
 import UserManagementPage from '@/pages/UserManagementPage';
@@ -92,6 +93,7 @@ export default function App() {
         <Route path="/mcp-servers" element={<McpManagementPage />} />
         <Route path="/knowledge" element={<KnowledgeManagementPage />} />
         <Route path="/remote-tools" element={<RemoteToolManagementPage />} />
+        <Route path="/channels" element={<ChannelsPage />} />
         <Route path="/cron-jobs" element={<CronJobsPage />} />
         <Route path="/tenants" element={<TenantManagementPage />} />
         <Route path="/users" element={<UserManagementPage />} />

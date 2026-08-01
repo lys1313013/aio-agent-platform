@@ -15,6 +15,8 @@ from aio_agent_platform.interface.routes import (
     admin_models_router,
     agent_api_router,
     agents_router,
+    channel_bindings_router,
+    channels_router,
     chat_router,
     confirmations_router,
     cron_jobs_router,
@@ -189,18 +191,32 @@ async def lifespan(app: FastAPI):
 
     async def _cron_job_executor(job, db):
         """Execute a cron job by running its agent with the configured message."""
-        from aio_agent_platform.db.models import Session as ChatSession
-        from aio_agent_platform.interface.routes.chat import (
-            _build_agent_loop,
-            _build_system_prompt_with_memories,
-            _filter_tools_by_agent,
-            _load_agent,
+        from sqlalchemy import select
+
+        from aio_agent_platform.core.chat import (
+            build_agent_loop,
+            build_system_prompt_with_memories,
+            filter_tools_by_agent,
+            load_agent,
         )
+        from aio_agent_platform.db.models import Session as ChatSession
+        from aio_agent_platform.db.models import User
 
         if not job.agent_id or not job.message:
             return
 
-        agent = await _load_agent(db, job.agent_id)
+        user_result = await db.execute(select(User).where(User.id == job.user_id))
+        job_user = user_result.scalar_one_or_none()
+        if not job_user:
+            import structlog
+            structlog.get_logger().warning(
+                "cron_job_user_not_found",
+                job_id=str(job.id),
+                user_id=str(job.user_id),
+            )
+            return
+
+        agent = await load_agent(db, job.agent_id, user=job_user)
         if not agent:
             import structlog
             structlog.get_logger().warning(
@@ -210,11 +226,11 @@ async def lifespan(app: FastAPI):
             )
             return
 
-        tools_list, tools_schema = _filter_tools_by_agent(tool_executor, agent)
-        system_prompt = await _build_system_prompt_with_memories(
+        tools_list, tools_schema = filter_tools_by_agent(tool_executor, agent)
+        system_prompt = await build_system_prompt_with_memories(
             db, job.user_id, job.message, tools_list, agent=agent,
         )
-        loop = await _build_agent_loop(
+        loop = await build_agent_loop(
             tool_executor, system_prompt, db,
             agent_model_id=agent.model_id,
             agent_temperature=agent.temperature,
@@ -295,9 +311,32 @@ async def lifespan(app: FastAPI):
             error=str(e),
         )
 
+    # 13. Channel connection manager — starts all enabled channel transports.
+    from aio_agent_platform.channels.connection_manager import ChannelConnectionManager
+    from aio_agent_platform.channels.feishu.webhook_transport import build_webhook_router
+
+    conn_manager = ChannelConnectionManager(tool_executor)
+    try:
+        async with factory() as startup_db:
+            await conn_manager.start_all(startup_db)
+        app.state.channel_connection_manager = conn_manager
+    except Exception as e:
+        import structlog
+        structlog.get_logger().warning(
+            "channel_manager_start_failed",
+            error=str(e),
+        )
+
+    # Mount the shared webhook router for all Feishu webhook channels
+    webhook_router = build_webhook_router()
+    app.include_router(webhook_router)
+
     yield
 
     # ---- Shutdown ----
+    conn_manager = getattr(app.state, "channel_connection_manager", None)
+    if conn_manager:
+        await conn_manager.stop_all()
     scheduler = getattr(app.state, "scheduler", None)
     if scheduler:
         await scheduler.shutdown()
@@ -347,6 +386,8 @@ def create_app() -> FastAPI:
     app.include_router(cron_jobs_router)
     app.include_router(tenants_router)
     app.include_router(users_router)
+    app.include_router(channels_router)
+    app.include_router(channel_bindings_router)
 
     # Health check
     @app.get("/health")

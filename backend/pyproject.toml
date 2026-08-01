@@ -14,60 +14,50 @@ dependencies = [
     # ---- LLM 调用 ----
     "openai>=1.60.0",
     "anthropic>=0.40.0",
-
     # ---- 认证 ----
     "PyJWT>=2.9.0",
     "bcrypt>=4.2.0",
-
     # ---- 数据验证 & 配置 ----
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
-
     # ---- 数据库 ----
     "sqlalchemy[asyncio]>=2.0.0",
     "asyncpg>=0.30.0",
     "alembic>=1.14.0",
-    "greenlet>=3.1.0",          # SQLAlchemy async 需要
+    "greenlet>=3.1.0", # SQLAlchemy async 需要
     "typing-extensions>=4.12.0",
-
     # ---- 文本检索 ----
     "rjieba>=0.2.0",
-
     # ---- Web 框架 ----
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
-    "python-multipart>=0.0.20",  # FastAPI 文件上传
-    "itsdangerous>=2.2.0",        # JWT secret 安全签名
-
+    "python-multipart>=0.0.20", # FastAPI 文件上传
+    "itsdangerous>=2.2.0", # JWT secret 安全签名
     # ---- HTTP ----
     "httpx>=0.28.0",
-
+    # ---- IM 渠道 (飞书等) ----
+    "websockets>=13.0", # 飞书 WebSocket 长连接
+    "cryptography>=43.0.0", # 飞书 Webhook 事件解密
     # ---- 模板 ----
     "jinja2>=3.1.0",
-
     # ---- 任务调度 ----
     "apscheduler>=3.11.0",
-
     # ---- CLI ----
     "rich>=13.9.0",
     "prompt-toolkit>=3.0.48",
-
     # ---- 沙盒 ----
     "docker>=7.1.0",
-
     # ---- 对象存储 ----
     "minio>=7.2.0",
-
     # ---- 日志 ----
     "structlog>=24.4.0",
-
     # ---- 工具 ----
     "python-dotenv>=1.0.0",
     "email-validator>=2.2.0",
-    "Pillow>=10.0.0",              # 图片压缩 (chat attachments)
-
+    "Pillow>=10.0.0", # 图片压缩 (chat attachments)
     # ---- 可观测性 ----
     "langfuse>=4.0.0",
+    "lark-oapi>=1.7.1",
 ]
 
 [project.optional-dependencies]
@@ -86,6 +76,9 @@ all = [
 aio-agent = "aio_agent_platform.interface.cli:main"
 aio-api = "aio_agent_platform.interface.api:run"
 aio-manage = "aio_agent_platform.manage:main"
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple"
 
 [build-system]
 requires = ["hatchling"]

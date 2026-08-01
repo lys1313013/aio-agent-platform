@@ -6,6 +6,8 @@ import {
   BulbOutlined,
   SaveOutlined,
   KeyOutlined,
+  LinkOutlined,
+  DisconnectOutlined,
 } from '@ant-design/icons';
 import {
   Tabs,
@@ -19,9 +21,13 @@ import {
   InputNumber,
   Spin,
   App,
+  Table,
+  Tag,
+  Popconfirm,
 } from 'antd';
 import type { TabsProps } from 'antd';
-import { settingsApi } from '@/lib/api';
+import { settingsApi, channelBindingsApi } from '@/lib/api';
+import type { ChannelBinding } from '@/lib/types';
 
 const { Text } = Typography;
 
@@ -32,6 +38,7 @@ export default function SettingsPage() {
     { key: 'profile', label: <span><UserOutlined /> 个人信息</span> },
     { key: 'security', label: <span><SafetyOutlined /> 安全设置</span> },
     { key: 'memory', label: <span><BulbOutlined /> 记忆配置</span> },
+    { key: 'channels', label: <span><LinkOutlined /> 渠道绑定</span> },
   ];
 
   return (
@@ -60,6 +67,7 @@ export default function SettingsPage() {
         {activeTab === 'profile' && <ProfileSettings />}
         {activeTab === 'security' && <SecuritySettings />}
         {activeTab === 'memory' && <MemorySettings />}
+        {activeTab === 'channels' && <ChannelBindings />}
       </div>
     </div>
   );
@@ -348,6 +356,135 @@ function MemorySettings() {
             </Button>
           </Form.Item>
         </Form>
+      </Card>
+    </div>
+  );
+}
+
+// ============================================================
+// Channel Bindings
+// ============================================================
+
+function ChannelBindings() {
+  const { message } = App.useApp();
+  const [bindForm] = Form.useForm();
+  const [bindings, setBindings] = useState<ChannelBinding[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [bindLoading, setBindLoading] = useState(false);
+
+  const fetchBindings = () => {
+    channelBindingsApi
+      .list()
+      .then(setBindings)
+      .catch((err) => message.error(`加载渠道绑定失败：${err.message}`))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(fetchBindings, []);
+
+  const handleBind = async (values: { code: string }) => {
+    setBindLoading(true);
+    try {
+      const result = await channelBindingsApi.bind(values.code.trim());
+      message.success(result.message || '绑定成功');
+      bindForm.resetFields();
+      fetchBindings();
+    } catch (err: any) {
+      message.error(err.message || '绑定失败');
+    } finally {
+      setBindLoading(false);
+    }
+  };
+
+  const handleUnbind = async (id: string) => {
+    try {
+      await channelBindingsApi.unbind(id);
+      message.success('已解绑');
+      fetchBindings();
+    } catch (err: any) {
+      message.error(err.message || '解绑失败');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex justify-center py-16">
+        <Spin size="large" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card
+        title="绑定渠道账号"
+        extra={<Text type="secondary">在飞书中向机器人发送 /bind 获取 6 位绑定码，在此输入完成账号合并。</Text>}
+      >
+        <Form form={bindForm} layout="inline" onFinish={handleBind}>
+          <Form.Item
+            name="code"
+            rules={[
+              { required: true, message: '请输入绑定码' },
+              { pattern: /^\d{6}$/, message: '绑定码为 6 位数字' },
+            ]}
+          >
+            <Input placeholder="6 位绑定码" maxLength={6} className="w-40 font-mono" />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" icon={<LinkOutlined />} loading={bindLoading}>
+              绑定
+            </Button>
+          </Form.Item>
+        </Form>
+      </Card>
+
+      <Card title="我的渠道绑定" extra={<Text type="secondary">已关联到当前账号的 IM 渠道身份。</Text>}>
+        <Table
+          rowKey="id"
+          size="small"
+          dataSource={bindings}
+          pagination={false}
+          locale={{ emptyText: '暂无渠道绑定' }}
+          columns={[
+            {
+              title: '外部用户 ID',
+              dataIndex: 'external_id',
+              render: (v: string) => <Text className="font-mono text-xs">{v}</Text>,
+            },
+            {
+              title: '绑定类型',
+              dataIndex: 'bind_type',
+              width: 120,
+              render: (v: string) =>
+                v === 'bound' ? <Tag color="green">已绑定</Tag> : <Tag>影子账号</Tag>,
+            },
+            {
+              title: '绑定时间',
+              dataIndex: 'created_at',
+              width: 180,
+              render: (v: string) => (v ? new Date(v).toLocaleString() : '-'),
+            },
+            {
+              title: '操作',
+              key: 'action',
+              width: 100,
+              render: (_: unknown, record: ChannelBinding) => (
+                <Popconfirm
+                  title="解绑该渠道？"
+                  description="解绑后该渠道身份将不再关联当前账号。"
+                  onConfirm={() => handleUnbind(record.id)}
+                  okText="解绑"
+                  okType="danger"
+                  cancelText="取消"
+                >
+                  <Button type="text" size="small" danger icon={<DisconnectOutlined />}>
+                    解绑
+                  </Button>
+                </Popconfirm>
+              ),
+            },
+          ]}
+        />
       </Card>
     </div>
   );

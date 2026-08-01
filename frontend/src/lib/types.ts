@@ -316,6 +316,61 @@ export interface RemoteToolTestResult {
   error: string | null;
 }
 
+// ---- Channels ----
+
+export type ChannelType = 'feishu' | 'dingtalk' | 'wecom';
+export type ChannelMode = 'websocket' | 'webhook';
+export type ChannelStatus = 'enabled' | 'disabled' | 'error';
+
+export interface Channel {
+  id: string;
+  channel_type: ChannelType;
+  name: string;
+  agent_id: string;
+  app_id: string;
+  mode: ChannelMode;
+  status: ChannelStatus;
+  channel_key: string;
+  tool_blacklist: string[];
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  webhook_url?: string;
+}
+
+export interface ChannelCreate {
+  name: string;
+  channel_type?: ChannelType;
+  agent_id: string;
+  app_id: string;
+  app_secret: string;
+  encrypt_key?: string | null;
+  verification_token?: string | null;
+  mode: ChannelMode;
+  tool_blacklist?: string[];
+}
+
+export interface ChannelUpdate {
+  name?: string;
+  agent_id?: string;
+  app_id?: string;
+  app_secret?: string;
+  encrypt_key?: string | null;
+  verification_token?: string | null;
+  mode?: ChannelMode;
+  tool_blacklist?: string[];
+}
+
+export interface ChannelBinding {
+  id: string;
+  channel_id: string;
+  external_id: string;
+  user_id: string;
+  bind_type: 'shadow' | 'bound';
+  created_at: string;
+  updated_at: string;
+}
+
 // ---- Agents ----
 
 export interface Agent {

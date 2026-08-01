@@ -90,6 +90,10 @@ class User(Base):
         String(16), default="user", comment="角色: user/admin/superadmin"
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否激活")
+    is_shadow: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false",
+        comment="是否影子账号(由渠道自动创建，不可登录 Web 端)",
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="创建时间")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now(), onupdate=func.now(), comment="更新时间"
@@ -1112,4 +1116,149 @@ class RemoteTool(Base):
         Index("idx_remote_tools_name", "name"),
         Index("idx_remote_tools_active", "is_active"),
         {"comment": "自定义远程工具配置表"},
+    )
+
+
+# ---- Channels (IM 渠道接入) ----
+
+
+class ChannelConfig(Base):
+    """IM 渠道配置 — 承载飞书/企微/钉钉等渠道的凭证与运行模式。"""
+    __tablename__ = "channel_configs"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=DEFAULT_TENANT_ID, comment="所属租户ID"
+    )
+    channel_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="feishu", comment="渠道类型: feishu/dingtalk/wecom"
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False, comment="渠道显示名称")
+    agent_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="绑定的 Agent ID")
+    app_id: Mapped[str] = mapped_column(String(128), nullable=False, comment="飞书 App ID")
+    app_secret_encrypted: Mapped[str] = mapped_column(Text, nullable=False, comment="App Secret(加密存储)")
+    encrypt_key_encrypted: Mapped[str | None] = mapped_column(Text, comment="Event Encrypt Key(仅 webhook 模式，加密)")
+    verification_token_encrypted: Mapped[str | None] = mapped_column(Text, comment="Verification Token(仅 webhook 模式，加密)")
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, comment="连接模式: websocket/webhook")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="disabled",
+        comment="状态: enabled/disabled/error",
+    )
+    channel_key: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True,
+        comment="Webhook URL 随机串(创建时生成，避免暴露自增 ID)",
+    )
+    tool_blacklist: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list,
+        comment="渠道级工具黑名单",
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, comment="最近一次错误信息")
+    created_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="创建人 ID")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+        comment="更新时间",
+    )
+
+    __table_args__ = (
+        Index("idx_channel_configs_tenant", "tenant_id"),
+        Index("idx_channel_configs_agent", "agent_id"),
+        Index("idx_channel_configs_channel_key", "channel_key"),
+        {"comment": "IM 渠道配置表"},
+    )
+
+
+class ChannelBinding(Base):
+    """渠道外部用户 ↔ 平台用户绑定关系。"""
+    __tablename__ = "channel_bindings"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    channel_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="渠道 ID")
+    external_id: Mapped[str] = mapped_column(String(128), nullable=False, comment="外部用户 ID(飞书 open_id)")
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="绑定的平台 user ID")
+    bind_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="shadow",
+        comment="绑定类型: shadow(影子账号) / bound(已关联真实账号)",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+        comment="更新时间",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("channel_id", "external_id", name="uq_channel_binding_external"),
+        Index("idx_channel_bindings_user", "user_id"),
+        Index("idx_channel_bindings_channel", "channel_id"),
+        {"comment": "渠道用户绑定表"},
+    )
+
+
+class ChannelBindCode(Base):
+    """绑定码 — 飞书用户发送 /bind 后生成，Web 端输入完成账号合并。"""
+    __tablename__ = "channel_bind_codes"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    code: Mapped[str] = mapped_column(String(8), nullable=False, comment="6 位数字绑定码")
+    channel_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="渠道 ID")
+    external_id: Mapped[str] = mapped_column(String(128), nullable=False, comment="外部用户 ID")
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, comment="过期时间(默认 10 分钟)"
+    )
+    used_by: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="消费该码的平台 user ID")
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="消费时间")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+
+    __table_args__ = (
+        Index("idx_bind_codes_code", "code"),
+        Index("idx_bind_codes_channel_external", "channel_id", "external_id"),
+        {"comment": "渠道绑定码表"},
+    )
+
+
+class ChannelSessionMapping(Base):
+    """渠道会话映射 — (channel_id, chat_id, external_id) → session_id。"""
+    __tablename__ = "channel_session_mappings"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    channel_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="渠道 ID")
+    chat_id: Mapped[str] = mapped_column(String(128), nullable=False, comment="飞书 chat_id(群聊/单聊会话)")
+    external_id: Mapped[str] = mapped_column(String(128), nullable=False, comment="外部用户 ID")
+    session_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="平台 session ID")
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True,
+        comment="是否活跃(/new 后置 false)",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+        comment="更新时间",
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_channel_session_active",
+            "channel_id", "chat_id", "external_id",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+        ),
+        Index("idx_channel_session_session", "session_id"),
+        {"comment": "渠道会话映射表"},
     )

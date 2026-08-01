@@ -25,6 +25,10 @@ import type {
   RemoteToolTestResult,
   CronJob,
   CronJobListResponse,
+  Channel,
+  ChannelCreate,
+  ChannelUpdate,
+  ChannelBinding,
 } from './types';
 
 const API_BASE = '/api';
@@ -993,6 +997,63 @@ export const remoteToolsApi = {
       method: 'POST',
       body: JSON.stringify({ arguments: args }),
     });
+  },
+};
+
+// ---- Admin: Channels (IM 渠道接入) ----
+
+export const channelsApi = {
+  list() {
+    return request<Channel[]>('/channels');
+  },
+
+  create(data: ChannelCreate) {
+    return request<Channel>('/channels', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  update(id: string, data: ChannelUpdate) {
+    return request<Channel>(`/channels/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  enable(id: string) {
+    return request<Channel>(`/channels/${id}/enable`, { method: 'POST' });
+  },
+
+  disable(id: string) {
+    return request<Channel>(`/channels/${id}/disable`, { method: 'POST' });
+  },
+
+  delete(id: string) {
+    return request<void>(`/channels/${id}`, { method: 'DELETE' });
+  },
+
+  bindings(id: string) {
+    return request<ChannelBinding[]>(`/channels/${id}/bindings`);
+  },
+};
+
+// ---- User: Channel Bindings ----
+
+export const channelBindingsApi = {
+  list() {
+    return request<ChannelBinding[]>('/channel-bindings');
+  },
+
+  bind(code: string) {
+    return request<{ message: string }>('/channel-bindings/bind', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    });
+  },
+
+  unbind(id: string) {
+    return request<void>(`/channel-bindings/${id}`, { method: 'DELETE' });
   },
 };
 

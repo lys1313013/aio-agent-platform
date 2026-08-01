@@ -3,6 +3,8 @@
 from aio_agent_platform.interface.routes.admin_models import router as admin_models_router
 from aio_agent_platform.interface.routes.agent_api import router as agent_api_router
 from aio_agent_platform.interface.routes.agents import router as agents_router
+from aio_agent_platform.interface.routes.channels import router as channels_router
+from aio_agent_platform.interface.routes.channels import user_router as channel_bindings_router
 from aio_agent_platform.interface.routes.chat import router as chat_router
 from aio_agent_platform.interface.routes.confirmations import router as confirmations_router
 from aio_agent_platform.interface.routes.cron_jobs import router as cron_jobs_router
@@ -23,6 +25,8 @@ __all__ = [
     "admin_models_router",
     "agent_api_router",
     "agents_router",
+    "channel_bindings_router",
+    "channels_router",
     "chat_router",
     "confirmations_router",
     "cron_jobs_router",
