@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useChatStore } from '@/stores/chatStore';
 import { chatApi } from '@/lib/api';
+import { useMessageQueue } from '@/hooks/useMessageQueue';
 import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import AgentConfigSidebar from '@/components/AgentConfigSidebar';
@@ -36,6 +37,20 @@ export default function AgentChatPage() {
   const abortRef = useRef<AbortController | null>(null);
   const [agent, setAgent] = useState<Agent | null>(null);
   const [agentLoading, setAgentLoading] = useState(true);
+
+  // Codex-style message queue: while streaming, sent messages are queued and
+  // flushed one by one as each turn completes.
+  const handleSendRef = useRef<(content: string, attachments?: ChatAttachment[], fileAttachments?: FileAttachmentRef[]) => Promise<void> | void>();
+  const interruptStream = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setStreaming(IDLE_STREAMING);
+  }, []);
+  const { queue, enqueue, remove: removeQueued, clear: clearQueue, flushNext, sendNow: sendQueuedNow } =
+    useMessageQueue(
+      (content, attachments, fileAttachments) => { void handleSendRef.current?.(content, attachments, fileAttachments); },
+      interruptStream,
+    );
 
   // Load agent info
   const loadAgent = useCallback((silent = false) => {
@@ -222,6 +237,8 @@ export default function AgentChatPage() {
 
               setStreaming(IDLE_STREAMING);
               refreshSessions(agentId);
+              // Auto-send the next queued message, if any
+              flushNext();
               break;
             }
 
@@ -414,8 +431,15 @@ export default function AgentChatPage() {
 
       abortRef.current = controller;
     },
-    [activeSessionId, sessions, agentId, navigate, createSession, renameSession, addMessage, message, refreshSessions],
+    [activeSessionId, sessions, agentId, navigate, createSession, renameSession, addMessage, message, refreshSessions, flushNext],
   );
+
+  handleSendRef.current = handleSend;
+
+  // Queue is tied to the session — switching sessions drops pending items.
+  useEffect(() => {
+    clearQueue();
+  }, [activeSessionId, clearQueue]);
 
   const handleNewChat = async () => {
     const newId = await createSession('新对话', agentId);
@@ -431,13 +455,24 @@ export default function AgentChatPage() {
   }, [activeSessionId, createSession, agentId]);
 
   const handleEditResend = (content: string) => {
+    if (streaming.isStreaming) {
+      enqueue(content, []);
+      return;
+    }
     handleSend(content);
   };
 
+  const handleStarterPrompt = (prompt: string) => {
+    if (streaming.isStreaming) {
+      enqueue(prompt, []);
+      return;
+    }
+    handleSend(prompt);
+  };
+
   const handleStop = () => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setStreaming(IDLE_STREAMING);
+    // Stop only cancels the current turn; queued messages stay in the queue.
+    interruptStream();
   };
 
   const currentMessages = activeSessionId ? messages[activeSessionId] || [] : [];
@@ -509,12 +544,15 @@ export default function AgentChatPage() {
           <ChatInput
             onSend={handleSend}
             onStop={handleStop}
-            disabled={streaming.isStreaming}
             isStreaming={streaming.isStreaming}
             sessionId={activeSessionId}
             onEnsureSession={handleEnsureSession}
             starterPrompts={agent?.starter_prompts ?? undefined}
-            onStarterPromptClick={handleSend}
+            onStarterPromptClick={handleStarterPrompt}
+            queue={queue}
+            onQueue={enqueue}
+            onQueueSendNow={sendQueuedNow}
+            onQueueRemove={removeQueued}
           />
         </div>
 

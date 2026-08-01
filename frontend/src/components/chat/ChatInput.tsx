@@ -1,8 +1,9 @@
 import { useState, useRef, useCallback, useEffect, type FormEvent, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
-import { SendOutlined, StopOutlined, PictureOutlined, FileOutlined, CloseOutlined, LoadingOutlined, FileTextOutlined, FolderOutlined } from '@ant-design/icons';
+import { SendOutlined, StopOutlined, PictureOutlined, FileOutlined, CloseOutlined, LoadingOutlined, FileTextOutlined, FolderOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { Input, Button, App, Image, Tooltip, Select } from 'antd';
 import { chatApi } from '@/lib/api';
 import { useChatStore } from '@/stores/chatStore';
+import { MAX_QUEUED_MESSAGES, type QueuedMessage } from '@/hooks/useMessageQueue';
 import type { ChatAttachment, FileAttachmentRef } from '@/lib/types';
 
 const { TextArea } = Input;
@@ -44,6 +45,13 @@ interface Props {
   onEnsureSession?: () => Promise<string | null>;
   starterPrompts?: StarterPrompt[];
   onStarterPromptClick?: (prompt: string) => void;
+  /** Queued messages waiting for the current turn to finish. */
+  queue?: QueuedMessage[];
+  /** Enqueue a message while streaming. Returns false when the queue is full. */
+  onQueue?: (text: string, attachments: ChatAttachment[], fileAttachments?: FileAttachmentRef[]) => boolean;
+  /** Interrupt the current turn and send this queued message immediately. */
+  onQueueSendNow?: (id: string) => void;
+  onQueueRemove?: (id: string) => void;
 }
 
 function formatSize(bytes: number): string {
@@ -52,7 +60,7 @@ function formatSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessionId, onEnsureSession, starterPrompts, onStarterPromptClick }: Props) {
+export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessionId, onEnsureSession, starterPrompts, onStarterPromptClick, queue, onQueue, onQueueSendNow, onQueueRemove }: Props) {
   const [input, setInput] = useState('');
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -177,7 +185,18 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
     const attachments = pending.filter((p) => p.status === 'done' && p.attachment).map((p) => p.attachment!);
     const fileAttachments = pendingFiles.filter((p) => p.status === 'done' && p.fileRef).map((p) => p.fileRef!);
     if (!text && attachments.length === 0 && fileAttachments.length === 0) return;
-    onSend(text, attachments, fileAttachments.length > 0 ? fileAttachments : undefined);
+
+    // While the agent is streaming, messages go into the queue instead of
+    // being sent directly (Codex-style).
+    if (isStreaming && onQueue) {
+      const queued = onQueue(text, attachments, fileAttachments.length > 0 ? fileAttachments : undefined);
+      if (!queued) {
+        message.warning(`最多排队 ${MAX_QUEUED_MESSAGES} 条消息`);
+        return;
+      }
+    } else {
+      onSend(text, attachments, fileAttachments.length > 0 ? fileAttachments : undefined);
+    }
     setInput('');
     setPending([]);
     setPendingFiles([]);
@@ -385,6 +404,49 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
         </div>
       )}
 
+      {/* Queued messages */}
+      {queue && queue.length > 0 && (
+        <div className="mx-auto max-w-3xl mb-3 space-y-1.5">
+          {queue.map((q, idx) => (
+            <div
+              key={q.id}
+              className="group flex items-center gap-2 rounded-lg border border-dashed border-primary/25 bg-primary/[0.04] px-3 py-2 text-sm transition-colors hover:border-primary/40"
+            >
+              <span className="flex-shrink-0 text-xs text-muted-foreground tabular-nums">
+                {idx + 1}
+              </span>
+              <span className="flex-1 truncate text-foreground">
+                {q.content || '[附件]'}
+              </span>
+              {(q.attachments.length > 0 || (q.fileAttachments && q.fileAttachments.length > 0)) && (
+                <span className="flex-shrink-0 text-xs text-muted-foreground">
+                  +{q.attachments.length + (q.fileAttachments?.length ?? 0)} 附件
+                </span>
+              )}
+              <span className="flex-shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
+                排队中
+              </span>
+              <Tooltip title="中断当前回复，立即发送">
+                <button
+                  onClick={() => onQueueSendNow?.(q.id)}
+                  className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-all group-hover:opacity-100 hover:bg-primary/10 hover:text-primary"
+                >
+                  <ThunderboltOutlined className="text-xs" />
+                </button>
+              </Tooltip>
+              <Tooltip title="移出队列">
+                <button
+                  onClick={() => onQueueRemove?.(q.id)}
+                  className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-all group-hover:opacity-100 hover:bg-red-500/10 hover:text-red-500"
+                >
+                  <CloseOutlined className="text-xs" />
+                </button>
+              </Tooltip>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Input form */}
       <form onSubmit={handleSubmit} className="mx-auto flex max-w-3xl items-end gap-3">
         <Button
@@ -411,19 +473,37 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder="输入消息... (Enter 发送, Shift+Enter 换行, 支持拖拽/粘贴图片和文件)"
+          placeholder={
+            isStreaming
+              ? '回复中，Enter 将消息加入队列，可随时继续输入...'
+              : '输入消息... (Enter 发送, Shift+Enter 换行, 支持拖拽/粘贴图片和文件)'
+          }
           autoSize={{ minRows: 1, maxRows: 6 }}
           disabled={disabled}
         />
         {isStreaming ? (
-          <Button
-            type="primary"
-            danger
-            icon={<StopOutlined />}
-            onClick={onStop}
-            className="flex-shrink-0"
-            style={{ height: 44, width: 44 }}
-          />
+          <>
+            <Tooltip title="加入队列 (Enter)">
+              <Button
+                type="primary"
+                htmlType="submit"
+                icon={<SendOutlined />}
+                disabled={disabled || !canSend}
+                className="flex-shrink-0"
+                style={{ height: 44, width: 44 }}
+              />
+            </Tooltip>
+            <Tooltip title="停止生成">
+              <Button
+                type="primary"
+                danger
+                icon={<StopOutlined />}
+                onClick={onStop}
+                className="flex-shrink-0"
+                style={{ height: 44, width: 44 }}
+              />
+            </Tooltip>
+          </>
         ) : (
           <Button
             type="primary"

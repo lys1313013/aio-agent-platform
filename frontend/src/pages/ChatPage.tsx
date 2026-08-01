@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { chatApi } from '@/lib/api';
+import { useMessageQueue } from '@/hooks/useMessageQueue';
 import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import ChatHistorySidebar from '@/components/chat/ChatHistorySidebar';
@@ -28,6 +29,20 @@ export default function ChatPage() {
   const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAMING);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Codex-style message queue: while streaming, sent messages are queued and
+  // flushed one by one as each turn completes.
+  const handleSendRef = useRef<(content: string) => Promise<void> | void>();
+  const interruptStream = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setStreaming(IDLE_STREAMING);
+  }, []);
+  const { queue, enqueue, remove: removeQueued, clear: clearQueue, flushNext, sendNow: sendQueuedNow } =
+    useMessageQueue(
+      (content) => { void handleSendRef.current?.(content); },
+      interruptStream,
+    );
 
   // Auto-scroll on new messages / streaming updates
   useEffect(() => {
@@ -181,6 +196,8 @@ export default function ChatPage() {
 
               // Reload sessions to update sidebar timestamps (without clearing activeSessionId)
               useChatStore.getState().refreshSessions();
+              // Auto-send the next queued message, if any
+              flushNext();
               break;
             }
 
@@ -374,21 +391,31 @@ export default function ChatPage() {
 
       abortRef.current = controller;
     },
-    [activeSessionId, sessions, createSession, renameSession, addMessage, message],
+    [activeSessionId, sessions, createSession, renameSession, addMessage, message, flushNext],
   );
+
+  handleSendRef.current = handleSend;
+
+  // Queue is tied to the session — switching sessions drops pending items.
+  useEffect(() => {
+    clearQueue();
+  }, [activeSessionId, clearQueue]);
 
   const handleNewChat = async () => {
     await createSession('新对话');
   };
 
   const handleEditResend = (content: string) => {
+    if (streaming.isStreaming) {
+      enqueue(content, []);
+      return;
+    }
     handleSend(content);
   };
 
   const handleStop = () => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setStreaming(IDLE_STREAMING);
+    // Stop only cancels the current turn; queued messages stay in the queue.
+    interruptStream();
   };
 
   const currentMessages = activeSessionId ? messages[activeSessionId] || [] : [];
@@ -435,8 +462,11 @@ export default function ChatPage() {
           <ChatInput
             onSend={handleSend}
             onStop={handleStop}
-            disabled={streaming.isStreaming}
             isStreaming={streaming.isStreaming}
+            queue={queue}
+            onQueue={enqueue}
+            onQueueSendNow={sendQueuedNow}
+            onQueueRemove={removeQueued}
           />
         </div>
 
