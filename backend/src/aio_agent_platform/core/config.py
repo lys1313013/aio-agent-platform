@@ -150,6 +150,10 @@ class ServerSettings(BaseSettings):
     port: int = Field(default=8100, ge=1, le=65535)
     cors_origins: str = Field(default="http://localhost:5273")
     log_level: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR)$")
+    reload: bool = Field(
+        default=False,
+        description="Auto-restart server when source code changes (dev only).",
+    )
     server_url: str = Field(
         default="",
         description="Public URL of this server (e.g. https://agent.example.com). "

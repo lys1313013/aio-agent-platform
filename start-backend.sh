@@ -2,4 +2,4 @@
 set -e
 
 cd "$(dirname "$0")/backend"
-uv run aio-api
+RELOAD=true uv run aio-api

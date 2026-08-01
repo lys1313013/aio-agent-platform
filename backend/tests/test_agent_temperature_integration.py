@@ -54,7 +54,7 @@ class TestAgentTemperatureIntegration:
         mock_tool_executor = MagicMock()
         mock_provider_instance = MagicMock()
 
-        with patch('aio_agent_platform.interface.routes.chat.create_provider') as mock_create:
+        with patch('aio_agent_platform.core.chat.create_provider') as mock_create:
             mock_create.return_value = mock_provider_instance
 
             # Call with agent_temperature=0.3
@@ -103,7 +103,7 @@ class TestAgentTemperatureIntegration:
         mock_tool_executor = MagicMock()
         mock_provider_instance = MagicMock()
 
-        with patch('aio_agent_platform.interface.routes.chat.create_provider') as mock_create:
+        with patch('aio_agent_platform.core.chat.create_provider') as mock_create:
             mock_create.return_value = mock_provider_instance
 
             # Call with agent_temperature=None (should use global)

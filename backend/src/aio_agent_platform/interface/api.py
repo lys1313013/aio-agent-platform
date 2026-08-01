@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -408,12 +409,21 @@ def run():
     """Run with uvicorn."""
     import uvicorn
 
+    kwargs: dict = {}
+    if settings.server.reload:
+        package_root = Path(__file__).resolve().parents[1]
+        kwargs.update(
+            reload=True,
+            reload_dirs=[str(package_root)],
+            reload_excludes=["*.pyc", "__pycache__", "*.log"],
+        )
+
     uvicorn.run(
         "aio_agent_platform.interface.api:app",
         host=settings.server.host,
         port=settings.server.port,
-        reload=False,
         log_level=settings.server.log_level.lower(),
+        **kwargs,
     )
 
 
