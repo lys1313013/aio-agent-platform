@@ -1,5 +1,6 @@
-import { PlusOutlined, RobotOutlined } from '@ant-design/icons';
+import { PlusOutlined } from '@ant-design/icons';
 import type { Agent, Message, StreamingState } from '@/lib/types';
+import BrandLogo from '@/components/BrandLogo';
 import ChatMessage from './ChatMessage';
 import StreamingMessage from './StreamingMessage';
 
@@ -21,7 +22,7 @@ export default function MessageList({ messages, streaming, agent, onNewChat, onE
         <div className="flex max-w-md flex-col items-center text-center px-6">
           {/* Logo */}
           <div className="mb-6">
-            <RobotOutlined className="text-5xl text-primary" />
+            <BrandLogo className="h-16 w-16" />
           </div>
 
           {/* Title */}

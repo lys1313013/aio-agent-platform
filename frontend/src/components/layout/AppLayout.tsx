@@ -29,6 +29,7 @@ import type { MenuProps } from 'antd';
 import { cn } from '@/lib/utils';
 import { settingsApi } from '@/lib/api';
 import SkinPicker from '@/components/SkinPicker';
+import BrandLogo from '@/components/BrandLogo';
 
 export default function AppLayout() {
   const { logout, role, username } = useAuthStore();
@@ -99,7 +100,7 @@ export default function AppLayout() {
       {/* Top header — full width */}
       <header className="flex h-14 flex-shrink-0 items-center justify-between border-b border-border bg-card px-5">
         <div className="flex items-center gap-2.5">
-          <RobotOutlined className="text-xl text-primary" />
+          <BrandLogo className="h-6 w-6" />
           <h1 className="text-sm font-bold tracking-tight text-foreground">智能体平台</h1>
         </div>
 

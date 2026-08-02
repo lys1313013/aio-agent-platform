@@ -1,7 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
-import { RobotOutlined } from '@ant-design/icons';
 import { Form, Input, Button, Alert, Typography } from 'antd';
+import BrandLogo from '@/components/BrandLogo';
 
 const { Title, Text } = Typography;
 
@@ -30,9 +30,7 @@ export default function LoginPage() {
       <div className="w-full max-w-sm space-y-6">
         {/* Header */}
         <div className="flex flex-col items-center space-y-2">
-          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10">
-            <RobotOutlined className="text-2xl text-primary" />
-          </div>
+          <BrandLogo className="h-12 w-12" />
           <Title level={3} className="!mb-0">
             智能体平台
           </Title>
