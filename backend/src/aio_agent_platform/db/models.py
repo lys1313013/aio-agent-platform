@@ -1262,3 +1262,107 @@ class ChannelSessionMapping(Base):
         Index("idx_channel_session_session", "session_id"),
         {"comment": "渠道会话映射表"},
     )
+
+
+# ---- Pets (Codex-compatible pet packages) ----
+
+PET_VISIBILITIES = ("private", "tenant", "public", "official")
+PET_STATES = ("idle", "think", "work", "wait", "celebrate", "sad", "sleep", "happy")
+
+
+class PetPackage(Base):
+    """宠物包：兼容 Codex ~/.codex/pets 格式（pet.json + spritesheet.webp）。"""
+    __tablename__ = "pet_packages"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    name: Mapped[str] = mapped_column(String(128), nullable=False, comment="宠物标识(pet.json 的 id)")
+    display_name: Mapped[str] = mapped_column(String(256), nullable=False, comment="展示名称")
+    description: Mapped[str | None] = mapped_column(Text, comment="描述")
+    kind: Mapped[str | None] = mapped_column(String(32), comment="pet.json 的 kind(可选)")
+    owner_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="创建人ID")
+    tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="归属租户ID")
+    visibility: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="private",
+        comment="可见性: private/tenant/public/official",
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active",
+        comment="状态: active/taken_down(管理员下架)",
+    )
+    manifest: Mapped[dict] = mapped_column(JSONB, nullable=False, comment="pet.json 原文(JSON)")
+    row_mapping: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict,
+        comment="平台状态→精灵图行号 映射 {idle:0, work:1, ...}",
+    )
+    frame_width: Mapped[int] = mapped_column(Integer, nullable=False, comment="帧宽(px)")
+    frame_height: Mapped[int] = mapped_column(Integer, nullable=False, comment="帧高(px)")
+    col_count: Mapped[int] = mapped_column(Integer, nullable=False, comment="列数(每行帧数)")
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, comment="行数(动画数)")
+    spritesheet_key: Mapped[str] = mapped_column(String(512), nullable=False, comment="精灵图对象存储key")
+    package_key: Mapped[str] = mapped_column(String(512), nullable=False, comment="原始zip对象存储key(导出用)")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+        comment="更新时间",
+    )
+
+    __table_args__ = (
+        Index("idx_pet_packages_tenant_visibility", "tenant_id", "visibility"),
+        Index("idx_pet_packages_owner", "owner_id"),
+        {"comment": "宠物包表(Codex格式兼容)"},
+    )
+
+
+class UserPet(Base):
+    """用户领养/上传的宠物实例（含养成数据）。"""
+    __tablename__ = "user_pets"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="用户ID")
+    package_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="宠物包ID")
+    level: Mapped[int] = mapped_column(Integer, nullable=False, default=1, comment="等级")
+    exp: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="累计经验")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否当前激活")
+    adopted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="领养时间"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "package_id", name="uq_user_pets_user_package"),
+        Index("idx_user_pets_user", "user_id"),
+        Index(
+            "uq_user_pets_active",
+            "user_id",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+        ),
+        {"comment": "用户宠物表"},
+    )
+
+
+class PetExpLog(Base):
+    """宠物经验流水（审计 + 防刷判定）。"""
+    __tablename__ = "pet_exp_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键ID")
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="用户ID")
+    pet_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="用户宠物ID")
+    delta: Mapped[int] = mapped_column(Integer, nullable=False, comment="经验变动值")
+    reason: Mapped[str] = mapped_column(
+        String(32), nullable=False,
+        comment="来源: task_complete/tool_call/daily_first/interact",
+    )
+    ref_id: Mapped[str | None] = mapped_column(String(64), comment="关联ID(如session_id)")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+
+    __table_args__ = (
+        Index("idx_pet_exp_logs_user_date", "user_id", "created_at"),
+        {"comment": "宠物经验流水表"},
+    )
