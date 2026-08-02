@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import {
@@ -24,6 +24,7 @@ import {
   MessageOutlined,
   SearchOutlined,
   SmileOutlined,
+  RightOutlined,
 } from '@ant-design/icons';
 import { Dropdown, Avatar, Select } from 'antd';
 import type { MenuProps } from 'antd';
@@ -52,34 +53,111 @@ export default function AppLayout() {
     settingsApi.listTenants().then(setTenantOptions).catch(() => {});
   }, []);
 
-  const navItems = [
-    { path: '/dashboard', icon: <DashboardOutlined />, label: '仪表盘' },
-    { path: '/usage', icon: <BarChartOutlined />, label: '用量统计' },
-    { path: '/agents', icon: <RobotOutlined />, label: '智能体' },
-    { path: '/memory', icon: <BulbOutlined />, label: '记忆' },
-    { path: '/skills', icon: <ThunderboltOutlined />, label: '技能' },
-    { path: '/pets', icon: <SmileOutlined />, label: '宠物' },
-    { path: '/workspaces', icon: <FolderOpenOutlined />, label: '工作区文件' },
-    ...(isAdmin
+  const navGroups = [
+    {
+      key: 'overview',
+      label: '概览',
+      items: [
+        { path: '/dashboard', icon: <DashboardOutlined />, label: '仪表盘' },
+        { path: '/usage', icon: <BarChartOutlined />, label: '用量统计' },
+      ],
+    },
+    {
+      key: 'agents',
+      label: '智能体',
+      items: [
+        { path: '/agents', icon: <RobotOutlined />, label: '智能体' },
+        { path: '/skills', icon: <ThunderboltOutlined />, label: '技能' },
+        { path: '/memory', icon: <BulbOutlined />, label: '记忆' },
+        { path: '/pets', icon: <SmileOutlined />, label: '宠物' },
+        ...(isAdmin
+          ? [{ path: '/cron-jobs', icon: <ClockCircleOutlined />, label: '定时任务' }]
+          : []),
+      ],
+    },
+    {
+      key: 'resources',
+      label: '资源与集成',
+      items: [
+        { path: '/workspaces', icon: <FolderOpenOutlined />, label: '工作区文件' },
+        ...(isAdmin
+          ? [
+              { path: '/channels', icon: <MessageOutlined />, label: '渠道管理' },
+              { path: '/knowledge', icon: <DatabaseOutlined />, label: '知识库' },
+              { path: '/mcp-servers', icon: <CloudServerOutlined />, label: 'MCP 服务' },
+              { path: '/remote-tools', icon: <GlobalOutlined />, label: '远程工具' },
+              { path: '/web-tools', icon: <SearchOutlined />, label: 'Web 工具' },
+            ]
+          : []),
+      ],
+    },
+    ...(isAdmin || isSuperAdmin
       ? [
-          { path: '/models', icon: <ApiOutlined />, label: '模型管理' },
-          { path: '/mcp-servers', icon: <CloudServerOutlined />, label: 'MCP 服务' },
-          { path: '/knowledge', icon: <DatabaseOutlined />, label: '知识库' },
-          { path: '/remote-tools', icon: <GlobalOutlined />, label: '远程工具' },
-          { path: '/web-tools', icon: <SearchOutlined />, label: 'Web 工具' },
-          { path: '/channels', icon: <MessageOutlined />, label: '渠道管理' },
-          { path: '/cron-jobs', icon: <ClockCircleOutlined />, label: '定时任务' },
+          {
+            key: 'system',
+            label: '系统管理',
+            items: [
+              ...(isAdmin
+                ? [
+                    { path: '/models', icon: <ApiOutlined />, label: '模型管理' },
+                    { path: '/system-config', icon: <SettingOutlined />, label: '系统配置' },
+                  ]
+                : []),
+              ...(isSuperAdmin
+                ? [
+                    { path: '/users', icon: <TeamOutlined />, label: '用户管理' },
+                    { path: '/tenants', icon: <UsergroupAddOutlined />, label: '租户管理' },
+                  ]
+                : []),
+            ],
+          },
         ]
       : []),
-    ...(isSuperAdmin
-      ? [
-          { path: '/users', icon: <TeamOutlined />, label: '用户管理' },
-          { path: '/tenants', icon: <UsergroupAddOutlined />, label: '租户管理' },
-        ]
-      : []),
-    { path: '/portrait', icon: <IdcardOutlined />, label: '个人画像' },
-    { path: '/settings', icon: <SettingOutlined />, label: '设置' },
+    {
+      key: 'personal',
+      label: '个人',
+      items: [
+        { path: '/portrait', icon: <IdcardOutlined />, label: '个人画像' },
+        { path: '/settings', icon: <SettingOutlined />, label: '设置' },
+      ],
+    },
   ];
+
+  const activeGroupKey =
+    navGroups.find((group) =>
+      group.items.some((item) =>
+        item.path === '/'
+          ? location.pathname === '/'
+          : location.pathname.startsWith(item.path),
+      ),
+    )?.key ?? navGroups[0].key;
+
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('nav-collapsed-groups');
+      if (saved) return JSON.parse(saved) as Record<string, boolean>;
+    } catch {}
+    return Object.fromEntries(
+      navGroups.filter((group) => group.key !== activeGroupKey).map((group) => [group.key, true]),
+    );
+  });
+
+  useEffect(() => {
+    setCollapsedGroups((prev) => {
+      if (!prev[activeGroupKey]) return prev;
+      const next = { ...prev, [activeGroupKey]: false };
+      localStorage.setItem('nav-collapsed-groups', JSON.stringify(next));
+      return next;
+    });
+  }, [activeGroupKey]);
+
+  const toggleGroup = useCallback((key: string) => {
+    setCollapsedGroups((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      localStorage.setItem('nav-collapsed-groups', JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   const userMenuItems: MenuProps['items'] = [
     {
@@ -139,31 +217,61 @@ export default function AppLayout() {
         {sidebarOpen ? (
           <aside className="flex w-56 flex-shrink-0 flex-col border-r border-border bg-card transition-all duration-200">
             <nav className="flex-1 overflow-y-auto py-2 px-2">
-              {navItems.map((item) => {
-                const isActive =
-                  item.path === '/'
-                    ? location.pathname === '/'
-                    : location.pathname.startsWith(item.path);
-
+              {navGroups.map((group) => {
+                const isCollapsed = !!collapsedGroups[group.key];
                 return (
-                  <NavLink
-                    key={item.path}
-                    to={item.path}
-                    className={cn(
-                      'group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all',
-                      isActive
-                        ? 'bg-muted text-foreground font-medium'
-                        : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
-                    )}
-                  >
-                    {isActive && (
-                      <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-brand-gradient-b" />
-                    )}
-                    <span className={cn('text-base transition', isActive && 'text-primary')}>
-                      {item.icon}
-                    </span>
-                    <span>{item.label}</span>
-                  </NavLink>
+                  <div key={group.key} className="mb-1">
+                    <button
+                      onClick={() => toggleGroup(group.key)}
+                      className="flex w-full items-center justify-between rounded-lg px-3 pt-2.5 pb-1.5 text-xs font-semibold text-muted-foreground transition hover:text-foreground"
+                    >
+                      <span>{group.label}</span>
+                      <RightOutlined
+                        className={cn(
+                          'text-[10px] transition-transform duration-200',
+                          !isCollapsed && 'rotate-90',
+                        )}
+                      />
+                    </button>
+                    <div
+                      className={cn(
+                        'grid transition-[grid-template-rows] duration-200 ease-in-out',
+                        isCollapsed ? 'grid-rows-[0fr]' : 'grid-rows-[1fr]',
+                      )}
+                    >
+                      <div className="overflow-hidden">
+                        {group.items.map((item) => {
+                          const isActive =
+                            item.path === '/'
+                              ? location.pathname === '/'
+                              : location.pathname.startsWith(item.path);
+
+                          return (
+                            <NavLink
+                              key={item.path}
+                              to={item.path}
+                              className={cn(
+                                'group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all',
+                                isActive
+                                  ? 'bg-muted text-foreground font-medium'
+                                  : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+                              )}
+                            >
+                              {isActive && (
+                                <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-brand-gradient-b" />
+                              )}
+                              <span
+                                className={cn('text-base transition', isActive && 'text-primary')}
+                              >
+                                {item.icon}
+                              </span>
+                              <span>{item.label}</span>
+                            </NavLink>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
                 );
               })}
             </nav>
@@ -178,29 +286,34 @@ export default function AppLayout() {
             </div>
           </aside>
         ) : (
-          <aside className="flex w-12 flex-shrink-0 flex-col items-center border-r border-border bg-card py-2 gap-1">
-            {navItems.map((item) => {
-              const isActive =
-                item.path === '/'
-                  ? location.pathname === '/'
-                  : location.pathname.startsWith(item.path);
+          <aside className="flex w-12 flex-shrink-0 flex-col items-center border-r border-border bg-card py-2 gap-1 overflow-y-auto">
+            {navGroups.map((group, groupIndex) => (
+              <div key={group.key} className="flex flex-col items-center gap-1 w-full">
+                {groupIndex > 0 && <div className="my-1 h-px w-6 bg-border" />}
+                {group.items.map((item) => {
+                  const isActive =
+                    item.path === '/'
+                      ? location.pathname === '/'
+                      : location.pathname.startsWith(item.path);
 
-              return (
-                <NavLink
-                  key={item.path}
-                  to={item.path}
-                  className={cn(
-                    'flex h-9 w-9 items-center justify-center rounded-lg text-base transition',
-                    isActive
-                      ? 'bg-muted text-primary'
-                      : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
-                  )}
-                  title={item.label}
-                >
-                  {item.icon}
-                </NavLink>
-              );
-            })}
+                  return (
+                    <NavLink
+                      key={item.path}
+                      to={item.path}
+                      className={cn(
+                        'flex h-9 w-9 items-center justify-center rounded-lg text-base transition',
+                        isActive
+                          ? 'bg-muted text-primary'
+                          : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+                      )}
+                      title={item.label}
+                    >
+                      {item.icon}
+                    </NavLink>
+                  );
+                })}
+              </div>
+            ))}
             <div className="flex-1" />
             <button
               onClick={() => setSidebarOpen(true)}

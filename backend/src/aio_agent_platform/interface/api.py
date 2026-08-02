@@ -33,6 +33,7 @@ from aio_agent_platform.interface.routes import (
     sessions_router,
     settings_router,
     skills_router,
+    system_config_router,
     tenants_router,
     tools_router,
     users_router,
@@ -402,6 +403,7 @@ def create_app() -> FastAPI:
     app.include_router(channels_router)
     app.include_router(channel_bindings_router)
     app.include_router(web_tools_router)
+    app.include_router(system_config_router)
 
     # Health check
     @app.get("/health")

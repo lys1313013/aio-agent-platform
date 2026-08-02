@@ -23,7 +23,7 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from langfuse._client.propagation import propagate_attributes
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -31,6 +31,7 @@ from sqlalchemy.orm import selectinload
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.auth.jwt_handler import TokenExpiredError, decode_token
 from aio_agent_platform.core.agent import AgentStep, DelegationContext
+from aio_agent_platform.core.auto_title import generate_session_title
 from aio_agent_platform.core.chat import (
     _background_tasks,
     _build_agent_loop,
@@ -101,6 +102,7 @@ class ChatResponse(BaseModel):
     content: str
     tool_calls_count: int = 0
     done: bool = True
+    session_title: str | None = None
 
 
 class AttachmentOut(BaseModel):
@@ -546,6 +548,14 @@ async def chat(
     db.add(user_msg)
     await db.flush()
 
+    # First message in the session → auto-generate title concurrently (if enabled globally)
+    title_task: asyncio.Task[str | None] | None = None
+    prior_msg_count = await db.scalar(
+        select(func.count(Message.id)).where(Message.session_id == session.id)
+    )
+    if not prior_msg_count:
+        title_task = asyncio.create_task(generate_session_title(req.message))
+
     # Run agent loop with overflow retry
     final_output = ""
     tool_calls_list: list[dict] = []
@@ -672,11 +682,20 @@ async def chat(
     _background_tasks.add(summary_task)
     summary_task.add_done_callback(_background_tasks.discard)
 
+    # Apply the auto-generated title (task started alongside the agent loop)
+    session_title: str | None = None
+    if title_task is not None:
+        session_title = await title_task
+        if session_title:
+            session.title = session_title
+            await db.flush()
+
     return ChatResponse(
         session_id=session.id,
         message_id=msg_id,
         content=final_output,
         tool_calls_count=len(tool_calls_list),
+        session_title=session_title,
     )
 
 
@@ -785,6 +804,16 @@ async def chat_stream(
     )
     db.add(user_msg)
     await db.commit()
+
+    # First message in the session → auto-generate title concurrently (if enabled globally)
+    title_task: asyncio.Task[str | None] | None = None
+    prior_msg_count = await db.scalar(
+        select(func.count(Message.id)).where(
+            Message.session_id == session_id, Message.id != user_msg.id
+        )
+    )
+    if not prior_msg_count:
+        title_task = asyncio.create_task(generate_session_title(req.message))
 
     async def event_generator():
         # Langfuse trace: wrap the entire chat flow
@@ -1280,6 +1309,22 @@ async def chat_stream(
                     "content": final_output,
                     "tool_calls": tool_calls_list,
                 })
+
+                # Auto session title (first message only) — task started with the request
+                if title_task is not None:
+                    new_title = await title_task
+                    if new_title:
+                        await gen_db.execute(
+                            sql_update(Session)
+                            .where(Session.id == session_id)
+                            .values(title=new_title)
+                        )
+                        await gen_db.commit()
+                        yield _sse_event({
+                            "type": "session_title",
+                            "session_id": str(session_id),
+                            "title": new_title,
+                        })
 
         except asyncio.CancelledError:
             # Client disconnected — this is expected, not an error

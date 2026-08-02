@@ -113,6 +113,7 @@ export default function PetCanvas({ pkg, mood, size = 96, className, fixedRow }:
       className={className}
       style={{ width: size, height: size }}
       aria-label={`pet-${mood}`}
+      data-row={fixedRow ?? resolveRow(pkg, mood)}
     />
   );
 }

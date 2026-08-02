@@ -29,10 +29,11 @@ import {
   Alert,
   Table,
 } from 'antd';
-import { channelsApi, agentsApi, toolsApi } from '@/lib/api';
+import { channelsApi, agentsApi, toolsApi, usersApi } from '@/lib/api';
+import type { AdminUser } from '@/lib/api';
 import type { Agent, Channel, ChannelBinding, ChannelMode, ToolInfo } from '@/lib/types';
 import { useAuthStore } from '@/stores/authStore';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 
 const { Text, Paragraph } = Typography;
@@ -51,12 +52,14 @@ const MODE_META: Record<string, { label: string; color: string }> = {
 
 export default function ChannelsPage() {
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const role = useAuthStore((s) => s.role);
   const isAdmin = role === 'admin' || role === 'superadmin';
 
   const [channels, setChannels] = useState<Channel[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -74,14 +77,16 @@ export default function ChannelsPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [channelList, agentList, toolList] = await Promise.all([
+      const [channelList, agentList, toolList, userList] = await Promise.all([
         channelsApi.list(),
         agentsApi.list(),
         toolsApi.list().catch(() => [] as ToolInfo[]),
+        usersApi.list().catch(() => [] as AdminUser[]),
       ]);
       setChannels(channelList);
       setAgents(agentList);
       setTools(toolList);
+      setUsers(userList);
     } catch (err: any) {
       message.error(`加载渠道失败：${err.message}`);
     } finally {
@@ -542,9 +547,31 @@ export default function ChannelsPage() {
                   v === 'bound' ? <Tag color="green">已绑定账号</Tag> : <Tag>影子账号</Tag>,
               },
               {
-                title: '平台用户 ID',
+                title: '平台用户',
                 dataIndex: 'user_id',
-                render: (v: string) => <Text className="font-mono text-xs">{v}</Text>,
+                render: (userId: string) => {
+                  const user = users.find((u) => u.id === userId);
+                  if (!user) {
+                    return (
+                      <Tooltip title={`未找到平台用户 ${userId}`}>
+                        <Text type="secondary" className="font-mono text-xs">{userId}</Text>
+                      </Tooltip>
+                    );
+                  }
+                  const label = user.display_name || user.username;
+                  return (
+                    <Tooltip title={`查看用户资料 (${userId})`}>
+                      <Button
+                        type="link"
+                        size="small"
+                        className="px-0"
+                        onClick={() => navigate(`/users`)}
+                      >
+                        {label}
+                      </Button>
+                    </Tooltip>
+                  );
+                },
               },
               {
                 title: '绑定时间',

@@ -20,6 +20,7 @@ from aio_agent_platform.interface.routes.remote_tools import router as remote_to
 from aio_agent_platform.interface.routes.sessions import router as sessions_router
 from aio_agent_platform.interface.routes.settings import router as settings_router
 from aio_agent_platform.interface.routes.skills import router as skills_router
+from aio_agent_platform.interface.routes.system_config import router as system_config_router
 from aio_agent_platform.interface.routes.tenants import router as tenants_router
 from aio_agent_platform.interface.routes.tools import router as tools_router
 from aio_agent_platform.interface.routes.users import router as users_router
@@ -46,6 +47,7 @@ __all__ = [
     "sessions_router",
     "settings_router",
     "skills_router",
+    "system_config_router",
     "tenants_router",
     "tools_router",
     "users_router",

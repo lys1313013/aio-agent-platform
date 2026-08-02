@@ -423,7 +423,7 @@ async def bind_with_code(
         await consume_bind_code(db, req.code, user.id)
         await db.commit()
         return {
-            "message": "绑定成功，渠道会话已迁移至当前账号",
+            "message": "绑定成功，现在可以在该渠道与 Agent 对话",
             "channel_id": None,
             "external_id": None,
         }

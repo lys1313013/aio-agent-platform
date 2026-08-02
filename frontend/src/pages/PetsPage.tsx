@@ -155,7 +155,7 @@ function PackageCard({
       size="small"
       className="w-52"
       cover={
-        <div className="flex justify-center pt-3">
+        <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 12 }}>
           <PetCanvas pkg={pkg} mood="idle" size={88} />
         </div>
       }
@@ -307,6 +307,17 @@ export default function PetsPage() {
     }
   };
 
+  const handleRemove = async (pet: UserPet) => {
+    try {
+      await petsApi.remove(pet.id);
+      message.success(`已移除「${pet.package.display_name}」`);
+      if (pet.is_active) await loadActive();
+      void reload();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '移除失败');
+    }
+  };
+
   const handleDeactivate = async () => {
     try {
       await petsApi.deactivate();
@@ -382,7 +393,7 @@ export default function PetsPage() {
                       size="small"
                       className="w-52"
                       cover={
-                        <div className="flex justify-center pt-3">
+                        <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 12 }}>
                           <PetCanvas pkg={pet.package} mood="idle" size={88} />
                         </div>
                       }
@@ -396,6 +407,16 @@ export default function PetsPage() {
                             激活
                           </Button>
                         ),
+                        <Popconfirm
+                          key="remove"
+                          title="移除该宠物？"
+                          description="等级与经验将清空，可重新领养"
+                          onConfirm={() => void handleRemove(pet)}
+                        >
+                          <Button type="link" size="small" danger>
+                            删除
+                          </Button>
+                        </Popconfirm>,
                       ]}
                     >
                       <Card.Meta

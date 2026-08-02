@@ -23,6 +23,7 @@ interface ChatState {
   loadSessionMessages: (id: string) => Promise<void>;
   addMessage: (sessionId: string, msg: Message) => void;
   renameSession: (id: string, title: string) => Promise<void>;
+  setSessionTitleLocal: (id: string, title: string) => void;
   pinSession: (id: string, isPinned: boolean) => Promise<void>;
   archiveSession: (id: string, isArchived: boolean) => Promise<void>;
 
@@ -112,6 +113,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   renameSession: async (id, title) => {
     await sessionsApi.rename(id, title);
+    set((state) => ({
+      sessions: state.sessions.map((s) => (s.id === id ? { ...s, title } : s)),
+    }));
+  },
+
+  // Local-only update — used when the backend pushes an auto-generated title
+  setSessionTitleLocal: (id, title) => {
     set((state) => ({
       sessions: state.sessions.map((s) => (s.id === id ? { ...s, title } : s)),
     }));

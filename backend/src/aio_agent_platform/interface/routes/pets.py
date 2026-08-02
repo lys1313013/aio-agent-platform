@@ -281,6 +281,16 @@ async def deactivate_pet(user: CurrentUser, db: DbSession) -> Response:
     return Response(status_code=204)
 
 
+@router.delete("/{user_pet_id}", status_code=204)
+async def remove_pet(user_pet_id: UUID, user: CurrentUser, db: DbSession) -> Response:
+    svc = PetService(db)
+    try:
+        await svc.remove_pet(user, user_pet_id)
+    except PetNotFoundError as e:
+        raise _not_found(e) from e
+    return Response(status_code=204)
+
+
 @router.get("/mine", response_model=list[UserPetOut])
 async def list_my_pets(user: CurrentUser, db: DbSession) -> list[UserPetOut]:
     svc = PetService(db)

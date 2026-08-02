@@ -115,6 +115,7 @@ export interface WsServerMessage {
     | 'done'
     | 'error'
     | 'session'
+    | 'session_title'
     | 'delegation_start'
     | 'delegation_end'
     | 'confirmation_required'
@@ -138,6 +139,8 @@ export interface WsServerMessage {
   result_preview?: string;
   // Session field
   session_id?: string;
+  // Auto-generated session title
+  title?: string;
   // Confirmation fields
   confirmation_id?: string;
   question?: string;

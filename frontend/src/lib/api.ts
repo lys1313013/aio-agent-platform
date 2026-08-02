@@ -995,6 +995,28 @@ export const webToolSettingsApi = {
   },
 };
 
+// ---- Admin: System Config ----
+
+export interface AutoTitleConfig {
+  enabled: boolean;
+  model_id: string | null;
+  prompt: string;
+  default_prompt: string;
+}
+
+export const systemConfigApi = {
+  getAutoTitle() {
+    return request<AutoTitleConfig>('/admin/system-config/auto-title');
+  },
+
+  updateAutoTitle(data: { enabled: boolean; model_id?: string | null; prompt?: string }) {
+    return request<AutoTitleConfig>('/admin/system-config/auto-title', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+};
+
 // ---- Admin: Remote Tools (HTTP Tools) ----
 
 export const remoteToolsApi = {
@@ -1787,6 +1809,9 @@ export const petsApi = {
   },
   deactivate() {
     return request<void>('/pets/deactivate', { method: 'POST' });
+  },
+  remove(userPetId: string) {
+    return request<void>(`/pets/${userPetId}`, { method: 'DELETE' });
   },
   interact(userPetId: string) {
     return request<UserPet>(`/pets/${userPetId}/interact`, { method: 'POST' });

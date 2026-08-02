@@ -256,6 +256,13 @@ class PetService:
             update(UserPet).where(UserPet.user_id == user.id).values(is_active=False)
         )
 
+    async def remove_pet(self, user: User, user_pet_id: UUID) -> None:
+        pet = await self.db.get(UserPet, user_pet_id)
+        if pet is None or pet.user_id != user.id:
+            raise PetNotFoundError(str(user_pet_id))
+        await self.db.delete(pet)
+        await self.db.flush()
+
     async def list_my_pets(self, user: User) -> list[tuple[UserPet, PetPackage]]:
         result = await self.db.execute(
             select(UserPet, PetPackage)

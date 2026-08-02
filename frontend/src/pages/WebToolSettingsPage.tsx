@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { GlobalOutlined, SaveOutlined } from '@ant-design/icons';
+import { GlobalOutlined, LinkOutlined, SaveOutlined } from '@ant-design/icons';
 import {
   Form,
   Input,
@@ -18,7 +18,7 @@ import {
 import { webToolSettingsApi } from '@/lib/api';
 import type { WebToolConfig } from '@/lib/api';
 
-const { Text } = Typography;
+const { Text, Link } = Typography;
 
 type SecretField = 'brave_api_key' | 'tavily_api_key' | 'firecrawl_api_key';
 
@@ -26,6 +26,12 @@ const SECRET_LABELS: Record<SecretField, string> = {
   brave_api_key: 'Brave API Key',
   tavily_api_key: 'Tavily API Key',
   firecrawl_api_key: 'Firecrawl API Key',
+};
+
+const SECRET_LINKS: Record<SecretField, string> = {
+  brave_api_key: 'https://brave.com/search/api/',
+  tavily_api_key: 'https://app.tavily.com/home',
+  firecrawl_api_key: 'https://firecrawl.dev',
 };
 
 export default function WebToolSettingsPage() {
@@ -109,6 +115,13 @@ export default function WebToolSettingsPage() {
         label={
           <Space size={4}>
             {SECRET_LABELS[field]}
+            <Link
+              href={SECRET_LINKS[field]}
+              target="_blank"
+              className="text-xs font-normal"
+            >
+              <LinkOutlined /> 获取 Key
+            </Link>
             {configured && !pendingClear && <Tag color="success">已配置</Tag>}
             {!configured && <Tag>未配置</Tag>}
             {pendingClear && <Tag color="warning">保存后清除</Tag>}
@@ -199,8 +212,38 @@ export default function WebToolSettingsPage() {
           <Card title="搜索提供商凭证" className="mb-4">
             {renderSecretInput('brave_api_key')}
             {renderSecretInput('tavily_api_key')}
-            <Form.Item name="searxng_url" label="SearXNG 地址" extra="例如 http://searxng.internal:8888">
+            <Form.Item
+              name="searxng_url"
+              label={
+                <Space size={4}>
+                  SearXNG 地址
+                  <Link
+                    href="https://docs.searxng.org/admin/installation.html"
+                    target="_blank"
+                    className="text-xs font-normal"
+                  >
+                    <LinkOutlined /> 部署文档
+                  </Link>
+                </Space>
+              }
+              extra="例如 http://searxng.internal:8888"
+            >
               <Input placeholder="留空则不使用 SearXNG" allowClear />
+            </Form.Item>
+            <Form.Item noStyle shouldUpdate={(prev, cur) => prev.searxng_url !== cur.searxng_url}>
+              {({ getFieldValue }) => {
+                const url: string | undefined = getFieldValue('searxng_url');
+                if (!url) return null;
+                return (
+                  <Link
+                    href={url}
+                    target="_blank"
+                    className="text-xs block -mt-4 mb-4"
+                  >
+                    <LinkOutlined /> 打开 {url}
+                  </Link>
+                );
+              }}
             </Form.Item>
           </Card>
 

@@ -87,6 +87,7 @@ async def list_users(
         select(User, UserProfile.display_name)
         .options(selectinload(User.memberships))
         .outerjoin(UserProfile, UserProfile.user_id == User.id)
+        .where(User.is_shadow.is_(False))
         .order_by(User.created_at)
     )
     return [_user_to_dict(user, display_name) for user, display_name in result.all()]

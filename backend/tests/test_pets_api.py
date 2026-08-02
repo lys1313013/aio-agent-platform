@@ -212,6 +212,38 @@ async def test_activate_is_exclusive(client: AsyncClient, db_session: AsyncSessi
 
 
 @pytest.mark.asyncio
+async def test_remove_pet_deletes_adoption(client: AsyncClient, db_session: AsyncSession):
+    owner = _make_user(OWNER_ID, TENANT_A)
+    await _login_as(client, db_session, owner)
+    pkg = await _upload(client, "pet-to-remove")
+    mine = (await client.get("/api/pets/mine")).json()
+    pet = next(p for p in mine if p["package_id"] == pkg["id"])
+
+    await client.post(f"/api/pets/{pet['id']}/activate")
+    resp = await client.delete(f"/api/pets/{pet['id']}")
+    assert resp.status_code == 204
+    assert (await client.get("/api/pets/active")).json() is None
+    mine_after = (await client.get("/api/pets/mine")).json()
+    assert all(p["id"] != pet["id"] for p in mine_after)
+    # 删除后仍可重新领养
+    readopt = await client.post(f"/api/pets/{pkg['id']}/adopt")
+    assert readopt.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_remove_pet_requires_owner(client: AsyncClient, db_session: AsyncSession):
+    owner = _make_user(OWNER_ID, TENANT_A)
+    await _login_as(client, db_session, owner)
+    pkg = await _upload(client, "pet-not-yours")
+    mine = (await client.get("/api/pets/mine")).json()
+    pet = next(p for p in mine if p["package_id"] == pkg["id"])
+
+    other = _make_user(uuid.uuid4(), TENANT_A)
+    await _login_as(client, db_session, other)
+    assert (await client.delete(f"/api/pets/{pet['id']}")).status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_official_upload_requires_admin(client: AsyncClient, db_session: AsyncSession):
     user = _make_user(OWNER_ID, TENANT_A, role="user")
     await _login_as(client, db_session, user)

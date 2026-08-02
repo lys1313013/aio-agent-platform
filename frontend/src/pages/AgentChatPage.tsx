@@ -147,6 +147,15 @@ export default function AgentChatPage() {
             case 'session':
               break;
 
+            case 'session_title': {
+              const sid = (event.session_id as string) || sessionId;
+              const newTitle = event.title as string;
+              if (sid && newTitle) {
+                useChatStore.getState().setSessionTitleLocal(sid, newTitle);
+              }
+              break;
+            }
+
             case 'thinking':
               setStreaming((prev) => {
                 const content = (event.content as string) || '';

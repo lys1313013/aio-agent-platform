@@ -61,6 +61,17 @@ function PetWidgetInner() {
   const [bubble, setBubble] = useState<string | null>(null);
   const [myPets, setMyPets] = useState<UserPet[]>([]);
   const bubbleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bounceRef = useRef<HTMLDivElement | null>(null);
+
+  // 进入 happy 状态时重触发 bounce 动画（不能用 key 重挂载，会销毁 canvas 并重新拉取精灵图）
+  useEffect(() => {
+    if (mood !== 'happy') return;
+    const el = bounceRef.current;
+    if (!el) return;
+    el.classList.remove('pet-bounce');
+    void el.offsetWidth;
+    el.classList.add('pet-bounce');
+  }, [mood]);
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number; moved: boolean } | null>(null);
   const sleepTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -114,6 +125,9 @@ function PetWidgetInner() {
     // 仅左键拖拽，右键交给上下文菜单
     if (e.button !== 0) return;
     const el = e.currentTarget as HTMLElement;
+    // Dropdown 菜单渲染在 portal 里，但 React 事件会沿组件树冒泡回来——
+    // 菜单项的 pointerdown 不能触发 setPointerCapture，否则真实 click 被重定向到宠物上
+    if (!el.contains(e.target as Node)) return;
     const rect = el.getBoundingClientRect();
     dragRef.current = {
       startX: e.clientX,
@@ -153,7 +167,49 @@ function PetWidgetInner() {
     }
   }, [playRowX, activePet]);
 
-  // 菜单尽量朝屏幕边缘弹出，避免盖住聊天内容
+  // 记录右键时的光标位置 + 角色可见内容的包围盒：contextMenu 触发下 antd 强制
+  // alignPoint（菜单锚定光标而非宠物），且画布四周有透明边——按内容边缘算 offset 菜单才贴得近
+  const [ctxPos, setCtxPos] = useState<{
+    x: number;
+    y: number;
+    box: { left: number; right: number; top: number; bottom: number } | null;
+  } | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const onContextMenu = useCallback((e: React.MouseEvent) => {
+    let box = null;
+    const canvas = containerRef.current?.querySelector('canvas');
+    if (canvas) {
+      const r = canvas.getBoundingClientRect();
+      const ctx = canvas.getContext('2d');
+      if (ctx && r.width > 0) {
+        const dpr = canvas.width / r.width;
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let minX = canvas.width, maxX = -1, minY = canvas.height, maxY = -1;
+        for (let y = 0; y < canvas.height; y++) {
+          for (let x = 0; x < canvas.width; x++) {
+            if (data[(y * canvas.width + x) * 4 + 3] > 10) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+        }
+        if (maxX >= 0) {
+          box = {
+            left: r.left + minX / dpr,
+            right: r.left + (maxX + 1) / dpr,
+            top: r.top + minY / dpr,
+            bottom: r.top + (maxY + 1) / dpr,
+          };
+        }
+      }
+    }
+    setCtxPos({ x: e.clientX, y: e.clientY, box });
+  }, []);
+
+  // 上下弹出兜底时的朝向：尽量朝屏幕边缘弹出，避免盖住聊天内容
   // 注意：必须在任何条件 return 之前调用（React Hooks 规则）
   const placement = useMemo(() => {
     const px = pos ? pos.x : window.innerWidth - size - 24;
@@ -165,6 +221,55 @@ function PetWidgetInner() {
     if (!onRight && onBottom) return 'topRight';
     return 'bottomRight';
   }, [pos, size]);
+
+  // 菜单位置策略：优先放宠物右边 → 右边没位置放左边 → 两边都没位置放上面/下面。
+  const dropdownAlign = useMemo(() => {
+    const GAP = 15;
+    const SIDE_W = 260; // 主菜单 + 子菜单展开所需宽度（实测约 230，留余量）
+    const dim = collapsed ? COLLAPSED_SIZE : size;
+    // 优先用角色可见内容的包围盒（剔除精灵图透明边），没有才退化到画布矩形
+    const canvasLeft = pos ? pos.x : window.innerWidth - dim - 24;
+    const canvasTop = pos ? pos.y : window.innerHeight - dim - 24;
+    const petLeft = ctxPos?.box?.left ?? canvasLeft;
+    const petTop = ctxPos?.box?.top ?? canvasTop;
+    const petRight = ctxPos?.box?.right ?? canvasLeft + dim;
+    const petBottom = ctxPos?.box?.bottom ?? canvasTop + dim;
+
+    if (ctxPos) {
+      const oy = petTop - ctxPos.y; // 菜单顶边对齐角色顶边（正 Y 向下，实测约定）
+      if (window.innerWidth - petRight - GAP >= SIDE_W) {
+        // 右边：菜单左边 = 角色右边 + GAP
+        return {
+          points: ['tl', 'tr'] as ('tl' | 'tr')[],
+          offset: [petRight + GAP - ctxPos.x, oy] as [number, number],
+        };
+      }
+      if (petLeft - GAP >= SIDE_W) {
+        // 左边：菜单右边 = 角色左边 - GAP
+        return {
+          points: ['tr', 'tl'] as ('tr' | 'tl')[],
+          offset: [petLeft - GAP - ctxPos.x, oy] as [number, number],
+        };
+      }
+    }
+
+    // 兜底：上/下弹出，垂直方向避开宠物
+    const oy = ctxPos
+      ? placement.startsWith('top')
+        ? petTop - GAP - ctxPos.y
+        : petBottom + GAP - ctxPos.y
+      : 0;
+    switch (placement) {
+      case 'topLeft':
+        return { points: ['bl', 'tl'] as ('bl' | 'tl')[], offset: [0, oy] as [number, number] };
+      case 'topRight':
+        return { points: ['br', 'tr'] as ('br' | 'tr')[], offset: [0, oy] as [number, number] };
+      case 'bottomLeft':
+        return { points: ['tl', 'bl'] as ('tl' | 'bl')[], offset: [0, oy] as [number, number] };
+      default:
+        return { points: ['tr', 'br'] as ('tr' | 'br')[], offset: [0, oy] as [number, number] };
+    }
+  }, [ctxPos, placement, pos, size, collapsed]);
 
   if (!enabled || !activePet) return null;
 
@@ -245,7 +350,7 @@ function PetWidgetInner() {
           {bubble}
         </div>
       )}
-      <div key={mood === 'happy' ? 'bounce' : 'still'} className={mood === 'happy' ? 'pet-bounce' : ''}>
+      <div ref={bounceRef}>
         <PetCanvas pkg={activePet.package} mood={mood} size={size} fixedRow={actionRow ?? undefined} />
       </div>
     </div>
@@ -253,16 +358,19 @@ function PetWidgetInner() {
 
   return (
     <div
+      ref={containerRef}
       className="fixed z-50 select-none"
       style={style}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onContextMenu={onContextMenu}
     >
       <Dropdown
         trigger={['contextMenu']}
         menu={{ items: menuItems, onClick: onMenuClick }}
         placement={placement}
+        align={dropdownAlign}
       >
         <div className="inline-block">{petBody}</div>
       </Dropdown>

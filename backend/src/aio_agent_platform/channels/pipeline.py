@@ -3,8 +3,8 @@
 The pipeline is shared by all transports for a given channel. It:
 
 1. Deduplicates events by ``event_id`` (TTL 1h in-memory cache).
-2. Resolves the external user to a platform ``User`` (creating a shadow account
-   on first contact, or looking up the existing binding).
+2. Resolves the external user to a platform ``User`` via their binding — if
+   unbound, replies with a bind-code guide instead of creating an account.
 3. Maps ``(channel_id, chat_id, external_id)`` to a platform session.
 4. Intercepts built-in commands (``/bind``, ``/new``, ``/help``) before they
    reach the Agent.
@@ -28,8 +28,8 @@ from aio_agent_platform.channels.adapter import ChannelAdapter, InboundEvent
 from aio_agent_platform.channels.binding import (
     BindCodeError,
     BindCodeRateLimited,
-    ensure_shadow_user,
     issue_bind_code,
+    resolve_external_user,
 )
 from aio_agent_platform.core.agent import AgentStep
 from aio_agent_platform.core.chat import (
@@ -78,9 +78,9 @@ _MAX_CHARS_PER_MESSAGE = 3500
 
 @dataclass
 class _ResolvedContext:
-    user_id: UUID
-    session_id: UUID
-    bind_type: str  # "shadow" or "bound"
+    user_id: UUID | None  # None when the external user is not bound yet
+    session_id: UUID | None
+    bind_type: str  # "bound" or "unbound"
 
 
 class ChannelInboundPipeline:
@@ -130,12 +130,21 @@ class ChannelInboundPipeline:
         factory = get_session_factory()
         async with factory() as db:
             ctx = await self._resolve_context(db, event)
+            text = event.text.strip()
+
+            # 4. Unbound users: only /bind is accepted; everything else gets a
+            #    bind guide. No session or Agent is created until they bind.
+            if ctx.user_id is None:
+                if text == "/bind":
+                    await self._handle_bind(db, event, ctx)
+                else:
+                    await self._handle_unbound_guide(event)
+                return
+
             # Set RLS context for the rest of the request.
             current_user_id.set(str(ctx.user_id))
 
-            text = event.text.strip()
-
-            # 4. Command interception.
+            # 5. Command interception.
             if text == "/bind":
                 await self._handle_bind(db, event, ctx)
                 return
@@ -146,15 +155,17 @@ class ChannelInboundPipeline:
                 await self._handle_help(event)
                 return
 
-            # 5. Drive AgentLoop.
+            # 6. Drive AgentLoop.
             await self._drive_agent(db, event, ctx)
 
     # --- Context resolution ---
 
     async def _resolve_context(self, db: AsyncSession, event: InboundEvent) -> _ResolvedContext:
-        user_id, bind_type = await ensure_shadow_user(
-            db, self.channel.id, event.external_id, self.channel.tenant_id
+        user_id, bind_type = await resolve_external_user(
+            db, self.channel.id, event.external_id
         )
+        if user_id is None:
+            return _ResolvedContext(user_id=None, session_id=None, bind_type=bind_type)
 
         # Resolve session mapping.
         result = await db.execute(
@@ -189,6 +200,16 @@ class ChannelInboundPipeline:
 
     # --- Commands ---
 
+    async def _handle_unbound_guide(self, event: InboundEvent) -> None:
+        reply = (
+            "🔒 你还没有绑定平台账号，暂时无法与我对话。\n\n"
+            "完成绑定后即可使用：\n"
+            "1. 在此会话发送 /bind 获取 6 位绑定码\n"
+            "2. 登录 Web 端「账号设置 → 渠道绑定」，输入绑定码完成关联\n\n"
+            f"绑定码有效期为 {BIND_CODE_TTL_MINUTES} 分钟。"
+        )
+        await self.adapter.send(event, reply)
+
     async def _handle_bind(
         self, db: AsyncSession, event: InboundEvent, ctx: _ResolvedContext
     ) -> None:
@@ -215,6 +236,7 @@ class ChannelInboundPipeline:
     async def _handle_new(
         self, db: AsyncSession, event: InboundEvent, ctx: _ResolvedContext
     ) -> None:
+        assert ctx.user_id is not None  # only reached for bound users
         # Mark the current mapping inactive.
         await db.execute(
             update(ChannelSessionMapping)
@@ -257,6 +279,7 @@ class ChannelInboundPipeline:
     async def _drive_agent(
         self, db: AsyncSession, event: InboundEvent, ctx: _ResolvedContext
     ) -> None:
+        assert ctx.user_id is not None  # only reached for bound users
         agent = await load_agent(db, self.channel.agent_id, tenant_id=self.channel.tenant_id)
         if agent is None:
             await self.adapter.send(event, "⚠️ 渠道绑定的智能体不可用，请联系管理员。")
