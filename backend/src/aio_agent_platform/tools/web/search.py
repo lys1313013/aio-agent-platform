@@ -168,7 +168,7 @@ class SearchRouter:
             return SearXNGProvider(s.searxng_url, timeout)
         return DuckDuckGoProvider(timeout)
 
-    async def handle(self, args: dict, *_unused) -> str:
+    async def handle(self, args: dict, *_unused, **_kwargs) -> str:
         s = await self._config.get()
         if not s.enabled:
             return _DISABLED_MSG

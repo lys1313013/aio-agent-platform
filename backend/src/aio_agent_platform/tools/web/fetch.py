@@ -30,7 +30,7 @@ class WebFetcher:
         self._config = config
         self._cache = TTLCache()
 
-    async def handle(self, args: dict, *_unused) -> str:
+    async def handle(self, args: dict, *_unused, **_kwargs) -> str:
         s = await self._config.get()
         if not s.enabled:
             return _DISABLED_MSG
