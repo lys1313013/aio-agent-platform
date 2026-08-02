@@ -640,10 +640,13 @@ async def download_skill_file(
 
     data = all_files[target]
     filename = target.split("/")[-1]
+    from urllib.parse import quote
+    ascii_name = filename.encode("ascii", "replace").decode("ascii")
+    encoded_name = quote(filename)
     return StreamingResponse(
         io.BytesIO(data),
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}",
         },
     )

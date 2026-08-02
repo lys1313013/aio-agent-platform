@@ -333,7 +333,10 @@ async def download_file_content(
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     filename = path.rsplit("/", 1)[-1] if "/" in path else path
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    from urllib.parse import quote
+    ascii_name = filename.encode("ascii", "replace").decode("ascii")
+    encoded_name = quote(filename)
+    headers = {"Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"}
 
     # Prefer the live sandbox — it may hold files not yet synced to MinIO
     mgr = getattr(request.app.state, "sandbox_mgr", None)
