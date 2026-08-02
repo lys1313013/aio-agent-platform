@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.db.connection import get_db
+from aio_agent_platform.interface.headers import attachment_disposition
 from aio_agent_platform.sandbox.models import Sandbox
 from aio_agent_platform.storage.client import ObjectStorage
 from aio_agent_platform.storage.workspace import WorkspaceStorage
@@ -333,10 +334,7 @@ async def download_file_content(
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     filename = path.rsplit("/", 1)[-1] if "/" in path else path
-    from urllib.parse import quote
-    ascii_name = filename.encode("ascii", "replace").decode("ascii")
-    encoded_name = quote(filename)
-    headers = {"Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"}
+    headers = {"Content-Disposition": attachment_disposition(filename)}
 
     # Prefer the live sandbox — it may hold files not yet synced to MinIO
     mgr = getattr(request.app.state, "sandbox_mgr", None)

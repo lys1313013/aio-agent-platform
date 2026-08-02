@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.db.connection import get_db
 from aio_agent_platform.db.models import Skill
+from aio_agent_platform.interface.headers import attachment_disposition
 from aio_agent_platform.skills.service import SkillService
 from aio_agent_platform.skills.storage import SCRIPT_EXTENSIONS, SkillStorage
 
@@ -444,10 +445,7 @@ async def download_skill(
             raise HTTPException(status_code=502, detail="Failed to download from storage")
 
     filename = f"{skill.name.replace(' ', '_')}_v{skill.version}.zip"
-    from urllib.parse import quote
-    ascii_name = filename.encode("ascii", "replace").decode("ascii")
-    encoded_name = quote(filename)
-    disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
+    disposition = attachment_disposition(filename)
     return StreamingResponse(
         io.BytesIO(zip_bytes),
         media_type="application/zip",
@@ -640,13 +638,10 @@ async def download_skill_file(
 
     data = all_files[target]
     filename = target.split("/")[-1]
-    from urllib.parse import quote
-    ascii_name = filename.encode("ascii", "replace").decode("ascii")
-    encoded_name = quote(filename)
     return StreamingResponse(
         io.BytesIO(data),
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}",
+            "Content-Disposition": attachment_disposition(filename),
         },
     )
