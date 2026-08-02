@@ -8,6 +8,7 @@ import AgentsPage from '@/pages/AgentsPage';
 import AgentChatPage from '@/pages/AgentChatPage';
 import AgentApiPage from '@/pages/AgentApiPage';
 import DashboardPage from '@/pages/DashboardPage';
+import UsagePage from '@/pages/UsagePage';
 import MemoryPage from '@/pages/MemoryPage';
 import SkillsPage from '@/pages/SkillsPage';
 import WorkspacesPage from '@/pages/WorkspacesPage';
@@ -85,6 +86,7 @@ export default function App() {
         <Route path="/agents/:agentId/api" element={<AgentApiPage />} />
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/usage" element={<UsagePage />} />
         <Route path="/memory" element={<MemoryPage />} />
         <Route path="/skills" element={<SkillsPage />} />
         <Route path="/workspaces" element={<WorkspacesPage />} />

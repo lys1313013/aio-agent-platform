@@ -16,6 +16,7 @@ from aio_agent_platform.interface.routes import (
     admin_models_router,
     agent_api_router,
     agents_router,
+    analytics_router,
     channel_bindings_router,
     channels_router,
     chat_router,
@@ -376,6 +377,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(public_router)
     app.include_router(sessions_router)
+    app.include_router(analytics_router)
     app.include_router(chat_router)
     app.include_router(settings_router)
     app.include_router(memories_router)

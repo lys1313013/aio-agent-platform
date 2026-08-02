@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/authStore';
 import {
   LogoutOutlined,
   RobotOutlined,
+  BarChartOutlined,
   DashboardOutlined,
   BulbOutlined,
   ThunderboltOutlined,
@@ -50,6 +51,7 @@ export default function AppLayout() {
 
   const navItems = [
     { path: '/dashboard', icon: <DashboardOutlined />, label: '仪表盘' },
+    { path: '/usage', icon: <BarChartOutlined />, label: '用量统计' },
     { path: '/agents', icon: <RobotOutlined />, label: '智能体' },
     { path: '/memory', icon: <BulbOutlined />, label: '记忆' },
     { path: '/skills', icon: <ThunderboltOutlined />, label: '技能' },

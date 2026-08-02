@@ -269,6 +269,7 @@ class OpenAIProvider(LLMProvider):
                     temperature=temp,
                     max_tokens=mt,
                     stream=True,
+                    stream_options={"include_usage": True},
                 )
 
             try:
@@ -399,6 +400,16 @@ class OpenAIProvider(LLMProvider):
 
     def _parse_stream_event(self, event) -> LLMChunk | None:
         if not event.choices:
+            # Final usage-only chunk (stream_options.include_usage)
+            if event.usage:
+                return LLMChunk(
+                    type="done",
+                    usage={
+                        "prompt_tokens": event.usage.prompt_tokens,
+                        "completion_tokens": event.usage.completion_tokens,
+                        "total_tokens": event.usage.total_tokens,
+                    },
+                )
             return None
         choice = event.choices[0]
         delta = choice.delta
@@ -571,6 +582,7 @@ class AnthropicProvider(LLMProvider):
         accumulated_text = ""
         accumulated_tool_calls: list[dict] = []
         last_usage = None
+        input_tokens = 0
 
         async def _open_stream():
             return self.client.messages.stream(
@@ -597,11 +609,23 @@ class AnthropicProvider(LLMProvider):
         try:
             async with stream_ctx as stream:
                 async for event in stream:
+                    # message_start carries the input token count; merge it into
+                    # the done chunk's usage (message_delta only reports output).
+                    if event.type == "message_start":
+                        start_usage = getattr(event.message, "usage", None)
+                        if start_usage:
+                            input_tokens = getattr(start_usage, "input_tokens", 0) or 0
+                        continue
                     chunk = self._parse_stream_event(event)
                     if chunk:
                         if chunk.type == "text_delta" and chunk.content:
                             accumulated_text += chunk.content
                         elif chunk.type == "done":
+                            if chunk.usage is not None and input_tokens:
+                                chunk.usage["prompt_tokens"] = input_tokens
+                                chunk.usage["total_tokens"] = (
+                                    input_tokens + chunk.usage.get("completion_tokens", 0)
+                                )
                             last_usage = chunk.usage
                         yield chunk
         except httpx.RemoteProtocolError as e:

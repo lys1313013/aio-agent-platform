@@ -18,6 +18,7 @@ from aio_agent_platform.core.context import (
     compress_early_tool_results,
     estimate_messages_tokens,
 )
+from aio_agent_platform.core.usage import record_llm_usage
 from aio_agent_platform.llm import (
     LLMMessage,
     LLMProvider,
@@ -261,6 +262,9 @@ class AgentLoop:
             # Buffer text chunks to decide thinking vs final text after stream ends
             text_chunks: list[str] = []
 
+            # Usage reported by the provider's final stream event
+            step_usage: dict | None = None
+
             # Call LLM (streaming)
             logger.debug(
                 "agent_loop_llm_call",
@@ -287,6 +291,12 @@ class AgentLoop:
                     if pending_tool_calls:
                         last_idx = max(pending_tool_calls.keys())
                         pending_tool_calls[last_idx]["args_str"] += chunk.argument_delta
+
+                elif chunk.type == "done" and chunk.usage:
+                    step_usage = chunk.usage
+
+            if step_usage:
+                record_llm_usage(user_id, self.provider.model, step_usage)
 
             # Finalize tool calls from accumulated deltas
             for _idx, tc_data in pending_tool_calls.items():
