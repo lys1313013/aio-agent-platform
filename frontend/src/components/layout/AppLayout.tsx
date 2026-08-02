@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
-import { useThemeStore } from '@/stores/themeStore';
 import {
   LogoutOutlined,
   RobotOutlined,
@@ -9,9 +8,6 @@ import {
   BulbOutlined,
   ThunderboltOutlined,
   SettingOutlined,
-  SunOutlined,
-  MoonOutlined,
-  DesktopOutlined,
   UserOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -30,10 +26,10 @@ import { Dropdown, Avatar, Select } from 'antd';
 import type { MenuProps } from 'antd';
 import { cn } from '@/lib/utils';
 import { settingsApi } from '@/lib/api';
+import SkinPicker from '@/components/SkinPicker';
 
 export default function AppLayout() {
   const { logout, role, username } = useAuthStore();
-  const { theme, setTheme } = useThemeStore();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [tenantOptions, setTenantOptions] = useState<Array<{
     id: string;
@@ -77,25 +73,7 @@ export default function AppLayout() {
     { path: '/settings', icon: <SettingOutlined />, label: '设置' },
   ];
 
-  const cycleTheme = () => {
-    const order: Array<'light' | 'dark' | 'system'> = ['light', 'dark', 'system'];
-    const idx = order.indexOf(theme);
-    setTheme(order[(idx + 1) % order.length]);
-  };
-
-  const themeLabel =
-    theme === 'light' ? '亮色' : theme === 'dark' ? '暗色' : '跟随系统';
-
-  const themeIcon =
-    theme === 'light' ? <SunOutlined /> : theme === 'dark' ? <MoonOutlined /> : <DesktopOutlined />;
-
   const userMenuItems: MenuProps['items'] = [
-    {
-      key: 'theme',
-      icon: themeIcon,
-      label: `主题：${themeLabel}`,
-      onClick: cycleTheme,
-    },
     {
       key: 'settings',
       icon: <SettingOutlined />,
@@ -137,6 +115,7 @@ export default function AppLayout() {
               }}
             />
           )}
+          <SkinPicker />
           <Dropdown menu={{ items: userMenuItems }} trigger={['click']} placement="bottomRight">
             <button className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-muted">
               <Avatar size={28} icon={<UserOutlined />} className="bg-primary/20 text-primary" />
@@ -170,7 +149,7 @@ export default function AppLayout() {
                     )}
                   >
                     {isActive && (
-                      <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-gradient-to-b from-[#6366f1] to-[#8b5cf6]" />
+                      <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-brand-gradient-b" />
                     )}
                     <span className={cn('text-base transition', isActive && 'text-primary')}>
                       {item.icon}

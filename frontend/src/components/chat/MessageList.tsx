@@ -42,7 +42,7 @@ export default function MessageList({ messages, streaming, agent, onNewChat, onE
           {/* New chat button */}
           <button
             onClick={onNewChat}
-            className="mt-8 flex items-center gap-2 rounded-lg bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] px-5 py-2.5 text-sm font-semibold text-white shadow-[0_2px_8px_rgba(99,102,241,0.25)] transition-all hover:shadow-[0_4px_12px_rgba(99,102,241,0.35)] hover:-translate-y-[1px] active:translate-y-0"
+            className="mt-8 flex items-center gap-2 rounded-lg bg-brand-gradient px-5 py-2.5 text-sm font-semibold text-white shadow-brand transition-all hover:shadow-brand-lg hover:-translate-y-[1px] active:translate-y-0"
           >
             <PlusOutlined />
             <span>开始新对话</span>

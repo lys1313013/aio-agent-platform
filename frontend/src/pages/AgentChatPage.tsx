@@ -511,7 +511,7 @@ export default function AgentChatPage() {
             type="primary"
             icon={<PlusOutlined />}
             onClick={handleNewChat}
-            className="ml-auto !bg-gradient-to-r !from-[#6366f1] !to-[#8b5cf6] !border-none !shadow-[0_2px_8px_rgba(99,102,241,0.25)] hover:!shadow-[0_4px_12px_rgba(99,102,241,0.35)]"
+            className="ml-auto !bg-brand-gradient !border-none shadow-brand hover:shadow-brand-lg"
           >
             新对话
           </Button>

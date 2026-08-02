@@ -400,7 +400,7 @@ export default function ModelManagementPage() {
                         模型列表
                         <Badge
                           count={providerModels.length}
-                          style={{ backgroundColor: '#8b5cf6' }}
+                          style={{ backgroundColor: 'hsl(var(--primary))' }}
                           className="ml-2"
                         />
                       </Text>

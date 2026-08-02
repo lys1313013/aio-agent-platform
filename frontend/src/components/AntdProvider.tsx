@@ -1,5 +1,6 @@
 import { ConfigProvider, App, theme } from 'antd';
 import { useThemeStore } from '@/stores/themeStore';
+import { getSkin } from '@/styles/skins';
 import { useMemo } from 'react';
 
 interface Props {
@@ -7,7 +8,7 @@ interface Props {
 }
 
 export default function AntdProvider({ children }: Props) {
-  const { theme: themeMode } = useThemeStore();
+  const { theme: themeMode, skin } = useThemeStore();
 
   const resolved = themeMode === 'system'
     ? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -20,15 +21,17 @@ export default function AntdProvider({ children }: Props) {
     [resolved],
   );
 
+  const skinToken = useMemo(() => getSkin(skin).antd, [skin]);
+
   return (
     <ConfigProvider
       theme={{
         algorithm,
         token: {
-          colorPrimary: '#3b82f6',
           borderRadius: 8,
           fontFamily:
             '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+          ...skinToken,
         },
       }}
     >

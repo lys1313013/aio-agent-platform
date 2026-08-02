@@ -199,7 +199,7 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
         <Tooltip title="新对话" placement="right" mouseEnterDelay={0.5}>
           <button
             onClick={handleNewChat}
-            className="flex items-center justify-center w-9 h-9 rounded-lg bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] text-white shadow-[0_2px_8px_rgba(99,102,241,0.25)] transition-all hover:shadow-[0_4px_12px_rgba(99,102,241,0.35)] hover:-translate-y-[1px] active:translate-y-0"
+            className="flex items-center justify-center w-9 h-9 rounded-lg bg-brand-gradient text-white shadow-brand transition-all hover:shadow-brand-lg hover:-translate-y-[1px] active:translate-y-0"
           >
             <PlusOutlined />
           </button>

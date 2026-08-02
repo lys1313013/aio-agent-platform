@@ -2,6 +2,25 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer utilities {
+  /* Brand gradient driven by the active skin */
+  .bg-brand-gradient {
+    background-image: linear-gradient(to right, hsl(var(--brand-from)), hsl(var(--brand-to)));
+  }
+
+  .bg-brand-gradient-b {
+    background-image: linear-gradient(to bottom, hsl(var(--brand-from)), hsl(var(--brand-to)));
+  }
+
+  .shadow-brand {
+    box-shadow: 0 2px 8px rgb(var(--brand-glow-rgb) / 0.25);
+  }
+
+  .shadow-brand-lg {
+    box-shadow: 0 4px 12px rgb(var(--brand-glow-rgb) / 0.35);
+  }
+}
+
 @layer base {
   * {
     @apply border-border;
@@ -20,11 +39,14 @@
     --accent-foreground: 0 0% 98%;
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;
-    --primary: 217 91% 60%;
+    --primary: 239 84% 67%;
     --primary-foreground: 0 0% 98%;
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 0 0% 98%;
-    --ring: 217 91% 60%;
+    --ring: 239 84% 67%;
+    --brand-from: 239 84% 67%;
+    --brand-to: 258 90% 66%;
+    --brand-glow-rgb: 99 102 241;
   }
 
   /* Light theme */
@@ -39,11 +61,55 @@
     --accent-foreground: 240 5.9% 10%;
     --border: 240 5.9% 90%;
     --input: 240 5.9% 90%;
-    --primary: 217 91% 60%;
+    --primary: 239 84% 67%;
     --primary-foreground: 0 0% 98%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 0 0% 98%;
+    --ring: 239 84% 67%;
+    --brand-from: 239 84% 67%;
+    --brand-to: 258 90% 66%;
+    --brand-glow-rgb: 99 102 241;
+  }
+
+  /* ── Skins: override brand/accent vars via [data-skin] on <html> ── */
+  :root[data-skin='blue'] {
+    --primary: 217 91% 60%;
     --ring: 217 91% 60%;
+    --brand-from: 217 91% 60%;
+    --brand-to: 199 89% 48%;
+    --brand-glow-rgb: 59 130 246;
+  }
+
+  :root[data-skin='emerald'] {
+    --primary: 160 84% 39%;
+    --ring: 160 84% 39%;
+    --brand-from: 160 84% 39%;
+    --brand-to: 175 84% 32%;
+    --brand-glow-rgb: 16 185 129;
+  }
+
+  :root[data-skin='amber'] {
+    --primary: 38 92% 50%;
+    --ring: 38 92% 50%;
+    --brand-from: 38 92% 50%;
+    --brand-to: 25 95% 53%;
+    --brand-glow-rgb: 245 158 11;
+  }
+
+  :root[data-skin='rose'] {
+    --primary: 347 77% 50%;
+    --ring: 347 77% 50%;
+    --brand-from: 347 77% 50%;
+    --brand-to: 330 81% 60%;
+    --brand-glow-rgb: 244 63 94;
+  }
+
+  :root[data-skin='cyan'] {
+    --primary: 188 94% 43%;
+    --ring: 188 94% 43%;
+    --brand-from: 188 94% 43%;
+    --brand-to: 199 89% 48%;
+    --brand-glow-rgb: 6 182 212;
   }
 
   body {
@@ -52,6 +118,7 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-feature-settings: 'rlig' 1, 'calt' 1;
+    transition: background-color 200ms ease, color 200ms ease;
   }
 }
 
