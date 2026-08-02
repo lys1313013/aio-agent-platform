@@ -33,6 +33,7 @@ from aio_agent_platform.interface.routes import (
     tenants_router,
     tools_router,
     users_router,
+    web_tools_router,
 )
 from aio_agent_platform.knowledge.handlers import KNOWLEDGE_HANDLERS
 from aio_agent_platform.memory.handlers import MEMORY_HANDLERS
@@ -110,6 +111,11 @@ async def lifespan(app: FastAPI):
     # 9.6 Register cron job tool handlers
     for name, handler in CRON_JOB_HANDLERS.items():
         tool_executor.register_direct_handler(name, handler)
+
+    # 9.7 Register web tool handlers (web_search / web_fetch)
+    from aio_agent_platform.tools import web as web_tools
+
+    web_tools.register_handlers(tool_executor)
 
     # 10. MCP Manager — connect to configured MCP Servers
     from aio_agent_platform.tools.mcp.manager import MCPManager
@@ -389,6 +395,7 @@ def create_app() -> FastAPI:
     app.include_router(users_router)
     app.include_router(channels_router)
     app.include_router(channel_bindings_router)
+    app.include_router(web_tools_router)
 
     # Health check
     @app.get("/health")

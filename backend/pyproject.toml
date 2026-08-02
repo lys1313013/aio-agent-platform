@@ -35,6 +35,10 @@ dependencies = [
     "itsdangerous>=2.2.0", # JWT secret 安全签名
     # ---- HTTP ----
     "httpx>=0.28.0",
+    # ---- Web 搜索/抓取工具 ----
+    "readability-lxml>=0.8.1",
+    "markdownify>=0.14.0",
+    "ddgs>=9.0.0",
     # ---- IM 渠道 (飞书等) ----
     "websockets>=13.0", # 飞书 WebSocket 长连接
     "cryptography>=43.0.0", # 飞书 Webhook 事件解密

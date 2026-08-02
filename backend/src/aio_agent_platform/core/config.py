@@ -141,6 +141,31 @@ class LangfuseSettings(BaseSettings):
     enabled: bool = Field(default=True, description="Enable Langfuse tracing")
 
 
+class WebSettings(BaseSettings):
+    """Web search/fetch tool configuration."""
+
+    model_config = SettingsConfigDict(env_prefix="WEB_")
+
+    enabled: bool = Field(default=True, description="Enable web_search / web_fetch tools")
+    search_provider: str = Field(
+        default="auto",
+        pattern="^(auto|duckduckgo|brave|tavily|searxng)$",
+    )
+    brave_api_key: str = Field(default="")
+    tavily_api_key: str = Field(default="")
+    searxng_url: str = Field(default="", description="Self-hosted SearXNG base URL")
+    firecrawl_api_key: str = Field(default="", description="Optional Firecrawl fallback for web_fetch")
+    fetch_max_chars: int = Field(default=8000, ge=500, le=10000)
+    fetch_max_response_bytes: int = Field(default=2_000_000, ge=100_000, le=20_000_000)
+    fetch_timeout_seconds: int = Field(default=30, ge=5, le=120)
+    fetch_max_redirects: int = Field(default=3, ge=0, le=10)
+    cache_ttl_seconds: int = Field(default=900, ge=0, le=86400, description="0 = disable cache")
+    summary_enabled: bool = Field(
+        default=False,
+        description="Summarize oversized pages with the default LLM instead of truncating",
+    )
+
+
 class ServerSettings(BaseSettings):
     """Server configuration."""
 
@@ -173,6 +198,7 @@ class AppSettings(BaseSettings):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
     langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
+    web: WebSettings = Field(default_factory=WebSettings)
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

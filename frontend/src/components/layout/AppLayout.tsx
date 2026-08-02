@@ -21,6 +21,7 @@ import {
   TeamOutlined,
   FolderOpenOutlined,
   MessageOutlined,
+  SearchOutlined,
 } from '@ant-design/icons';
 import { Dropdown, Avatar, Select } from 'antd';
 import type { MenuProps } from 'antd';
@@ -59,6 +60,7 @@ export default function AppLayout() {
           { path: '/mcp-servers', icon: <CloudServerOutlined />, label: 'MCP 服务' },
           { path: '/knowledge', icon: <DatabaseOutlined />, label: '知识库' },
           { path: '/remote-tools', icon: <GlobalOutlined />, label: '远程工具' },
+          { path: '/web-tools', icon: <SearchOutlined />, label: 'Web 工具' },
           { path: '/channels', icon: <MessageOutlined />, label: '渠道管理' },
           { path: '/cron-jobs', icon: <ClockCircleOutlined />, label: '定时任务' },
         ]

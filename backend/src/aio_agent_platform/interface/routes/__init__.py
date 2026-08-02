@@ -20,6 +20,7 @@ from aio_agent_platform.interface.routes.skills import router as skills_router
 from aio_agent_platform.interface.routes.tenants import router as tenants_router
 from aio_agent_platform.interface.routes.tools import router as tools_router
 from aio_agent_platform.interface.routes.users import router as users_router
+from aio_agent_platform.interface.routes.web_tools import router as web_tools_router
 
 __all__ = [
     "admin_models_router",
@@ -42,4 +43,5 @@ __all__ = [
     "tenants_router",
     "tools_router",
     "users_router",
+    "web_tools_router",
 ]

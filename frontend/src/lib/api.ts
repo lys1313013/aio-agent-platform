@@ -867,6 +867,30 @@ export interface RagflowSettings {
   has_api_key: boolean;
 }
 
+export interface WebToolConfig {
+  enabled: boolean;
+  search_provider: 'auto' | 'duckduckgo' | 'brave' | 'tavily' | 'searxng';
+  searxng_url: string;
+  summary_enabled: boolean;
+  cache_ttl_seconds: number;
+  fetch_max_chars: number;
+  has_brave_api_key: boolean;
+  has_tavily_api_key: boolean;
+  has_firecrawl_api_key: boolean;
+}
+
+export interface WebToolConfigUpdate {
+  enabled?: boolean;
+  search_provider?: string;
+  brave_api_key?: string;
+  tavily_api_key?: string;
+  searxng_url?: string;
+  firecrawl_api_key?: string;
+  summary_enabled?: boolean;
+  cache_ttl_seconds?: number;
+  fetch_max_chars?: number;
+}
+
 export interface TestResult {
   success: boolean;
   message: string;
@@ -949,6 +973,20 @@ export const ragflowSettingsApi = {
 
   update(data: { base_url?: string; api_key?: string }) {
     return request<RagflowSettings>('/admin/settings/ragflow', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+};
+
+
+export const webToolSettingsApi = {
+  get() {
+    return request<WebToolConfig>('/admin/settings/web');
+  },
+
+  update(data: WebToolConfigUpdate) {
+    return request<WebToolConfig>('/admin/settings/web', {
       method: 'PUT',
       body: JSON.stringify(data),
     });
