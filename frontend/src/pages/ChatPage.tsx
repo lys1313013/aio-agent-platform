@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
+import { usePetStore } from '@/stores/petStore';
 import { chatApi } from '@/lib/api';
 import { useMessageQueue } from '@/hooks/useMessageQueue';
 import MessageList from '@/components/chat/MessageList';
@@ -37,6 +38,7 @@ export default function ChatPage() {
     abortRef.current?.abort();
     abortRef.current = null;
     setStreaming(IDLE_STREAMING);
+    usePetStore.getState().reportEvent('interrupt');
   }, []);
   const { queue, enqueue, remove: removeQueued, clear: clearQueue, flushNext, sendNow: sendQueuedNow } =
     useMessageQueue(
@@ -88,6 +90,7 @@ export default function ChatPage() {
         { session_id: sessionId, message: content },
         (event) => {
           const type = event.type as string;
+          usePetStore.getState().reportEvent(type);
 
           switch (type) {
             case 'session':

@@ -14,6 +14,7 @@ from aio_agent_platform.delegation import DELEGATION_HANDLERS
 from aio_agent_platform.interaction import INTERACTION_HANDLERS
 from aio_agent_platform.interface.routes import (
     admin_models_router,
+    admin_pets_router,
     agent_api_router,
     agents_router,
     analytics_router,
@@ -26,6 +27,7 @@ from aio_agent_platform.interface.routes import (
     knowledge_router,
     mcp_servers_router,
     memories_router,
+    pets_router,
     public_router,
     remote_tools_router,
     sessions_router,
@@ -381,6 +383,8 @@ def create_app() -> FastAPI:
     app.include_router(chat_router)
     app.include_router(settings_router)
     app.include_router(memories_router)
+    app.include_router(pets_router)
+    app.include_router(admin_pets_router)
     app.include_router(skills_router)
     app.include_router(admin_models_router)
     app.include_router(agents_router)

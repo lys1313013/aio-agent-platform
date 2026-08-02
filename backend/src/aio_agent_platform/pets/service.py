@@ -7,15 +7,47 @@ from uuid import UUID
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.db.models import PetPackage, User, UserPet
+from aio_agent_platform.db.models import PetExpLog, PetPackage, User, UserPet
 from aio_agent_platform.pets.package import ParsedPetPackage, PetPackageError
 from aio_agent_platform.storage.client import ObjectStorage
 
 MAX_PACKAGES_PER_USER = 20
+INTERACT_DAILY_LIMIT = 5
+MAX_LEVEL = 50
 ADMIN_ROLES = {"admin", "superadmin"}
 
-# 平台状态名（row_mapping 的合法 key），idle 必选
+# 平台状态名（row_mapping 的合法 key），idle 必选。
+# 互动菜单/点击播放直接按精灵图行操作，不走 row_mapping，故无额外状态。
 VALID_ROW_STATES = {"idle", "think", "work", "wait", "celebrate", "sad", "sleep", "happy"}
+
+# Codex 标准 9 行精灵图布局的默认 行→状态 映射（2026-08-02 用 ~/.codex/pets 下 4 个官方包 + spec 校准）。
+# 行序：0 idle / 1 running-right / 2 running-left / 3 waving / 4 jumping /
+#       5 failed / 6 waiting / 7 running(工作中) / 8 review(思考)。
+# sleep 无对应行 → 不映射，运行期降级 idle。
+DEFAULT_ROW_MAPPING = {
+    "idle": 0,
+    "think": 8,  # review
+    "work": 7,   # running = 活跃工作循环
+    "wait": 6,   # waiting
+    "celebrate": 4,  # jumping
+    "sad": 5,    # failed
+    "happy": 3,  # waving
+}
+
+
+def default_row_mapping(row_count: int) -> dict:
+    """标准 9 行包返回完整默认映射；不足 9 行的自定义包只保证 idle（行 0）。"""
+    if row_count >= 9:
+        return dict(DEFAULT_ROW_MAPPING)
+    return {"idle": 0}
+
+
+def level_from_exp(exp: int) -> int:
+    """累计经验 → 等级。等级 n 需 100*(n-1)^1.5 累计经验，上限 MAX_LEVEL。"""
+    level = 1
+    while level < MAX_LEVEL and exp >= 100 * level ** 1.5:
+        level += 1
+    return level
 
 
 class PetNotFoundError(LookupError):
@@ -80,7 +112,11 @@ class PetService:
         if (count or 0) >= MAX_PACKAGES_PER_USER and user.role not in ADMIN_ROLES:
             raise PetPackageError(f"上传数量超过限制（{MAX_PACKAGES_PER_USER} 个）")
 
-        mapping = validate_row_mapping(row_mapping, parsed.row_count)
+        # 标准 9 行包自动套用 Codex 默认映射；用户显式传入的映射覆盖之
+        mapping = validate_row_mapping(
+            {**default_row_mapping(parsed.row_count), **row_mapping},
+            parsed.row_count,
+        )
         mapping["_row_frames"] = parsed.row_frames
 
         pkg = PetPackage(
@@ -146,6 +182,15 @@ class PetService:
             raise PetPackageError(f"非法可见性: {visibility}（official 仅管理员可设）")
         pkg = await self._get_owned_package(user, package_id)
         pkg.visibility = visibility
+        await self.db.flush()
+        return pkg
+
+    async def set_row_mapping(self, user: User, package_id: UUID, mapping: dict) -> PetPackage:
+        pkg = await self._get_owned_package(user, package_id)
+        clean = validate_row_mapping(mapping, pkg.row_count)
+        # 保留平台附加字段（如 _row_frames）
+        existing = {k: v for k, v in (pkg.row_mapping or {}).items() if k.startswith("_")}
+        pkg.row_mapping = {**clean, **existing}
         await self.db.flush()
         return pkg
 
@@ -227,3 +272,27 @@ class PetService:
             .where(UserPet.user_id == user.id, UserPet.is_active.is_(True))
         )
         return result.first()
+
+    async def interact(self, user: User, user_pet_id: UUID) -> tuple[UserPet, bool]:
+        """点击互动：+1 经验（每日上限 INTERACT_DAILY_LIMIT）。返回 (pet, 是否已加经验)。"""
+        pet = await self.db.get(UserPet, user_pet_id)
+        if pet is None or pet.user_id != user.id:
+            raise PetNotFoundError(str(user_pet_id))
+
+        today_count = await self.db.scalar(
+            select(func.count())
+            .select_from(PetExpLog)
+            .where(
+                PetExpLog.pet_id == user_pet_id,
+                PetExpLog.reason == "interact",
+                PetExpLog.created_at >= func.date_trunc("day", func.now()),
+            )
+        )
+        if (today_count or 0) >= INTERACT_DAILY_LIMIT:
+            return pet, False
+
+        pet.exp += 1
+        pet.level = level_from_exp(pet.exp)
+        self.db.add(PetExpLog(user_id=user.id, pet_id=user_pet_id, delta=1, reason="interact"))
+        await self.db.flush()
+        return pet, True

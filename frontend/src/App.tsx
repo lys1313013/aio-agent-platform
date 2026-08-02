@@ -11,6 +11,7 @@ import DashboardPage from '@/pages/DashboardPage';
 import UsagePage from '@/pages/UsagePage';
 import MemoryPage from '@/pages/MemoryPage';
 import SkillsPage from '@/pages/SkillsPage';
+import PetsPage from '@/pages/PetsPage';
 import WorkspacesPage from '@/pages/WorkspacesPage';
 import SettingsPage from '@/pages/SettingsPage';
 import PortraitPage from '@/pages/PortraitPage';
@@ -89,6 +90,7 @@ export default function App() {
         <Route path="/usage" element={<UsagePage />} />
         <Route path="/memory" element={<MemoryPage />} />
         <Route path="/skills" element={<SkillsPage />} />
+        <Route path="/pets" element={<PetsPage />} />
         <Route path="/workspaces" element={<WorkspacesPage />} />
         <Route path="/portrait" element={<PortraitPage />} />
         <Route path="/settings" element={<SettingsPage />} />

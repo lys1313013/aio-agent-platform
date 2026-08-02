@@ -97,6 +97,10 @@ class VisibilityUpdate(BaseModel):
     visibility: str = Field(..., pattern="^(private|tenant|public)$")
 
 
+class RowMappingUpdate(BaseModel):
+    row_mapping: dict[str, int]
+
+
 class AdminVisibilityUpdate(BaseModel):
     visibility: str = Field(..., pattern="^(private|tenant|public|official)$")
 
@@ -162,6 +166,20 @@ async def set_visibility(
     svc = PetService(db)
     try:
         pkg = await svc.set_visibility(user, package_id, req.visibility)
+    except PetNotFoundError as e:
+        raise _not_found(e) from e
+    except PetPackageError as e:
+        raise _bad_request(e) from e
+    return PetPackageOut.from_model(pkg)
+
+
+@router.put("/packages/{package_id}/row-mapping", response_model=PetPackageOut)
+async def set_row_mapping(
+    package_id: UUID, req: RowMappingUpdate, user: CurrentUser, db: DbSession
+) -> PetPackageOut:
+    svc = PetService(db)
+    try:
+        pkg = await svc.set_row_mapping(user, package_id, req.row_mapping)
     except PetNotFoundError as e:
         raise _not_found(e) from e
     except PetPackageError as e:
@@ -237,6 +255,18 @@ async def activate_pet(user_pet_id: UUID, user: CurrentUser, db: DbSession) -> U
     svc = PetService(db)
     try:
         pet = await svc.activate(user, user_pet_id)
+    except PetNotFoundError as e:
+        raise _not_found(e) from e
+    pkg = await db.get(PetPackage, pet.package_id)
+    assert pkg is not None
+    return UserPetOut.from_pair(pet, pkg)
+
+
+@router.post("/{user_pet_id}/interact", response_model=UserPetOut)
+async def interact_pet(user_pet_id: UUID, user: CurrentUser, db: DbSession) -> UserPetOut:
+    svc = PetService(db)
+    try:
+        pet, _awarded = await svc.interact(user, user_pet_id)
     except PetNotFoundError as e:
         raise _not_found(e) from e
     pkg = await db.get(PetPackage, pet.package_id)

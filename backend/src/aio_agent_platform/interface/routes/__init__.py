@@ -13,6 +13,8 @@ from aio_agent_platform.interface.routes.delegations import router as delegation
 from aio_agent_platform.interface.routes.knowledge import router as knowledge_router
 from aio_agent_platform.interface.routes.mcp_servers import router as mcp_servers_router
 from aio_agent_platform.interface.routes.memories import router as memories_router
+from aio_agent_platform.interface.routes.pets import admin_router as admin_pets_router
+from aio_agent_platform.interface.routes.pets import router as pets_router
 from aio_agent_platform.interface.routes.public import router as public_router
 from aio_agent_platform.interface.routes.remote_tools import router as remote_tools_router
 from aio_agent_platform.interface.routes.sessions import router as sessions_router
@@ -25,6 +27,7 @@ from aio_agent_platform.interface.routes.web_tools import router as web_tools_ro
 
 __all__ = [
     "admin_models_router",
+    "admin_pets_router",
     "agent_api_router",
     "agents_router",
     "analytics_router",
@@ -37,6 +40,7 @@ __all__ = [
     "knowledge_router",
     "mcp_servers_router",
     "memories_router",
+    "pets_router",
     "public_router",
     "remote_tools_router",
     "sessions_router",

@@ -29,6 +29,9 @@ import type {
   ChannelCreate,
   ChannelUpdate,
   ChannelBinding,
+  PetPackage,
+  PetVisibility,
+  UserPet,
 } from './types';
 
 const API_BASE = '/api';
@@ -1658,5 +1661,134 @@ export const analyticsApi = {
     return request<{ items: AnalyticsDetailItem[]; total: number }>(
       `/analytics/detail${qs(q)}`,
     );
+  },
+};
+
+// ---- Pets ----
+
+export const petsApi = {
+  market() {
+    return request<PetPackage[]>('/pets/market');
+  },
+  myPackages() {
+    return request<PetPackage[]>('/pets/packages/mine');
+  },
+  myPets() {
+    return request<UserPet[]>('/pets/mine');
+  },
+  active() {
+    return request<UserPet | null>('/pets/active');
+  },
+  async upload(
+    file: File,
+    rowMapping: Record<string, number>,
+    visibility: PetVisibility = 'private',
+  ): Promise<PetPackage> {
+    if (isTokenExpiringSoon(tokenStorage.getAccess())) {
+      const refreshed = await refreshAccessToken();
+      if (!refreshed && tokenStorage.getRefresh()) {
+        throw new ApiError(401, 'Session expired');
+      }
+    }
+    const form = new FormData();
+    form.append('file', file);
+    form.append('row_mapping', JSON.stringify(rowMapping));
+    form.append('visibility', visibility);
+    const token = tokenStorage.getAccess() || '';
+    const resp = await fetch(`${API_BASE}/pets/packages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+    if (!resp.ok) {
+      let errMsg = resp.statusText;
+      try {
+        const body = await resp.json();
+        errMsg = body.detail || errMsg;
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(resp.status, errMsg);
+    }
+    return resp.json();
+  },
+  /** 带 token 拉取精灵图（<img src> 无法带 Authorization，需 blob URL） */
+  async spritesheetBlob(packageId: string): Promise<Blob> {
+    if (isTokenExpiringSoon(tokenStorage.getAccess())) {
+      const refreshed = await refreshAccessToken();
+      if (!refreshed && tokenStorage.getRefresh()) {
+        throw new ApiError(401, 'Session expired');
+      }
+    }
+    const token = tokenStorage.getAccess() || '';
+    const resp = await fetch(`${API_BASE}/pets/packages/${packageId}/spritesheet`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!resp.ok) {
+      let errMsg = resp.statusText;
+      try {
+        const body = await resp.json();
+        errMsg = body.detail || errMsg;
+      } catch { /* ignore */ }
+      throw new ApiError(resp.status, errMsg);
+    }
+    return resp.blob();
+  },
+
+  /** 带 token 拉取原始 zip 并触发下载 */
+  async download(packageId: string, filename: string): Promise<void> {
+    if (isTokenExpiringSoon(tokenStorage.getAccess())) {
+      const refreshed = await refreshAccessToken();
+      if (!refreshed && tokenStorage.getRefresh()) {
+        throw new ApiError(401, 'Session expired');
+      }
+    }
+    const token = tokenStorage.getAccess() || '';
+    const resp = await fetch(`${API_BASE}/pets/packages/${packageId}/download`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!resp.ok) {
+      let errMsg = resp.statusText;
+      try {
+        const body = await resp.json();
+        errMsg = body.detail || errMsg;
+      } catch { /* ignore */ }
+      throw new ApiError(resp.status, errMsg);
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+
+  setVisibility(packageId: string, visibility: PetVisibility) {
+    return request<PetPackage>(`/pets/packages/${packageId}/visibility`, {
+      method: 'PUT',
+      body: JSON.stringify({ visibility }),
+    });
+  },
+  setRowMapping(packageId: string, rowMapping: Record<string, number>) {
+    return request<PetPackage>(`/pets/packages/${packageId}/row-mapping`, {
+      method: 'PUT',
+      body: JSON.stringify({ row_mapping: rowMapping }),
+    });
+  },
+  deletePackage(packageId: string) {
+    return request<void>(`/pets/packages/${packageId}`, { method: 'DELETE' });
+  },
+  adopt(packageId: string) {
+    return request<UserPet>(`/pets/${packageId}/adopt`, { method: 'POST' });
+  },
+  activate(userPetId: string) {
+    return request<UserPet>(`/pets/${userPetId}/activate`, { method: 'POST' });
+  },
+  deactivate() {
+    return request<void>('/pets/deactivate', { method: 'POST' });
+  },
+  interact(userPetId: string) {
+    return request<UserPet>(`/pets/${userPetId}/interact`, { method: 'POST' });
   },
 };

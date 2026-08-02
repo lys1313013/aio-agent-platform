@@ -21,7 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.create_table(
         'pet_packages',
-        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text('uuid_generate_v4()'), comment='主键ID'),
+        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True, comment='主键ID'),
         sa.Column('name', sa.String(128), nullable=False, comment='宠物标识(pet.json 的 id)'),
         sa.Column('display_name', sa.String(256), nullable=False, comment='展示名称'),
         sa.Column('description', sa.Text(), nullable=True, comment='描述'),
@@ -47,7 +47,7 @@ def upgrade() -> None:
 
     op.create_table(
         'user_pets',
-        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text('uuid_generate_v4()'), comment='主键ID'),
+        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True, comment='主键ID'),
         sa.Column('user_id', postgresql.UUID(as_uuid=True), nullable=False, comment='用户ID'),
         sa.Column('package_id', postgresql.UUID(as_uuid=True), nullable=False, comment='宠物包ID'),
         sa.Column('level', sa.Integer(), nullable=False, server_default='1', comment='等级'),

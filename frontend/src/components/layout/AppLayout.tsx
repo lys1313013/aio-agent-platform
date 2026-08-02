@@ -23,6 +23,7 @@ import {
   FolderOpenOutlined,
   MessageOutlined,
   SearchOutlined,
+  SmileOutlined,
 } from '@ant-design/icons';
 import { Dropdown, Avatar, Select } from 'antd';
 import type { MenuProps } from 'antd';
@@ -30,6 +31,7 @@ import { cn } from '@/lib/utils';
 import { settingsApi } from '@/lib/api';
 import SkinPicker from '@/components/SkinPicker';
 import BrandLogo from '@/components/BrandLogo';
+import PetWidget from '@/components/pet/PetWidget';
 
 export default function AppLayout() {
   const { logout, role, username } = useAuthStore();
@@ -56,6 +58,7 @@ export default function AppLayout() {
     { path: '/agents', icon: <RobotOutlined />, label: '智能体' },
     { path: '/memory', icon: <BulbOutlined />, label: '记忆' },
     { path: '/skills', icon: <ThunderboltOutlined />, label: '技能' },
+    { path: '/pets', icon: <SmileOutlined />, label: '宠物' },
     { path: '/workspaces', icon: <FolderOpenOutlined />, label: '工作区文件' },
     ...(isAdmin
       ? [
@@ -214,6 +217,7 @@ export default function AppLayout() {
           <Outlet />
         </main>
       </div>
+      <PetWidget />
     </div>
   );
 }

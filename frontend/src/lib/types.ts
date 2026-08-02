@@ -543,3 +543,60 @@ export interface CronJobListResponse {
   items: CronJob[];
   total: number;
 }
+
+// ---- Pets (Codex-compatible) ----
+
+export type PetVisibility = 'private' | 'tenant' | 'public' | 'official';
+
+/** 宠物状态 → 精灵图行号映射；_row_frames 为每行有效帧数 */
+export interface PetRowMapping {
+  idle: number;
+  think?: number;
+  work?: number;
+  wait?: number;
+  celebrate?: number;
+  sad?: number;
+  sleep?: number;
+  happy?: number;
+  _row_frames?: number[];
+}
+
+export interface PetPackage {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string | null;
+  kind: string | null;
+  owner_id: string;
+  tenant_id: string;
+  visibility: PetVisibility;
+  status: string;
+  manifest: Record<string, unknown>;
+  row_mapping: PetRowMapping;
+  frame_width: number;
+  frame_height: number;
+  col_count: number;
+  row_count: number;
+  created_at: string;
+  spritesheet_url: string;
+}
+
+export interface UserPet {
+  id: string;
+  package_id: string;
+  level: number;
+  exp: number;
+  is_active: boolean;
+  adopted_at: string;
+  package: PetPackage;
+}
+
+export type PetMood =
+  | 'idle'
+  | 'think'
+  | 'work'
+  | 'wait'
+  | 'celebrate'
+  | 'sad'
+  | 'sleep'
+  | 'happy';
