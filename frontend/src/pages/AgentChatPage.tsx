@@ -129,6 +129,7 @@ export default function AgentChatPage() {
       // Start streaming state
       setError(null);
       setStreaming({ ...IDLE_STREAMING, isStreaming: true });
+      usePetStore.getState().startTask(content || '文件任务');
 
       // Start SSE stream
       const controller = chatApi.stream(
@@ -141,7 +142,10 @@ export default function AgentChatPage() {
         },
         (event) => {
           const type = event.type as string;
-          usePetStore.getState().reportEvent(type);
+          usePetStore.getState().reportEvent(
+            type,
+            type === 'tool_call' ? ((event.name as string) || undefined) : undefined,
+          );
 
           switch (type) {
             case 'session':

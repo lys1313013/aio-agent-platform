@@ -84,13 +84,17 @@ export default function ChatPage() {
       // Start streaming state
       setError(null);
       setStreaming({ ...IDLE_STREAMING, isStreaming: true });
+      usePetStore.getState().startTask(content);
 
       // Start SSE stream
       const controller = chatApi.stream(
         { session_id: sessionId, message: content },
         (event) => {
           const type = event.type as string;
-          usePetStore.getState().reportEvent(type);
+          usePetStore.getState().reportEvent(
+            type,
+            type === 'tool_call' ? ((event.name as string) || undefined) : undefined,
+          );
 
           switch (type) {
             case 'session':

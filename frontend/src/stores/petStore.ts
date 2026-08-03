@@ -52,14 +52,20 @@ interface PetState {
   mood: PetMood;
   /** 用户指定播放的精灵图行（互动菜单/左键点击），播放完自动回 null */
   actionRow: number | null;
+  /** 正在处理的任务摘要（发消息时设置，done/error/interrupt 时清除） */
+  taskLabel: string | null;
+  /** 当前正在执行的工具名（tool_call 事件更新） */
+  taskTool: string | null;
   size: number;
   loaded: boolean;
 
   loadActive: () => Promise<void>;
   setEnabled: (enabled: boolean) => void;
   setSize: (size: number) => void;
-  /** SSE 事件驱动的状态机入口（ChatPage / AgentChatPage 每个事件调用一次） */
-  reportEvent: (eventType: string) => void;
+  /** 开始一个任务（发送消息时调用），宠物下方展示任务条 */
+  startTask: (label: string) => void;
+  /** SSE 事件驱动的状态机入口（ChatPage / AgentChatPage 每个事件调用一次），detail 目前用于 tool_call 传工具名 */
+  reportEvent: (eventType: string, detail?: string) => void;
   /** 播放指定精灵图行动画 + 后端 interact(+1 exp，每日上限) */
   playRow: (row: number) => Promise<void>;
 }
@@ -79,6 +85,8 @@ export const usePetStore = create<PetState>((set, get) => ({
   enabled: localStorage.getItem(ENABLED_KEY) !== '0',
   mood: 'idle',
   actionRow: null,
+  taskLabel: null,
+  taskTool: null,
   size: loadSize(),
   loaded: false,
 
@@ -102,13 +110,19 @@ export const usePetStore = create<PetState>((set, get) => ({
     set({ size });
   },
 
-  reportEvent: (eventType) => {
+  startTask: (label) => {
+    const trimmed = label.trim().replace(/\s+/g, ' ');
+    if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
+    set({ taskLabel: trimmed ? trimmed.slice(0, 30) : null, taskTool: null });
+  },
+
+  reportEvent: (eventType, detail) => {
     if (!get().activePet) return;
     switch (eventType) {
       case 'tool_call':
       case 'delegation_tool_call':
         if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
-        set({ mood: 'work' });
+        set({ mood: 'work', taskTool: detail ?? null });
         break;
       case 'thinking':
       case 'text_delta':
@@ -127,12 +141,12 @@ export const usePetStore = create<PetState>((set, get) => ({
         set({ mood: 'think' });
         break;
       case 'done':
-        set({ mood: 'celebrate' });
+        set({ mood: 'celebrate', taskLabel: null, taskTool: null });
         scheduleReset(set, CELEBRATE_MS);
         break;
       case 'error':
       case 'interrupt':
-        set({ mood: 'sad' });
+        set({ mood: 'sad', taskLabel: null, taskTool: null });
         scheduleReset(set, SAD_MS);
         break;
       default:
