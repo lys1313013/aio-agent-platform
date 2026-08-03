@@ -548,12 +548,12 @@ async def chat(
     db.add(user_msg)
     await db.flush()
 
-    # First message in the session → auto-generate title concurrently (if enabled globally)
+    # First message in the session → auto-generate title concurrently (if enabled on the agent)
     title_task: asyncio.Task[str | None] | None = None
     prior_msg_count = await db.scalar(
         select(func.count(Message.id)).where(Message.session_id == session.id)
     )
-    if not prior_msg_count:
+    if not prior_msg_count and (agent.enable_auto_title if agent else True):
         title_task = asyncio.create_task(generate_session_title(req.message))
 
     # Run agent loop with overflow retry
@@ -805,14 +805,14 @@ async def chat_stream(
     db.add(user_msg)
     await db.commit()
 
-    # First message in the session → auto-generate title concurrently (if enabled globally)
+    # First message in the session → auto-generate title concurrently (if enabled on the agent)
     title_task: asyncio.Task[str | None] | None = None
     prior_msg_count = await db.scalar(
         select(func.count(Message.id)).where(
             Message.session_id == session_id, Message.id != user_msg.id
         )
     )
-    if not prior_msg_count:
+    if not prior_msg_count and (agent.enable_auto_title if agent else True):
         title_task = asyncio.create_task(generate_session_title(req.message))
 
     async def event_generator():

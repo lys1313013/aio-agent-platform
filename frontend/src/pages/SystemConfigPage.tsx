@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { SaveOutlined } from '@ant-design/icons';
-import { Form, Select, Button, Card, Typography, Spin, App, Switch, Input } from 'antd';
+import { Form, Select, Button, Card, Typography, Spin, App, Input } from 'antd';
 import { systemConfigApi, adminApi } from '@/lib/api';
 import type { LLMModel } from '@/lib/api';
 
@@ -25,7 +25,6 @@ export default function SystemConfigPage() {
       setModels(modelList.filter((m) => m.is_active));
       setDefaultPrompt(cfg.default_prompt);
       form.setFieldsValue({
-        enabled: cfg.enabled,
         model_id: cfg.model_id,
         prompt: cfg.prompt,
       });
@@ -45,7 +44,6 @@ export default function SystemConfigPage() {
     setSaving(true);
     try {
       await systemConfigApi.updateAutoTitle({
-        enabled: !!values.enabled,
         model_id: values.model_id ?? null,
         prompt: values.prompt ?? '',
       });
@@ -81,15 +79,6 @@ export default function SystemConfigPage() {
         }
       >
         <Form form={form} layout="vertical">
-          <Form.Item
-            name="enabled"
-            label="启用自动标题"
-            valuePropName="checked"
-            extra="开启后，新会话发出第一条消息时会自动调用模型生成会话标题"
-          >
-            <Switch />
-          </Form.Item>
-
           <Form.Item
             name="model_id"
             label="标题生成模型"

@@ -262,6 +262,7 @@ def _build_config_snapshot(agent: Agent) -> dict:
         "temperature": agent.temperature,
         "welcome_message": agent.welcome_message,
         "enable_memory_extraction": agent.enable_memory_extraction,
+        "enable_auto_title": agent.enable_auto_title if agent.enable_auto_title is not None else True,
         "max_iterations": agent.max_iterations,
     }
 

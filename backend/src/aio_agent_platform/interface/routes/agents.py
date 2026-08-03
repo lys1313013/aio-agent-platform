@@ -55,6 +55,7 @@ class AgentOut(BaseModel):
     starter_prompts: list[dict] | None = None
     enable_memory_extraction: bool = True
     enable_retry: bool = True
+    enable_auto_title: bool = True
     is_active: bool = True
     skill_ids: list[str] = []
     knowledge_base_ids: list[str] = []
@@ -84,6 +85,7 @@ class AgentCreate(BaseModel):
     starter_prompts: list[dict] | None = None
     enable_memory_extraction: bool = True
     enable_retry: bool = True
+    enable_auto_title: bool = True
     skill_ids: list[str] = Field(default_factory=list)
     knowledge_base_ids: list[str] = Field(default_factory=list)
     child_ids: list[str] = Field(default_factory=list)
@@ -104,6 +106,7 @@ class AgentUpdate(BaseModel):
     starter_prompts: list[dict] | None = None
     enable_memory_extraction: bool | None = None
     enable_retry: bool | None = None
+    enable_auto_title: bool | None = None
     skill_ids: list[str] | None = None
     knowledge_base_ids: list[str] | None = None
     is_active: bool | None = None
@@ -167,6 +170,7 @@ async def admin_create_agent(
         starter_prompts=req.starter_prompts,
         enable_memory_extraction=req.enable_memory_extraction,
         enable_retry=req.enable_retry,
+        enable_auto_title=req.enable_auto_title,
         created_by=user.id,
         tenant_id=user.tenant_id,
         visibility=req.visibility,
@@ -267,6 +271,8 @@ async def admin_update_agent(
         agent.enable_memory_extraction = req.enable_memory_extraction
     if req.is_set("enable_retry"):
         agent.enable_retry = req.enable_retry
+    if req.is_set("enable_auto_title"):
+        agent.enable_auto_title = req.enable_auto_title
     if req.is_set("is_active"):
         agent.is_active = req.is_active
     if req.is_set("visibility"):
@@ -666,6 +672,7 @@ def _agent_to_dict(agent: Agent, include_prompt: bool = True, user=None) -> dict
         "starter_prompts": agent.starter_prompts,
         "enable_memory_extraction": agent.enable_memory_extraction,
         "enable_retry": agent.enable_retry if agent.enable_retry is not None else True,
+        "enable_auto_title": agent.enable_auto_title if agent.enable_auto_title is not None else True,
         "is_active": agent.is_active,
         "skill_ids": [str(s.id) for s in agent.skills] if agent.skills else [],
         "knowledge_base_ids": [str(kb.id) for kb in agent.knowledge_bases] if agent.knowledge_bases else [],

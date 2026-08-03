@@ -387,6 +387,9 @@ class Agent(Base):
     enable_retry: Mapped[bool] = mapped_column(
         Boolean, default=True, comment="LLM API 调用失败时是否自动重试",
     )
+    enable_auto_title: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", comment="是否自动总结会话标题",
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否启用")
     created_by: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),

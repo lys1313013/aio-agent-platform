@@ -123,6 +123,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
   const [starterPrompts, setStarterPrompts] = useState<Array<{ label: string; icon: string }>>([]);
   const [enableMemoryExtraction, setEnableMemoryExtraction] = useState(true);
   const [enableRetry, setEnableRetry] = useState(true);
+  const [enableAutoTitle, setEnableAutoTitle] = useState(true);
   const [selectedChildIds, setSelectedChildIds] = useState<string[]>([]);
   const [childMaxIterations, setChildMaxIterations] = useState<Record<string, number | null>>({});
   const [savingSection, setSavingSection] = useState<string | null>(null);
@@ -200,6 +201,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
         setStarterPrompts(found.starter_prompts || []);
         setEnableMemoryExtraction(found.enable_memory_extraction ?? true);
         setEnableRetry(found.enable_retry ?? true);
+        setEnableAutoTitle(found.enable_auto_title ?? true);
       }
       setModels(m);
       setAllAgents(agents);
@@ -491,6 +493,16 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                       onClick={() => setActiveSection('prompt')}
                     >
                       {agent.enable_retry !== false ? '已开启' : '已关闭'}
+                    </Tag>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <Text type="secondary" className="text-xs">自动标题</Text>
+                    <Tag
+                      color={agent.enable_auto_title !== false ? 'green' : 'default'}
+                      className="text-xs cursor-pointer"
+                      onClick={() => setActiveSection('prompt')}
+                    >
+                      {agent.enable_auto_title !== false ? '已开启' : '已关闭'}
                     </Tag>
                   </div>
                 </div>
@@ -1005,6 +1017,24 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                 </div>
               </div>
 
+              {/* Auto session title toggle */}
+              <div className="mt-4 pt-4 border-t border-border/50">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <Text className="text-xs block">自动总结会话标题</Text>
+                    <Text type="secondary" className="text-[10px] block mt-0.5 leading-snug">
+                      新会话发出第一条消息时自动调用模型生成会话标题
+                    </Text>
+                  </div>
+                  <Switch
+                    size="small"
+                    checked={enableAutoTitle}
+                    onChange={setEnableAutoTitle}
+                    className="flex-shrink-0"
+                  />
+                </div>
+              </div>
+
               <SaveButtonRow
                 saving={savingSection === 'prompt'}
                 saved={savedSection === 'prompt'}
@@ -1019,6 +1049,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                     : null,
                   enable_memory_extraction: enableMemoryExtraction,
                   enable_retry: enableRetry,
+                  enable_auto_title: enableAutoTitle,
                 })}
               />
             </div>

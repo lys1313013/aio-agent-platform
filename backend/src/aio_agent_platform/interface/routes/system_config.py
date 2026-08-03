@@ -21,14 +21,12 @@ router = APIRouter(prefix="/api/admin/system-config", tags=["system-config"])
 
 
 class AutoTitleConfigOut(BaseModel):
-    enabled: bool
     model_id: UUID | None = None
     prompt: str
     default_prompt: str
 
 
 class AutoTitleConfigUpdate(BaseModel):
-    enabled: bool
     model_id: UUID | None = None
     prompt: str = Field(default="", max_length=4000)
 
@@ -40,7 +38,6 @@ async def get_auto_title_config(
 ) -> dict:
     config = await load_auto_title_config(db)
     return {
-        "enabled": config.enabled,
         "model_id": config.model_id,
         "prompt": config.prompt,
         "default_prompt": DEFAULT_PROMPT,
@@ -54,11 +51,8 @@ async def update_auto_title_config(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     prompt = req.prompt.strip() or DEFAULT_PROMPT
-    await save_auto_title_config(
-        db, enabled=req.enabled, model_id=req.model_id, prompt=prompt
-    )
+    await save_auto_title_config(db, model_id=req.model_id, prompt=prompt)
     return {
-        "enabled": req.enabled,
         "model_id": req.model_id,
         "prompt": prompt,
         "default_prompt": DEFAULT_PROMPT,

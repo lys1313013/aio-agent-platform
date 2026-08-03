@@ -1,4 +1,4 @@
-"""Auto session-title generation — global config stored in system_config table."""
+"""Auto session-title generation — model/prompt in system_config, enable switch per agent."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from aio_agent_platform.llm import LLMMessage, create_provider
 
 logger = structlog.get_logger()
 
-KEY_ENABLED = "auto_title_enabled"
 KEY_MODEL_ID = "auto_title_model_id"
 KEY_PROMPT = "auto_title_prompt"
 
@@ -34,7 +33,6 @@ MAX_TITLE_LENGTH = 100
 
 @dataclass
 class AutoTitleConfig:
-    enabled: bool
     model_id: UUID | None
     prompt: str
 
@@ -42,7 +40,7 @@ class AutoTitleConfig:
 async def load_auto_title_config(db: AsyncSession) -> AutoTitleConfig:
     result = await db.execute(
         select(SystemConfig).where(
-            SystemConfig.key.in_([KEY_ENABLED, KEY_MODEL_ID, KEY_PROMPT])
+            SystemConfig.key.in_([KEY_MODEL_ID, KEY_PROMPT])
         )
     )
     rows = {row.key: row.value for row in result.scalars().all()}
@@ -56,17 +54,15 @@ async def load_auto_title_config(db: AsyncSession) -> AutoTitleConfig:
             logger.warning("auto_title invalid model_id in system_config", value=raw_model_id)
 
     return AutoTitleConfig(
-        enabled=rows.get(KEY_ENABLED, "").strip().lower() in {"1", "true", "yes", "on"},
         model_id=model_id,
         prompt=rows.get(KEY_PROMPT, "").strip() or DEFAULT_PROMPT,
     )
 
 
 async def save_auto_title_config(
-    db: AsyncSession, *, enabled: bool, model_id: UUID | None, prompt: str
+    db: AsyncSession, *, model_id: UUID | None, prompt: str
 ) -> None:
     values = {
-        KEY_ENABLED: "true" if enabled else "false",
         KEY_MODEL_ID: str(model_id) if model_id else "",
         KEY_PROMPT: prompt,
     }
@@ -90,15 +86,13 @@ def _clean_title(raw: str) -> str | None:
 
 
 async def generate_session_title(message: str) -> str | None:
-    """Generate a session title from the first user message. None when disabled/failed."""
+    """Generate a session title from the first user message. None on failure."""
     from aio_agent_platform.db.connection import get_session_factory
 
     try:
         factory = get_session_factory()
         async with factory() as db:
             config = await load_auto_title_config(db)
-            if not config.enabled:
-                return None
 
             model = None
             if config.model_id:

@@ -392,6 +392,7 @@ export interface Agent {
   starter_prompts?: Array<{ label: string; icon: string }> | null;
   enable_memory_extraction?: boolean;
   enable_retry?: boolean;
+  enable_auto_title?: boolean;
   is_active: boolean;
   skill_ids: string[];
   knowledge_base_ids: string[];
