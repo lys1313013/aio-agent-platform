@@ -200,6 +200,75 @@ async def lifespan(app: FastAPI):
     # 12. Cron Job Scheduler — load and schedule all active jobs
     from aio_agent_platform.cron_jobs.scheduler import Scheduler
 
+    async def _push_cron_result_to_channel(db, job, text: str) -> None:
+        """Push the cron job result to the job owner's bound IM account."""
+        import structlog
+        from sqlalchemy import select
+
+        from aio_agent_platform.db.models import ChannelBinding, ChannelConfig
+
+        log = structlog.get_logger()
+        conn_manager = getattr(app.state, "channel_connection_manager", None)
+        if conn_manager is None:
+            log.warning("cron_job_channel_manager_unavailable", job_id=str(job.id))
+            return
+        adapter = conn_manager.get_adapter(job.channel_id)
+        client = getattr(adapter, "client", None)
+        if client is None:
+            log.warning(
+                "cron_job_channel_not_connected",
+                job_id=str(job.id),
+                channel_id=str(job.channel_id),
+            )
+            return
+
+        ch_result = await db.execute(
+            select(ChannelConfig).where(ChannelConfig.id == job.channel_id)
+        )
+        channel = ch_result.scalar_one_or_none()
+        if channel is None:
+            return
+        binding_result = await db.execute(
+            select(ChannelBinding).where(
+                ChannelBinding.tenant_id == channel.tenant_id,
+                ChannelBinding.user_id == job.user_id,
+                ChannelBinding.bind_type == "bound",
+            )
+        )
+        binding = binding_result.scalars().first()
+        if binding is None:
+            log.warning(
+                "cron_job_channel_no_binding",
+                job_id=str(job.id),
+                user_id=str(job.user_id),
+                channel_id=str(job.channel_id),
+            )
+            return
+
+        message_id = await client.send_card_markdown(
+            receive_id=binding.external_id,
+            markdown=f"**⏰ {job.name}**\n\n{text}",
+            receive_id_type="open_id",
+        )
+        if message_id is None:
+            message_id = await client.send_text(
+                receive_id=binding.external_id,
+                text=f"【{job.name}】\n{text}",
+                receive_id_type="open_id",
+            )
+        if message_id:
+            log.info(
+                "cron_job_channel_pushed",
+                job_id=str(job.id),
+                channel_id=str(job.channel_id),
+            )
+        else:
+            log.warning(
+                "cron_job_channel_push_failed",
+                job_id=str(job.id),
+                channel_id=str(job.channel_id),
+            )
+
     async def _cron_job_executor(job, db):
         """Execute a cron job by running its agent with the configured message."""
         from sqlalchemy import select
@@ -310,6 +379,16 @@ async def lifespan(app: FastAPI):
                 job_id=str(job.id),
                 session_id=str(new_session.id),
             )
+
+            if job.channel_id:
+                try:
+                    await _push_cron_result_to_channel(db, job, final_output)
+                except Exception:
+                    log.exception(
+                        "cron_job_channel_push_error",
+                        job_id=str(job.id),
+                        channel_id=str(job.channel_id),
+                    )
 
     scheduler = Scheduler(factory, executor=_cron_job_executor)
     try:

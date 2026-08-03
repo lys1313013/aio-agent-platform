@@ -92,20 +92,27 @@ class FeishuClient:
             return None
         return data.get("data", {}).get("message_id")
 
-    async def send_text(self, receive_id: str, text: str, reply_to: str | None = None) -> str | None:
+    async def send_text(
+        self,
+        receive_id: str,
+        text: str,
+        reply_to: str | None = None,
+        receive_id_type: str = "chat_id",
+    ) -> str | None:
         import json as _json
 
         content = _json.dumps({"text": text}, ensure_ascii=False)
         return await self.send_message(
             receive_id=receive_id,
-            receive_id_type="chat_id",
+            receive_id_type=receive_id_type,
             msg_type="text",
             content=content,
             reply_to=reply_to,
         )
 
     async def send_card_markdown(
-        self, receive_id: str, markdown: str, reply_to: str | None = None
+        self, receive_id: str, markdown: str, reply_to: str | None = None,
+        receive_id_type: str = "chat_id",
     ) -> str | None:
         """Send an interactive card rendering markdown (card schema 2.0)."""
         import json as _json
@@ -116,7 +123,7 @@ class FeishuClient:
         }
         return await self.send_message(
             receive_id=receive_id,
-            receive_id_type="chat_id",
+            receive_id_type=receive_id_type,
             msg_type="interactive",
             content=_json.dumps(card, ensure_ascii=False),
             reply_to=reply_to,

@@ -538,6 +538,7 @@ export interface CronJob {
   run_at: string | null;
   message: string | null;
   task_config: Record<string, unknown>;
+  channel_id: string | null;
   is_active: boolean;
   last_run_at: string | null;
 }

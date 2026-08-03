@@ -24,8 +24,8 @@ import {
   Typography,
   Select,
 } from 'antd';
-import { cronJobsApi, agentsApi } from '@/lib/api';
-import type { CronJob, Agent } from '@/lib/types';
+import { cronJobsApi, agentsApi, channelsApi } from '@/lib/api';
+import type { CronJob, Agent, Channel } from '@/lib/types';
 import { useAuthStore } from '@/stores/authStore';
 import { Navigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
@@ -40,6 +40,7 @@ export default function CronJobsPage() {
 
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -53,12 +54,14 @@ export default function CronJobsPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [result, agentList] = await Promise.all([
+      const [result, agentList, channelList] = await Promise.all([
         cronJobsApi.list(),
         agentsApi.adminList(),
+        channelsApi.list(),
       ]);
       setJobs(result.items);
       setAgents(agentList);
+      setChannels(channelList);
     } catch (err: any) {
       message.error(err.message || '加载数据失败');
     } finally {
@@ -82,6 +85,7 @@ export default function CronJobsPage() {
         task_config_json: job.task_config && Object.keys(job.task_config).length > 0
           ? JSON.stringify(job.task_config, null, 2)
           : '',
+        channel_id: job.channel_id || undefined,
         is_active: job.is_active,
       });
     } else {
@@ -112,6 +116,7 @@ export default function CronJobsPage() {
         run_at: values.run_at ? new Date(values.run_at).toISOString() : null,
         message: values.message || null,
         task_config: taskConfig,
+        channel_id: values.channel_id || null,
         is_active: values.is_active,
       };
 
@@ -154,6 +159,12 @@ export default function CronJobsPage() {
     if (!agentId) return '';
     const agent = agents.find((a) => a.id === agentId);
     return agent ? agent.name : agentId.slice(0, 8) + '...';
+  };
+
+  const getChannelName = (channelId: string | null): string => {
+    if (!channelId) return '';
+    const channel = channels.find((c) => c.id === channelId);
+    return channel ? channel.name : channelId.slice(0, 8) + '...';
   };
 
   const cronToLabel = (expr: string | null | undefined): string => {
@@ -287,6 +298,9 @@ export default function CronJobsPage() {
                     <Tag color={job.is_active ? 'green' : 'default'}>
                       {job.is_active ? '运行中' : '已暂停'}
                     </Tag>
+                    {job.channel_id && (
+                      <Tag color="purple">推送: {getChannelName(job.channel_id)}</Tag>
+                    )}
                   </div>
 
                   {/* Cron expression raw */}
@@ -378,6 +392,25 @@ export default function CronJobsPage() {
             tooltip="仅在不填 cron 表达式时生效。到期执行一次后自动停用。"
           >
             <Input type="datetime-local" />
+          </Form.Item>
+
+          <Form.Item
+            name="channel_id"
+            label="推送渠道"
+            tooltip="任务执行完成后，将结果推送到你在该渠道绑定的账号（需先在渠道中完成账号绑定）"
+          >
+            <Select
+              placeholder="不推送（可选）"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              notFoundContent={channels.length === 0 ? '暂无渠道，请先在渠道管理中创建' : '无匹配结果'}
+              options={channels.map((c) => ({
+                value: c.id,
+                label: `${c.name} (${c.channel_type})`,
+                disabled: c.status !== 'enabled',
+              }))}
+            />
           </Form.Item>
 
           <Form.Item

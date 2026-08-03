@@ -1469,6 +1469,7 @@ export const cronJobsApi = {
     run_at?: string | null;
     message?: string | null;
     task_config?: Record<string, unknown>;
+    channel_id?: string | null;
     is_active?: boolean;
   }) {
     return request<CronJob>('/cron-jobs', {
@@ -1484,6 +1485,7 @@ export const cronJobsApi = {
     run_at?: string | null;
     message?: string | null;
     task_config?: Record<string, unknown>;
+    channel_id?: string | null;
     is_active?: boolean;
   }) {
     return request<CronJob>(`/cron-jobs/${id}`, {

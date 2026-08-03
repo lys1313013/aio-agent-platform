@@ -811,6 +811,11 @@ class CronJob(Base):
     run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="单次执行时间")
     message: Mapped[str | None] = mapped_column(Text, comment="发送给智能体的消息")
     task_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, comment="任务配置(JSON)")
+    channel_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=True,
+        comment="结果推送渠道ID(关联 channel_configs)",
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否启用")
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="最后执行时间")
 

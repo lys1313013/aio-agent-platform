@@ -878,6 +878,14 @@ CREATE_CRON_JOB = Tool(
                     "Additional JSON configuration for the task execution."
                 ),
             },
+            "channel_id": {
+                "type": "string",
+                "description": (
+                    "Optional UUID of an IM channel (e.g. Feishu) to push the "
+                    "task result to. The result is sent to the task owner's "
+                    "bound external account on that channel's tenant."
+                ),
+            },
         },
         "required": ["name"],
     },

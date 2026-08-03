@@ -14,9 +14,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.cron_jobs.service import CronJobService
 from aio_agent_platform.db.connection import get_db
-from aio_agent_platform.db.models import CronJob
+from aio_agent_platform.db.models import ChannelConfig, CronJob
 
 router = APIRouter(prefix="/api/cron-jobs", tags=["cron-jobs"])
+
+
+async def _validate_channel(db: AsyncSession, channel_id: UUID, tenant_id: UUID) -> None:
+    """Ensure the notify channel exists and belongs to the user's tenant."""
+    result = await db.execute(
+        select(ChannelConfig.id).where(
+            ChannelConfig.id == channel_id,
+            ChannelConfig.tenant_id == tenant_id,
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=400, detail="推送渠道不存在或不属于当前租户")
 
 
 # ---- Schemas ----
@@ -30,6 +42,7 @@ class CronJobOut(BaseModel):
     run_at: datetime | None = None
     message: str | None = None
     task_config: dict
+    channel_id: UUID | None = None
     is_active: bool
     last_run_at: datetime | None = None
 
@@ -45,6 +58,7 @@ class CronJobOut(BaseModel):
             run_at=j.run_at,
             message=j.message,
             task_config=j.task_config or {},
+            channel_id=j.channel_id,
             is_active=j.is_active,
             last_run_at=j.last_run_at,
         )
@@ -57,6 +71,7 @@ class CronJobCreate(BaseModel):
     run_at: datetime | None = None
     message: str | None = None
     task_config: dict = Field(default_factory=dict)
+    channel_id: UUID | None = None
     is_active: bool = True
 
 
@@ -67,6 +82,7 @@ class CronJobUpdate(BaseModel):
     run_at: datetime | None = None
     message: str | None = None
     task_config: dict | None = None
+    channel_id: UUID | None = None
     is_active: bool | None = None
 
 
@@ -112,6 +128,8 @@ async def create_cron_job(
             status_code=400,
             detail="Either cron_expr or run_at must be provided",
         )
+    if req.channel_id is not None:
+        await _validate_channel(db, req.channel_id, user.tenant_id)
 
     job = await CronJobService.create_job(
         db=db,
@@ -122,6 +140,7 @@ async def create_cron_job(
         cron_expr=req.cron_expr,
         run_at=req.run_at,
         task_config=req.task_config,
+        channel_id=req.channel_id,
         is_active=req.is_active,
     )
     await db.commit()
@@ -149,6 +168,8 @@ async def update_cron_job(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Update a cron job."""
+    if req.channel_id is not None:
+        await _validate_channel(db, req.channel_id, user.tenant_id)
     job = await CronJobService.update_job(
         db=db,
         job_id=job_id,
@@ -159,6 +180,8 @@ async def update_cron_job(
         cron_expr=req.cron_expr,
         run_at=req.run_at,
         task_config=req.task_config,
+        channel_id=req.channel_id,
+        clear_channel="channel_id" in req.model_fields_set and req.channel_id is None,
         is_active=req.is_active,
     )
     if not job:

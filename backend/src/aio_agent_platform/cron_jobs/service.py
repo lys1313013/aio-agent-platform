@@ -55,6 +55,7 @@ class CronJobService:
         message: str | None = None,
         cron_expr: str | None = None,
         run_at: datetime | None = None,
+        channel_id: UUID | None = None,
         is_active: bool = True,
     ) -> CronJob:
         job = CronJob(
@@ -65,6 +66,7 @@ class CronJobService:
             cron_expr=cron_expr,
             run_at=run_at,
             task_config=task_config,
+            channel_id=channel_id,
             is_active=is_active,
         )
         db.add(job)
@@ -84,7 +86,9 @@ class CronJobService:
         cron_expr: str | None = None,
         run_at: datetime | None = None,
         task_config: dict | None = None,
+        channel_id: UUID | None = None,
         is_active: bool | None = None,
+        clear_channel: bool = False,
     ) -> CronJob | None:
         job = await CronJobService.get_job(db, job_id, user_id)
         if not job:
@@ -102,6 +106,10 @@ class CronJobService:
             job.run_at = run_at
         if task_config is not None:
             job.task_config = task_config
+        if clear_channel:
+            job.channel_id = None
+        elif channel_id is not None:
+            job.channel_id = channel_id
         if is_active is not None:
             job.is_active = is_active
 

@@ -25,6 +25,7 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
     run_at = arguments.get("run_at")
     task_config = arguments.get("task_config", {})
     agent_id_str = arguments.get("agent_id")
+    channel_id_str = arguments.get("channel_id")
     message = arguments.get("message")
 
     if not name:
@@ -34,6 +35,7 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
 
     uid = UUID(user_id)
     agent_id = UUID(agent_id_str) if agent_id_str else None
+    channel_id = UUID(channel_id_str) if channel_id_str else None
 
     # Default to current session's agent if not explicitly provided
     if not agent_id and session_id:
@@ -63,6 +65,7 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
             cron_expr=cron_expr,
             run_at=run_at,
             task_config=task_config,
+            channel_id=channel_id,
         )
         await db.commit()
 
