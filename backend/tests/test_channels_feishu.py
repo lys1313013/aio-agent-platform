@@ -773,10 +773,10 @@ async def test_manager_stop_unknown_channel_is_noop() -> None:
 
 
 async def test_resolve_external_user_unbound_and_bound(db_session) -> None:
-    channel_id = uuid4()
+    tenant_id = uuid4()
 
     # 无任何绑定 → unbound，且不创建任何账户
-    user_id, bind_type = await resolve_external_user(db_session, channel_id, "ou_ext1")
+    user_id, bind_type = await resolve_external_user(db_session, tenant_id, "ou_ext1")
     assert user_id is None
     assert bind_type == "unbound"
     assert (await db_session.execute(select(User))).scalars().all() == []
@@ -786,13 +786,18 @@ async def test_resolve_external_user_unbound_and_bound(db_session) -> None:
     db_session.add(real_user)
     await db_session.flush()
     db_session.add(ChannelBinding(
-        channel_id=channel_id, external_id="ou_ext1", user_id=real_user.id, bind_type="bound",
+        tenant_id=tenant_id, external_id="ou_ext1", user_id=real_user.id, bind_type="bound",
     ))
     await db_session.flush()
 
-    user_id2, bind_type2 = await resolve_external_user(db_session, channel_id, "ou_ext1")
+    user_id2, bind_type2 = await resolve_external_user(db_session, tenant_id, "ou_ext1")
     assert user_id2 == real_user.id
     assert bind_type2 == "bound"
+
+    # 其他租户查不到该绑定
+    user_id_x, bind_type_x = await resolve_external_user(db_session, uuid4(), "ou_ext1")
+    assert user_id_x is None
+    assert bind_type_x == "unbound"
 
     # 存量影子账号绑定 → 仍视为 unbound，引导绑定
     shadow = User(
@@ -802,38 +807,41 @@ async def test_resolve_external_user_unbound_and_bound(db_session) -> None:
     db_session.add(shadow)
     await db_session.flush()
     db_session.add(ChannelBinding(
-        channel_id=channel_id, external_id="ou_legacy", user_id=shadow.id, bind_type="shadow",
+        tenant_id=tenant_id, external_id="ou_legacy", user_id=shadow.id, bind_type="shadow",
     ))
     await db_session.flush()
 
-    user_id3, bind_type3 = await resolve_external_user(db_session, channel_id, "ou_legacy")
+    user_id3, bind_type3 = await resolve_external_user(db_session, tenant_id, "ou_legacy")
     assert user_id3 is None
     assert bind_type3 == "unbound"
 
 
 async def test_issue_bind_code_invalidates_previous(db_session) -> None:
     channel_id = uuid4()
-    code1, expires1 = await issue_bind_code(db_session, channel_id, "ou_binder")
+    tenant_id = uuid4()
+    code1, expires1 = await issue_bind_code(db_session, channel_id, "ou_binder", tenant_id)
     assert len(code1) == 6 and code1.isdigit()
     assert expires1 > datetime.now(UTC)
 
-    code2, _ = await issue_bind_code(db_session, channel_id, "ou_binder")
+    code2, _ = await issue_bind_code(db_session, channel_id, "ou_binder", tenant_id)
     assert code2 != code1 or True  # 随机可能相同，不强制
     # 旧码已被作废
     with pytest.raises(BindCodeInvalid):
-        await consume_bind_code(db_session, code1, uuid4())
+        await consume_bind_code(db_session, code1, uuid4(), tenant_id)
 
 
 async def test_issue_bind_code_rate_limited(db_session) -> None:
     channel_id = uuid4()
+    tenant_id = uuid4()
     for _ in range(3):
-        await issue_bind_code(db_session, channel_id, "ou_spammer")
+        await issue_bind_code(db_session, channel_id, "ou_spammer", tenant_id)
     with pytest.raises(BindCodeRateLimited):
-        await issue_bind_code(db_session, channel_id, "ou_spammer")
+        await issue_bind_code(db_session, channel_id, "ou_spammer", tenant_id)
 
 
 async def test_consume_bind_code_merges_legacy_shadow(db_session) -> None:
     channel_id = uuid4()
+    tenant_id = uuid4()
 
     # 存量影子账号 + 绑定 + 会话
     shadow = User(
@@ -844,7 +852,7 @@ async def test_consume_bind_code_merges_legacy_shadow(db_session) -> None:
     await db_session.flush()
     shadow_id = shadow.id
     db_session.add(ChannelBinding(
-        channel_id=channel_id, external_id="ou_merger", user_id=shadow_id, bind_type="shadow",
+        tenant_id=tenant_id, external_id="ou_merger", user_id=shadow_id, bind_type="shadow",
     ))
     await db_session.flush()
 
@@ -852,20 +860,20 @@ async def test_consume_bind_code_merges_legacy_shadow(db_session) -> None:
     db_session.add(session)
     await db_session.flush()
 
-    code, _ = await issue_bind_code(db_session, channel_id, "ou_merger")
+    code, _ = await issue_bind_code(db_session, channel_id, "ou_merger", tenant_id)
 
     real_user = User(username="real_merger", email="real_merger@test.com", password_hash="x")
     db_session.add(real_user)
     await db_session.flush()
 
-    merged_id = await consume_bind_code(db_session, code, real_user.id)
+    merged_id = await consume_bind_code(db_session, code, real_user.id, tenant_id)
     assert merged_id == shadow_id
 
     # 绑定关系翻转
     binding = (
         await db_session.execute(
             select(ChannelBinding).where(
-                ChannelBinding.channel_id == channel_id,
+                ChannelBinding.tenant_id == tenant_id,
                 ChannelBinding.external_id == "ou_merger",
             )
         )
@@ -883,26 +891,27 @@ async def test_consume_bind_code_merges_legacy_shadow(db_session) -> None:
 
     # 绑定码不能重复使用
     with pytest.raises(BindCodeInvalid):
-        await consume_bind_code(db_session, code, real_user.id)
+        await consume_bind_code(db_session, code, real_user.id, tenant_id)
 
 
 async def test_consume_bind_code_creates_binding(db_session) -> None:
     channel_id = uuid4()
+    tenant_id = uuid4()
 
     # 未绑定用户（无影子账号）首次绑定 → 直接创建 bound 绑定，不建账户
-    code, _ = await issue_bind_code(db_session, channel_id, "ou_new")
+    code, _ = await issue_bind_code(db_session, channel_id, "ou_new", tenant_id)
 
     real_user = User(username="real_new", email="real_new@test.com", password_hash="x")
     db_session.add(real_user)
     await db_session.flush()
 
-    merged_id = await consume_bind_code(db_session, code, real_user.id)
+    merged_id = await consume_bind_code(db_session, code, real_user.id, tenant_id)
     assert merged_id is None
 
     binding = (
         await db_session.execute(
             select(ChannelBinding).where(
-                ChannelBinding.channel_id == channel_id,
+                ChannelBinding.tenant_id == tenant_id,
                 ChannelBinding.external_id == "ou_new",
             )
         )
@@ -915,16 +924,37 @@ async def test_consume_bind_code_creates_binding(db_session) -> None:
     assert shadows == []
 
 
+async def test_consume_bind_code_rejects_cross_tenant(db_session) -> None:
+    channel_id = uuid4()
+    tenant_id = uuid4()
+
+    code, _ = await issue_bind_code(db_session, channel_id, "ou_cross", tenant_id)
+
+    real_user = User(username="real_cross", email="real_cross@test.com", password_hash="x")
+    db_session.add(real_user)
+    await db_session.flush()
+
+    # 其他租户的用户不能消费该绑定码
+    with pytest.raises(BindCodeInvalid, match="其他租户"):
+        await consume_bind_code(db_session, code, real_user.id, uuid4())
+
+    # 码未被消费，同租户仍可正常使用
+    merged_id = await consume_bind_code(db_session, code, real_user.id, tenant_id)
+    assert merged_id is None
+
+
 async def test_consume_bind_code_rejects_invalid(db_session) -> None:
     with pytest.raises(BindCodeInvalid):
-        await consume_bind_code(db_session, "000000", uuid4())
+        await consume_bind_code(db_session, "000000", uuid4(), uuid4())
 
 
 async def test_consume_bind_code_rejects_expired(db_session) -> None:
     from aio_agent_platform.db.models import ChannelBindCode
 
+    tenant_id = uuid4()
     record = ChannelBindCode(
         code="999888",
+        tenant_id=tenant_id,
         channel_id=uuid4(),
         external_id="ou_expired",
         expires_at=datetime.now(UTC) - timedelta(minutes=1),
@@ -932,35 +962,36 @@ async def test_consume_bind_code_rejects_expired(db_session) -> None:
     db_session.add(record)
     await db_session.flush()
     with pytest.raises(BindCodeInvalid, match="过期"):
-        await consume_bind_code(db_session, "999888", uuid4())
+        await consume_bind_code(db_session, "999888", uuid4(), tenant_id)
 
 
 async def test_consume_bind_code_rejects_already_bound(db_session) -> None:
     channel_id = uuid4()
+    tenant_id = uuid4()
     real_user = User(username="real_self", email="real_self@test.com", password_hash="x")
     db_session.add(real_user)
     await db_session.flush()
     db_session.add(ChannelBinding(
-        channel_id=channel_id, external_id="ou_self", user_id=real_user.id, bind_type="bound",
+        tenant_id=tenant_id, external_id="ou_self", user_id=real_user.id, bind_type="bound",
     ))
     await db_session.flush()
 
     # 绑定到同一账号 → 拒绝
-    code, _ = await issue_bind_code(db_session, channel_id, "ou_self")
+    code, _ = await issue_bind_code(db_session, channel_id, "ou_self", tenant_id)
     with pytest.raises(BindCodeInvalid, match="已绑定"):
-        await consume_bind_code(db_session, code, real_user.id)
+        await consume_bind_code(db_session, code, real_user.id, tenant_id)
 
     # 绑定到其他账号 → 拒绝
     other = User(username="real_other", email="real_other@test.com", password_hash="x")
     db_session.add(other)
     await db_session.flush()
-    code2, _ = await issue_bind_code(db_session, channel_id, "ou_self")
+    code2, _ = await issue_bind_code(db_session, channel_id, "ou_self", tenant_id)
     with pytest.raises(BindCodeInvalid, match="其他账号"):
-        await consume_bind_code(db_session, code2, other.id)
+        await consume_bind_code(db_session, code2, other.id, tenant_id)
 
 
 async def test_unbind_external_disables_shadow(db_session) -> None:
-    channel_id = uuid4()
+    tenant_id = uuid4()
     shadow = User(
         username="feishu_unbind", email="feishu_unbind@channels.internal",
         password_hash="!", is_shadow=True,
@@ -968,16 +999,16 @@ async def test_unbind_external_disables_shadow(db_session) -> None:
     db_session.add(shadow)
     await db_session.flush()
     db_session.add(ChannelBinding(
-        channel_id=channel_id, external_id="ou_unbind", user_id=shadow.id, bind_type="shadow",
+        tenant_id=tenant_id, external_id="ou_unbind", user_id=shadow.id, bind_type="shadow",
     ))
     await db_session.flush()
 
-    await unbind_external(db_session, channel_id, "ou_unbind")
+    await unbind_external(db_session, tenant_id, "ou_unbind")
 
     binding = (
         await db_session.execute(
             select(ChannelBinding).where(
-                ChannelBinding.channel_id == channel_id,
+                ChannelBinding.tenant_id == tenant_id,
                 ChannelBinding.external_id == "ou_unbind",
             )
         )
@@ -987,4 +1018,4 @@ async def test_unbind_external_disables_shadow(db_session) -> None:
     assert shadow.is_active is False
 
     # 再次解绑是 no-op
-    await unbind_external(db_session, channel_id, "ou_unbind")
+    await unbind_external(db_session, tenant_id, "ou_unbind")

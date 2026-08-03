@@ -1,14 +1,18 @@
 """Channel binding — external-user resolution, bind-code lifecycle, account merge.
 
+Bindings are scoped by tenant: an external user binds once per tenant and the
+binding is shared by every channel in that tenant.
+
 Flow overview:
   1. External user sends first message → ``resolve_external_user`` finds no
      live binding → the pipeline replies with a bind-code guide instead of
      creating a shadow account.
   2. User sends ``/bind`` → ``issue_bind_code`` writes a 6-digit code valid
      for 10 minutes. Rate-limited to 3 per minute per external_id.
-  3. Web user submits the code via ``consume_bind_code``. On success a
-     ``bound`` binding is created; legacy shadow accounts are merged into the
-     real account (sessions re-assigned) and disabled.
+  3. Web user submits the code via ``consume_bind_code``. The code is only
+     valid within the channel's tenant. On success a ``bound`` binding is
+     created; legacy shadow accounts are merged into the real account
+     (sessions re-assigned) and disabled.
 """
 
 from __future__ import annotations
@@ -41,10 +45,10 @@ def _generate_code() -> str:
 
 async def resolve_external_user(
     db: AsyncSession,
-    channel_id: UUID,
+    tenant_id: UUID,
     external_id: str,
 ) -> tuple[UUID | None, str]:
-    """Return (user_id, bind_type) for an external user.
+    """Return (user_id, bind_type) for an external user within a tenant.
 
     Never creates a ``User`` row. Returns ``(None, "unbound")`` when the
     external user has no live binding — the pipeline then guides them through
@@ -54,7 +58,7 @@ async def resolve_external_user(
     """
     result = await db.execute(
         select(ChannelBinding).where(
-            ChannelBinding.channel_id == channel_id,
+            ChannelBinding.tenant_id == tenant_id,
             ChannelBinding.external_id == external_id,
         )
     )
@@ -71,6 +75,7 @@ async def issue_bind_code(
     db: AsyncSession,
     channel_id: UUID,
     external_id: str,
+    tenant_id: UUID,
 ) -> tuple[str, datetime]:
     """Generate a 6-digit bind code for this external user.
 
@@ -106,6 +111,7 @@ async def issue_bind_code(
     expires_at = now + timedelta(minutes=BIND_CODE_TTL_MINUTES)
     record = ChannelBindCode(
         code=code,
+        tenant_id=tenant_id,
         channel_id=channel_id,
         external_id=external_id,
         expires_at=expires_at,
@@ -119,13 +125,17 @@ async def consume_bind_code(
     db: AsyncSession,
     code: str,
     real_user_id: UUID,
+    real_tenant_id: UUID,
 ) -> UUID | None:
     """Consume a bind code and link the external user to ``real_user_id``.
 
-    Creates a ``bound`` ``ChannelBinding`` on first link; merges a legacy
+    The code is only valid within the tenant whose channel issued it —
+    cross-tenant consumption is rejected. Creates a ``bound``
+    ``ChannelBinding`` (scoped to the tenant) on first link; merges a legacy
     shadow account (re-assigning its sessions and disabling it) if one exists.
     Returns the shadow user_id that was merged, or None. Raises
-    BindCodeInvalid on any failure (expired / already used / unknown code).
+    BindCodeInvalid on any failure (expired / already used / unknown code /
+    tenant mismatch).
     """
     now = datetime.now(UTC)
     result = await db.execute(
@@ -139,11 +149,13 @@ async def consume_bind_code(
         raise BindCodeInvalid("绑定码不存在或已被使用")
     if record.expires_at < now:
         raise BindCodeInvalid("绑定码已过期")
+    if record.tenant_id != real_tenant_id:
+        raise BindCodeInvalid("该绑定码属于其他租户，请切换到对应租户后再绑定")
 
-    # Locate the binding row for this external user.
+    # Locate the binding row for this external user (tenant-scoped).
     binding = await db.scalar(
         select(ChannelBinding).where(
-            ChannelBinding.channel_id == record.channel_id,
+            ChannelBinding.tenant_id == record.tenant_id,
             ChannelBinding.external_id == record.external_id,
         )
     )
@@ -173,7 +185,7 @@ async def consume_bind_code(
         # First-time link — no shadow account was ever created.
         db.add(
             ChannelBinding(
-                channel_id=record.channel_id,
+                tenant_id=record.tenant_id,
                 external_id=record.external_id,
                 user_id=real_user_id,
                 bind_type="bound",
@@ -186,6 +198,7 @@ async def consume_bind_code(
 
     logger.info(
         "bind_code_consumed",
+        tenant_id=str(record.tenant_id),
         channel_id=str(record.channel_id),
         external_id=record.external_id,
         real_user_id=str(real_user_id),
@@ -196,7 +209,7 @@ async def consume_bind_code(
 
 async def unbind_external(
     db: AsyncSession,
-    channel_id: UUID,
+    tenant_id: UUID,
     external_id: str,
 ) -> None:
     """Remove the binding for an external user. If the linked account is a
@@ -204,7 +217,7 @@ async def unbind_external(
     """
     result = await db.execute(
         select(ChannelBinding).where(
-            ChannelBinding.channel_id == channel_id,
+            ChannelBinding.tenant_id == tenant_id,
             ChannelBinding.external_id == external_id,
         )
     )

@@ -32,10 +32,49 @@ interface Pos {
   y: number;
 }
 
-function loadPos(): Pos | null {
+/** 锚定位置：记距最近两条边的距离，窗口缩放后相对位置不变 */
+interface AnchorPos {
+  h: 'left' | 'right';
+  v: 'top' | 'bottom';
+  dx: number;
+  dy: number;
+}
+
+function fromAbsolute(x: number, y: number, dim: number): AnchorPos {
+  const rightDist = window.innerWidth - dim - x;
+  const bottomDist = window.innerHeight - dim - y;
+  return {
+    h: x <= rightDist ? 'left' : 'right',
+    v: y <= bottomDist ? 'top' : 'bottom',
+    dx: Math.max(Math.min(x, rightDist), 0),
+    dy: Math.max(Math.min(y, bottomDist), 0),
+  };
+}
+
+function toAbsolute(p: AnchorPos, dim: number): Pos {
+  return {
+    x: p.h === 'left' ? p.dx : Math.max(window.innerWidth - dim - p.dx, 0),
+    y: p.v === 'top' ? p.dy : Math.max(window.innerHeight - dim - p.dy, 0),
+  };
+}
+
+/** 从未拖拽过的默认位置：右下 24px */
+function defaultPos(dim: number): Pos {
+  return {
+    x: Math.max(window.innerWidth - dim - 24, 0),
+    y: Math.max(window.innerHeight - dim - 24, 0),
+  };
+}
+
+function loadPos(): AnchorPos | null {
   try {
     const raw = localStorage.getItem(POS_KEY);
-    return raw ? (JSON.parse(raw) as Pos) : null;
+    if (!raw) return null;
+    const p = JSON.parse(raw) as Partial<AnchorPos> & Partial<Pos>;
+    if ((p.h === 'left' || p.h === 'right') && typeof p.dx === 'number') return p as AnchorPos;
+    // 旧格式 {x, y}：按当前窗口换算为锚定坐标
+    if (typeof p.x === 'number' && typeof p.y === 'number') return fromAbsolute(p.x, p.y, 96);
+    return null;
   } catch {
     return null;
   }
@@ -56,7 +95,7 @@ class PetErrorBoundary extends Component<{ children: ReactNode }, { failed: bool
 
 function PetWidgetInner() {
   const { activePet, enabled, mood, actionRow, size, loaded, loadActive, setEnabled, playRow } = usePetStore();
-  const [pos, setPos] = useState<Pos | null>(loadPos);
+  const [anchor, setAnchor] = useState<AnchorPos | null>(loadPos);
   const [collapsed, setCollapsed] = useState(false);
   const [bubble, setBubble] = useState<string | null>(null);
   const [myPets, setMyPets] = useState<UserPet[]>([]);
@@ -72,8 +111,51 @@ function PetWidgetInner() {
     void el.offsetWidth;
     el.classList.add('pet-bounce');
   }, [mood]);
-  const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number; moved: boolean } | null>(null);
+  const dragRef = useRef<{
+    startX: number;
+    startY: number;
+    baseX: number;
+    baseY: number;
+    moved: boolean;
+    lastX?: number;
+    lastY?: number;
+  } | null>(null);
   const sleepTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const dim = collapsed ? COLLAPSED_SIZE : size;
+  const pos: Pos = anchor ? toAbsolute(anchor, dim) : defaultPos(dim);
+
+  // 锚定坐标不变、窗口尺寸在变：resize 时用 rAF 节流直接改 DOM transform，
+  // 不走 React 重渲染（高频 resize 事件下重渲染会挤掉 canvas 的 rAF 帧，表现为闪烁）
+  const anchorRef = useRef(anchor);
+  anchorRef.current = anchor;
+  const dimRef = useRef(dim);
+  dimRef.current = dim;
+  useEffect(() => {
+    let raf = 0;
+    const onResize = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const el = containerRef.current;
+        if (!el) return;
+        const a = anchorRef.current;
+        const p = a ? toAbsolute(a, dimRef.current) : defaultPos(dimRef.current);
+        el.style.transform = `translate3d(${p.x}px, ${p.y}px, 0)`;
+      });
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  // 锚定位置持久化
+  useEffect(() => {
+    if (anchor) localStorage.setItem(POS_KEY, JSON.stringify(anchor));
+  }, [anchor]);
 
   // 右键「切换宠物」子菜单数据
   useEffect(() => {
@@ -146,26 +228,28 @@ function PetWidgetInner() {
     const dy = e.clientY - drag.startY;
     if (!drag.moved && Math.hypot(dx, dy) < 4) return;
     drag.moved = true;
-    const dim = collapsed ? COLLAPSED_SIZE : size;
     const x = Math.min(Math.max(drag.baseX + dx, 0), window.innerWidth - dim);
     const y = Math.min(Math.max(drag.baseY + dy, 0), window.innerHeight - dim);
-    setPos({ x, y });
-  }, [collapsed, size]);
+    drag.lastX = x;
+    drag.lastY = y;
+    // 拖拽中直接改 DOM，不走 React 状态：pointermove 频率高，
+    // 每次 setState 重渲染整棵 Dropdown 树会挤掉 canvas 的 rAF 帧，表现为闪烁
+    const el = containerRef.current;
+    if (el) el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+  }, [dim]);
 
   const onPointerUp = useCallback(() => {
     const drag = dragRef.current;
     dragRef.current = null;
     if (!drag) return;
     if (drag.moved) {
-      setPos((p) => {
-        if (p) localStorage.setItem(POS_KEY, JSON.stringify(p));
-        return p;
-      });
-    } else {
+      // 松手才提交状态（触发持久化）；React 重渲染后的 style 与拖拽中的 DOM 值一致，无跳变
+      setAnchor(fromAbsolute(drag.lastX ?? drag.baseX, drag.lastY ?? drag.baseY, dim));
+    } else if (activePet) {
       // 左键单击默认播放「开心」行（无映射则行 0）
-      if (activePet) playRowX(activePet.package.row_mapping.happy ?? 0);
+      playRowX(activePet.package.row_mapping.happy ?? 0);
     }
-  }, [playRowX, activePet]);
+  }, [playRowX, activePet, dim]);
 
   // 记录右键时的光标位置 + 角色可见内容的包围盒：contextMenu 触发下 antd 强制
   // alignPoint（菜单锚定光标而非宠物），且画布四周有透明边——按内容边缘算 offset 菜单才贴得近
@@ -174,7 +258,6 @@ function PetWidgetInner() {
     y: number;
     box: { left: number; right: number; top: number; bottom: number } | null;
   } | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
 
   const onContextMenu = useCallback((e: React.MouseEvent) => {
     let box = null;
@@ -212,8 +295,8 @@ function PetWidgetInner() {
   // 上下弹出兜底时的朝向：尽量朝屏幕边缘弹出，避免盖住聊天内容
   // 注意：必须在任何条件 return 之前调用（React Hooks 规则）
   const placement = useMemo(() => {
-    const px = pos ? pos.x : window.innerWidth - size - 24;
-    const py = pos ? pos.y : window.innerHeight - size - 24;
+    const px = pos.x;
+    const py = pos.y;
     const onRight = px + size / 2 > window.innerWidth / 2;
     const onBottom = py + size / 2 > window.innerHeight / 2;
     if (onRight && onBottom) return 'topLeft';
@@ -226,10 +309,9 @@ function PetWidgetInner() {
   const dropdownAlign = useMemo(() => {
     const GAP = 15;
     const SIDE_W = 260; // 主菜单 + 子菜单展开所需宽度（实测约 230，留余量）
-    const dim = collapsed ? COLLAPSED_SIZE : size;
     // 优先用角色可见内容的包围盒（剔除精灵图透明边），没有才退化到画布矩形
-    const canvasLeft = pos ? pos.x : window.innerWidth - dim - 24;
-    const canvasTop = pos ? pos.y : window.innerHeight - dim - 24;
+    const canvasLeft = pos.x;
+    const canvasTop = pos.y;
     const petLeft = ctxPos?.box?.left ?? canvasLeft;
     const petTop = ctxPos?.box?.top ?? canvasTop;
     const petRight = ctxPos?.box?.right ?? canvasLeft + dim;
@@ -269,13 +351,16 @@ function PetWidgetInner() {
       default:
         return { points: ['tr', 'br'] as ('tr' | 'br')[], offset: [0, oy] as [number, number] };
     }
-  }, [ctxPos, placement, pos, size, collapsed]);
+  }, [ctxPos, placement, pos, dim]);
 
   if (!enabled || !activePet) return null;
 
-  const style: React.CSSProperties = pos
-    ? { left: pos.x, top: pos.y }
-    : { right: 24, bottom: 24 };
+  // 统一 transform 定位：移动走合成层，不触发布局/重绘（拖拽和 resize 都直接改这个值）
+  const style: React.CSSProperties = {
+    left: 0,
+    top: 0,
+    transform: `translate3d(${pos.x}px, ${pos.y}px, 0)`,
+  };
 
   const menuItems = [
     {

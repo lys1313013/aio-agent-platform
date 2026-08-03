@@ -366,7 +366,7 @@ export interface ChannelUpdate {
 
 export interface ChannelBinding {
   id: string;
-  channel_id: string;
+  tenant_id: string;
   external_id: string;
   user_id: string;
   bind_type: 'shadow' | 'bound';

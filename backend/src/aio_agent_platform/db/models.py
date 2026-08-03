@@ -1174,11 +1174,13 @@ class ChannelConfig(Base):
 
 
 class ChannelBinding(Base):
-    """渠道外部用户 ↔ 平台用户绑定关系。"""
+    """渠道外部用户 ↔ 平台用户绑定关系(按租户生效，租户内所有渠道共享)。"""
     __tablename__ = "channel_bindings"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
-    channel_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="渠道 ID")
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=DEFAULT_TENANT_ID, comment="所属租户ID"
+    )
     external_id: Mapped[str] = mapped_column(String(128), nullable=False, comment="外部用户 ID(飞书 open_id)")
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="绑定的平台 user ID")
     bind_type: Mapped[str] = mapped_column(
@@ -1197,9 +1199,9 @@ class ChannelBinding(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("channel_id", "external_id", name="uq_channel_binding_external"),
+        UniqueConstraint("tenant_id", "external_id", name="uq_channel_binding_external"),
         Index("idx_channel_bindings_user", "user_id"),
-        Index("idx_channel_bindings_channel", "channel_id"),
+        Index("idx_channel_bindings_tenant", "tenant_id"),
         {"comment": "渠道用户绑定表"},
     )
 
@@ -1210,6 +1212,9 @@ class ChannelBindCode(Base):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
     code: Mapped[str] = mapped_column(String(8), nullable=False, comment="6 位数字绑定码")
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=DEFAULT_TENANT_ID, comment="所属租户ID"
+    )
     channel_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="渠道 ID")
     external_id: Mapped[str] = mapped_column(String(128), nullable=False, comment="外部用户 ID")
     expires_at: Mapped[datetime] = mapped_column(

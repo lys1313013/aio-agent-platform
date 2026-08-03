@@ -520,7 +520,7 @@ export default function ChannelsPage() {
 
         {/* ---- Bindings Modal ---- */}
         <Modal
-          title={`绑定用户 — ${bindingsChannel?.name ?? ''}`}
+          title={`绑定用户 — ${bindingsChannel?.name ?? ''}(按租户共享)`}
           open={!!bindingsChannel}
           onCancel={() => setBindingsChannel(null)}
           footer={null}

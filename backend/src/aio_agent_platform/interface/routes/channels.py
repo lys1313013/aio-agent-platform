@@ -75,7 +75,7 @@ class ChannelOut(BaseModel):
 
 class ChannelBindingOut(BaseModel):
     id: UUID
-    channel_id: UUID
+    tenant_id: UUID
     external_id: str
     user_id: UUID
     bind_type: str
@@ -122,7 +122,7 @@ def _channel_to_dict(ch: ChannelConfig) -> dict:
 def _binding_to_dict(b: ChannelBinding) -> dict:
     return {
         "id": b.id,
-        "channel_id": b.channel_id,
+        "tenant_id": b.tenant_id,
         "external_id": b.external_id,
         "user_id": b.user_id,
         "bind_type": b.bind_type,
@@ -347,7 +347,11 @@ async def delete_channel(
     user: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
-    """Delete a channel and clean up related bindings and session mappings."""
+    """Delete a channel and clean up its bind codes and session mappings.
+
+    Channel bindings are tenant-scoped and shared across channels, so they
+    survive channel deletion.
+    """
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.id == channel_id,
@@ -363,7 +367,6 @@ async def delete_channel(
         await conn_mgr.stop_channel(channel_id)
 
     await db.execute(delete(ChannelBindCode).where(ChannelBindCode.channel_id == channel_id))
-    await db.execute(delete(ChannelBinding).where(ChannelBinding.channel_id == channel_id))
     await db.execute(delete(ChannelConfig).where(ChannelConfig.id == channel_id))
     await db.commit()
 
@@ -374,7 +377,8 @@ async def list_channel_bindings(
     user: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
-    """List all user bindings for a channel."""
+    """List user bindings for the channel's tenant (bindings are tenant-scoped
+    and shared by all channels in the tenant)."""
     # Verify channel belongs to tenant
     ch_result = await db.execute(
         select(ChannelConfig).where(
@@ -382,12 +386,13 @@ async def list_channel_bindings(
             ChannelConfig.tenant_id == user.tenant_id,
         )
     )
-    if ch_result.scalar_one_or_none() is None:
+    channel = ch_result.scalar_one_or_none()
+    if channel is None:
         raise HTTPException(status_code=404, detail="渠道不存在")
 
     result = await db.execute(
         select(ChannelBinding)
-        .where(ChannelBinding.channel_id == channel_id)
+        .where(ChannelBinding.tenant_id == channel.tenant_id)
         .order_by(ChannelBinding.created_at.desc())
     )
     return [_binding_to_dict(b) for b in result.scalars().all()]
@@ -418,12 +423,15 @@ async def bind_with_code(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    """Consume a bind code to link a channel's shadow account to the current user."""
+    """Consume a bind code to link a channel identity to the current user.
+
+    The code is only valid within the tenant whose channel issued it.
+    """
     try:
-        await consume_bind_code(db, req.code, user.id)
+        await consume_bind_code(db, req.code, user.id, user.tenant_id)
         await db.commit()
         return {
-            "message": "绑定成功，现在可以在该渠道与 Agent 对话",
+            "message": "绑定成功，现在可以在当前租户的所有渠道与 Agent 对话",
             "channel_id": None,
             "external_id": None,
         }
@@ -454,5 +462,5 @@ async def unbind(
 
     from aio_agent_platform.channels.binding import unbind_external
 
-    await unbind_external(db, binding.channel_id, binding.external_id)
+    await unbind_external(db, binding.tenant_id, binding.external_id)
     await db.commit()

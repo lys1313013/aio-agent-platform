@@ -179,6 +179,12 @@ class ServerSettings(BaseSettings):
         default=False,
         description="Auto-restart server when source code changes (dev only).",
     )
+    reload_delay: float = Field(
+        default=5,
+        ge=0,
+        description="Seconds between source-change polls when reload is on; "
+                    "changes within each interval are batched into one restart.",
+    )
     server_url: str = Field(
         default="",
         description="Public URL of this server (e.g. https://agent.example.com). "

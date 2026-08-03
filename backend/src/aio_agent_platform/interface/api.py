@@ -431,6 +431,7 @@ def run():
             reload=True,
             reload_dirs=[str(package_root)],
             reload_excludes=["*.pyc", "__pycache__", "*.log"],
+            reload_delay=settings.server.reload_delay,
         )
 
     uvicorn.run(

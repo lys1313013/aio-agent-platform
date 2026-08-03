@@ -438,7 +438,7 @@ function ChannelBindings() {
         </Form>
       </Card>
 
-      <Card title="我的渠道绑定" extra={<Text type="secondary">已关联到当前账号的 IM 渠道身份。</Text>}>
+      <Card title="我的渠道绑定" extra={<Text type="secondary">已关联到当前账号的 IM 渠道身份(按租户生效)。</Text>}>
         <Table
           rowKey="id"
           size="small"
@@ -471,7 +471,7 @@ function ChannelBindings() {
               render: (_: unknown, record: ChannelBinding) => (
                 <Popconfirm
                   title="解绑该渠道？"
-                  description="解绑后该渠道身份将不再关联当前账号。"
+                  description="解绑后当前租户下的该渠道身份将不再关联当前账号。"
                   onConfirm={() => handleUnbind(record.id)}
                   okText="解绑"
                   okType="danger"

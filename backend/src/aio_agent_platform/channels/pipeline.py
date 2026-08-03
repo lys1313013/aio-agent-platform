@@ -162,7 +162,7 @@ class ChannelInboundPipeline:
 
     async def _resolve_context(self, db: AsyncSession, event: InboundEvent) -> _ResolvedContext:
         user_id, bind_type = await resolve_external_user(
-            db, self.channel.id, event.external_id
+            db, self.channel.tenant_id, event.external_id
         )
         if user_id is None:
             return _ResolvedContext(user_id=None, session_id=None, bind_type=bind_type)
@@ -217,7 +217,9 @@ class ChannelInboundPipeline:
             await self.adapter.send(event, "✅ 该渠道已绑定到你的账号，无需重复绑定。")
             return
         try:
-            code, _expires_at = await issue_bind_code(db, self.channel.id, event.external_id)
+            code, _expires_at = await issue_bind_code(
+                db, self.channel.id, event.external_id, self.channel.tenant_id
+            )
             await db.commit()
         except BindCodeRateLimited as e:
             await self.adapter.send(event, f"⚠️ {e}")

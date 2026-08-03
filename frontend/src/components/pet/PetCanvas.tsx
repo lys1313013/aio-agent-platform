@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { petsApi } from '@/lib/api';
 import type { PetMood, PetPackage } from '@/lib/types';
 
@@ -23,7 +23,7 @@ function resolveRow(pkg: PetPackage, mood: PetMood): number {
  * 精灵图行动画渲染器：Codex 格式（每行一个动画、每列一帧、RGBA 透明背景）。
  * 用 <img> 离屏加载 + canvas 逐帧裁剪绘制；页面不可见时自动暂停。
  */
-export default function PetCanvas({ pkg, mood, size = 96, className, fixedRow }: PetCanvasProps) {
+export default memo(function PetCanvas({ pkg, mood, size = 96, className, fixedRow }: PetCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const stateRef = useRef({ pkg, mood, fixedRow });
@@ -116,4 +116,4 @@ export default function PetCanvas({ pkg, mood, size = 96, className, fixedRow }:
       data-row={fixedRow ?? resolveRow(pkg, mood)}
     />
   );
-}
+});
