@@ -20,6 +20,9 @@ importers:
       clsx:
         specifier: ^2.1.0
         version: 2.1.1
+      dayjs:
+        specifier: ^1.11.21
+        version: 1.11.21
       jszip:
         specifier: ^3.10.1
         version: 3.10.1
