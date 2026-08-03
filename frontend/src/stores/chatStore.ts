@@ -8,6 +8,8 @@ interface ChatState {
   activeSessionId: string | null;
   messages: Record<string, Message[]>;
   isSessionsLoading: boolean;
+  /** 当前会话消息异步加载中（点击历史项切换会话时，消息未就绪前显示 loading） */
+  messagesLoading: boolean;
 
   // Workspace selection
   workspaces: Workspace[];
@@ -37,6 +39,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeSessionId: null,
   messages: {},
   isSessionsLoading: false,
+  messagesLoading: false,
   workspaces: [],
   selectedWorkspaceId: null,
   isWorkspacesLoading: false,
@@ -85,7 +88,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setActiveSession: (id) => {
-    set({ activeSessionId: id });
+    // 未缓存的消息触发异步加载并置 loading；已缓存直接使用，清掉可能残留的 loading
+    set({ activeSessionId: id, messagesLoading: !!id && !get().messages[id] });
     if (id && !get().messages[id]) {
       get().loadSessionMessages(id);
     }
@@ -96,9 +100,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const detail = await sessionsApi.get(id);
       set((state) => ({
         messages: { ...state.messages, [id]: detail.messages },
+        // 仅当仍是当前会话才清 loading，避免快速切换时旧加载误清新会话的指示
+        messagesLoading: get().activeSessionId === id ? false : state.messagesLoading,
       }));
     } catch {
-      /* ignore */
+      set((state) => ({
+        messagesLoading: get().activeSessionId === id ? false : state.messagesLoading,
+      }));
     }
   },
 

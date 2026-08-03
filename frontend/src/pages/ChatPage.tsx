@@ -7,7 +7,7 @@ import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import ChatHistorySidebar from '@/components/chat/ChatHistorySidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
-import { Alert, App, Button } from 'antd';
+import { Alert, App, Button, Spin } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import type { StreamingState } from '@/lib/types';
 
@@ -24,7 +24,7 @@ const IDLE_STREAMING: StreamingState = {
 };
 
 export default function ChatPage() {
-  const { activeSessionId, sessions, messages, addMessage, createSession, renameSession } = useChatStore();
+  const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession } = useChatStore();
   const { message } = App.useApp();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAMING);
@@ -464,12 +464,18 @@ export default function ChatPage() {
 
         {/* Chat area */}
         <div ref={scrollRef} className="flex flex-1 flex-col overflow-hidden">
-          <MessageList
-            messages={currentMessages}
-            streaming={streaming}
-            onNewChat={handleNewChat}
-            onEditResend={handleEditResend}
-          />
+          {messagesLoading && currentMessages.length === 0 ? (
+            <div className="flex flex-1 items-center justify-center">
+              <Spin size="large" />
+            </div>
+          ) : (
+            <MessageList
+              messages={currentMessages}
+              streaming={streaming}
+              onNewChat={handleNewChat}
+              onEditResend={handleEditResend}
+            />
+          )}
 
           {error && (
             <div className="mx-auto max-w-3xl w-full px-4 pb-2">

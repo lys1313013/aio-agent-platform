@@ -31,7 +31,7 @@ const IDLE_STREAMING: StreamingState = {
 export default function AgentChatPage() {
   const { agentId, sessionId: urlSessionId } = useParams<{ agentId: string; sessionId?: string }>();
   const navigate = useNavigate();
-  const { activeSessionId, sessions, messages, addMessage, createSession, renameSession, loadSessions, refreshSessions, setActiveSession } = useChatStore();
+  const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession, loadSessions, refreshSessions, setActiveSession } = useChatStore();
   const { message } = App.useApp();
   const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAMING);
   const [error, setError] = useState<string | null>(null);
@@ -84,6 +84,8 @@ export default function AgentChatPage() {
   // Load sessions for this agent.
   // loadSessions does a full reset (clears activeSessionId); refreshSessions
   // keeps activeSessionId intact so chat messages stay visible.
+  // 只在 agent 变化时加载：点击历史会话仅改 URL sessionId，不应重新拉取整个列表
+  // （否则每次点历史项列表都刷新/闪烁）。
   useEffect(() => {
     if (!agentId) return;
     if (urlSessionId) {
@@ -91,7 +93,7 @@ export default function AgentChatPage() {
     } else {
       loadSessions(agentId);
     }
-  }, [agentId, urlSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agentId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSend = useCallback(
     async (content: string, attachments: ChatAttachment[] = [], fileAttachments?: FileAttachmentRef[]) => {
@@ -131,7 +133,7 @@ export default function AgentChatPage() {
       // Start streaming state
       setError(null);
       setStreaming({ ...IDLE_STREAMING, isStreaming: true });
-      usePetStore.getState().startTask(sessionId, content || '文件任务');
+      usePetStore.getState().startTask(sessionId, content || '文件任务', agentId);
 
       // Start SSE stream
       const controller = chatApi.stream(
@@ -545,13 +547,19 @@ export default function AgentChatPage() {
 
         {/* Chat area */}
         <div className="flex flex-1 flex-col overflow-hidden">
-          <MessageList
-            messages={currentMessages}
-            streaming={streaming}
-            agent={agent}
-            onNewChat={handleNewChat}
-            onEditResend={handleEditResend}
-          />
+          {messagesLoading && currentMessages.length === 0 ? (
+            <div className="flex flex-1 items-center justify-center">
+              <Spin size="large" />
+            </div>
+          ) : (
+            <MessageList
+              messages={currentMessages}
+              streaming={streaming}
+              agent={agent}
+              onNewChat={handleNewChat}
+              onEditResend={handleEditResend}
+            />
+          )}
 
           {error && (
             <div className="mx-auto max-w-3xl w-full px-4 pb-2">
