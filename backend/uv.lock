@@ -30,6 +30,7 @@ dependencies = [
     { name = "langfuse" },
     { name = "lark-oapi" },
     { name = "markdownify" },
+    { name = "mcp" },
     { name = "minio" },
     { name = "openai" },
     { name = "pillow" },
@@ -53,7 +54,6 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "chromadb" },
-    { name = "mcp" },
     { name = "playwright" },
     { name = "watchdog" },
 ]
@@ -62,9 +62,6 @@ browser = [
 ]
 filewatch = [
     { name = "watchdog" },
-]
-mcp = [
-    { name = "mcp" },
 ]
 vector = [
     { name = "chromadb" },
@@ -102,8 +99,7 @@ requires-dist = [
     { name = "langfuse", specifier = ">=4.0.0" },
     { name = "lark-oapi", specifier = ">=1.7.1" },
     { name = "markdownify", specifier = ">=0.14.0" },
-    { name = "mcp", marker = "extra == 'all'", specifier = ">=1.0.0" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0.0" },
+    { name = "mcp", specifier = ">=1.0.0" },
     { name = "minio", specifier = ">=7.2.0" },
     { name = "openai", specifier = ">=1.60.0" },
     { name = "pillow", specifier = ">=10.0.0" },
@@ -127,7 +123,7 @@ requires-dist = [
     { name = "watchdog", marker = "extra == 'filewatch'", specifier = ">=6.0.0" },
     { name = "websockets", specifier = ">=13.0" },
 ]
-provides-extras = ["vector", "browser", "mcp", "filewatch", "all"]
+provides-extras = ["vector", "browser", "filewatch", "all"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -64,17 +64,16 @@ dependencies = [
     # ---- 可观测性 ----
     "langfuse>=4.0.0",
     "lark-oapi>=1.7.1",
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]
 vector = ["chromadb>=0.6.0"]
 browser = ["playwright>=1.49.0"]
-mcp = ["mcp>=1.0.0"]
 filewatch = ["watchdog>=6.0.0"]
 all = [
     "chromadb>=0.6.0",
     "playwright>=1.49.0",
-    "mcp>=1.0.0",
     "watchdog>=6.0.0",
 ]
 
