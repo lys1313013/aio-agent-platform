@@ -278,7 +278,8 @@ class PetService:
             .join(PetPackage, PetPackage.id == UserPet.package_id)
             .where(UserPet.user_id == user.id, UserPet.is_active.is_(True))
         )
-        return result.first()
+        row = result.first()
+        return (row[0], row[1]) if row is not None else None
 
     async def interact(self, user: User, user_pet_id: UUID) -> tuple[UserPet, bool]:
         """点击互动：+1 经验（每日上限 INTERACT_DAILY_LIMIT）。返回 (pet, 是否已加经验)。"""

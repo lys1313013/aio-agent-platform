@@ -74,6 +74,8 @@ def _count_row_frames(im: Image.Image, fw: int, fh: int, cols: int, rows: int) -
     """每行从右向左找最后一个含非透明像素的帧，得到每行有效帧数。"""
     alpha = im.getchannel("A")
     bbox_data = alpha.load()
+    if bbox_data is None:  # pragma: no cover - Pillow 仅在异常图像上返回 None
+        return [1] * rows
     counts: list[int] = []
     for r in range(rows):
         last = 0
