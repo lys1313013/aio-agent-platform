@@ -20,6 +20,17 @@ class DatabaseSettings(BaseSettings):
     )
 
 
+class RedisSettings(BaseSettings):
+    """Redis configuration (在跑任务注册表等跨进程共享状态)."""
+
+    model_config = SettingsConfigDict(env_prefix="REDIS_")
+
+    url: str = Field(
+        default="redis://localhost:6379/0",
+        description="Redis connection URL",
+    )
+
+
 class JWTSettings(BaseSettings):
     """JWT authentication configuration."""
 
@@ -197,6 +208,7 @@ class AppSettings(BaseSettings):
     """Root application settings, composes all sub-configs."""
 
     db: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    redis: RedisSettings = Field(default_factory=RedisSettings)
     jwt: JWTSettings = Field(default_factory=JWTSettings)
     llm: LLMProvidersSettings = Field(default_factory=LLMProvidersSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)

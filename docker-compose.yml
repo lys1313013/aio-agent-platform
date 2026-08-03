@@ -12,6 +12,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
@@ -43,12 +44,26 @@ services:
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://localhost:3000}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8100/health"]
       interval: 15s
       timeout: 5s
       retries: 10
       start_period: 20s
+    networks:
+      - app-network
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     networks:
       - app-network
 

@@ -43,6 +43,7 @@ from aio_agent_platform.core.chat import (
     update_context_summary,
 )
 from aio_agent_platform.core.context import prepare_context
+from aio_agent_platform.core.task_registry import task_finished, task_started, task_tool
 from aio_agent_platform.db import Message
 from aio_agent_platform.db import Session as ChatSession
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
@@ -282,6 +283,7 @@ class ChannelInboundPipeline:
         self, db: AsyncSession, event: InboundEvent, ctx: _ResolvedContext
     ) -> None:
         assert ctx.user_id is not None  # only reached for bound users
+        assert ctx.session_id is not None
         agent = await load_agent(db, self.channel.agent_id, tenant_id=self.channel.tenant_id)
         if agent is None:
             await self.adapter.send(event, "⚠️ 渠道绑定的智能体不可用，请联系管理员。")
@@ -338,6 +340,10 @@ class ChannelInboundPipeline:
         ))
         await db.commit()
 
+        # 登记在跑任务，供宠物 widget 展示（渠道任务没有浏览器 SSE）
+        chat_key = f"{self.channel.id}:{event.chat_id}:{event.external_id}"
+        await task_started(ctx.user_id, ctx.session_id, event.text, self.channel.channel_type, chat_key)
+
         final_output = ""
         tool_calls_list: list[dict] = []
         tool_results_map: dict[str, dict] = {}
@@ -362,11 +368,14 @@ class ChannelInboundPipeline:
                             tc_args = json.loads(parts[3]) if len(parts) > 3 else {}
                         except json.JSONDecodeError:
                             tc_args = {}
+                        tool_name = parts[2] if len(parts) > 2 else ""
                         tool_calls_list.append({
                             "id": parts[1] if len(parts) > 1 else "",
-                            "name": parts[2] if len(parts) > 2 else "",
+                            "name": tool_name,
                             "arguments": tc_args,
                         })
+                        if tool_name:
+                            await task_tool(ctx.user_id, ctx.session_id, tool_name)
                     elif step.startswith("tool_result:"):
                         parts = step.split(":", 4)
                         tc_id = parts[1] if len(parts) > 1 else ""
@@ -394,6 +403,7 @@ class ChannelInboundPipeline:
                 pass
             return
         finally:
+            await task_finished(ctx.user_id, ctx.session_id)
             if reaction_id:
                 try:
                     await self.adapter.delete_reaction(event, reaction_id)

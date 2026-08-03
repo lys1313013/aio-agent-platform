@@ -26,6 +26,8 @@ dependencies = [
     "alembic>=1.14.0",
     "greenlet>=3.1.0", # SQLAlchemy async 需要
     "typing-extensions>=4.12.0",
+    # ---- 缓存/任务注册 ----
+    "redis>=5.0.0",
     # ---- 文本检索 ----
     "rjieba>=0.2.0",
     # ---- Web 框架 ----

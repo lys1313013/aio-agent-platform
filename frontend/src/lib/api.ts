@@ -32,6 +32,7 @@ import type {
   PetPackage,
   PetVisibility,
   UserPet,
+  PetActiveTask,
 } from './types';
 
 const API_BASE = '/api';
@@ -1817,5 +1818,8 @@ export const petsApi = {
   },
   interact(userPetId: string) {
     return request<UserPet>(`/pets/${userPetId}/interact`, { method: 'POST' });
+  },
+  activeTasks() {
+    return request<PetActiveTask[]>('/pets/active-tasks');
   },
 };

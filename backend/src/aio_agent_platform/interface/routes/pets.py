@@ -13,6 +13,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser, DbSession
+from aio_agent_platform.core import task_registry
 from aio_agent_platform.db.models import PetPackage, UserPet
 from aio_agent_platform.pets.package import PetPackageError, parse_pet_package
 from aio_agent_platform.pets.service import (
@@ -107,6 +108,17 @@ class AdminVisibilityUpdate(BaseModel):
 
 class TakedownUpdate(BaseModel):
     taken_down: bool
+
+
+class ActiveTaskOut(BaseModel):
+    """渠道（飞书等）触发的在跑任务，供宠物 widget 轮询展示。"""
+
+    session_id: str
+    label: str
+    tool: str | None
+    source: str
+    chat_key: str
+    started_at: float
 
 
 # ---- Helpers ----
@@ -306,6 +318,22 @@ async def get_active_pet(user: CurrentUser, db: DbSession) -> UserPetOut | None:
         return None
     pet, pkg = pair
     return UserPetOut.from_pair(pet, pkg)
+
+
+@router.get("/active-tasks", response_model=list[ActiveTaskOut])
+async def list_active_tasks(user: CurrentUser) -> list[ActiveTaskOut]:
+    """当前用户的在跑任务（渠道触发，如飞书）。宠物 widget 每 5s 轮询。"""
+    return [
+        ActiveTaskOut(
+            session_id=t.session_id,
+            label=t.label,
+            tool=t.tool,
+            source=t.source,
+            chat_key=t.chat_key,
+            started_at=t.started_at,
+        )
+        for t in await task_registry.list_tasks(user.id)
+    ]
 
 
 # ---- 管理端 ----

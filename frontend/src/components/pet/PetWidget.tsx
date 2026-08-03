@@ -18,7 +18,7 @@ const BUBBLES = [
   '(*^▽^*)',
   '今天也要加油鸭~',
   '(^・ω・^ )',
-  '摸摸头，+1 经验',
+  '摸摸头，好舒服~',
   '看我看我，我在工作哦',
   '汪！嗷呜——',
 ];
@@ -26,6 +26,9 @@ const BUBBLES = [
 function pickBubble(): string {
   return BUBBLES[Math.floor(Math.random() * BUBBLES.length)];
 }
+
+/** 渠道来源标识（任务条前缀） */
+const SOURCE_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企微' };
 
 interface Pos {
   x: number;
@@ -94,10 +97,11 @@ class PetErrorBoundary extends Component<{ children: ReactNode }, { failed: bool
 }
 
 function PetWidgetInner() {
-  const { activePet, enabled, mood, actionRow, size, loaded, loadActive, setEnabled, playRow } = usePetStore();
+  const { activePet, enabled, mood, actionRow, actionFps, size, loaded, tasks, loadActive, setEnabled, playRow } = usePetStore();
   const [anchor, setAnchor] = useState<AnchorPos | null>(loadPos);
   const [collapsed, setCollapsed] = useState(false);
   const [bubble, setBubble] = useState<string | null>(null);
+  const [tasksExpanded, setTasksExpanded] = useState(false);
   const [myPets, setMyPets] = useState<UserPet[]>([]);
   const bubbleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bounceRef = useRef<HTMLDivElement | null>(null);
@@ -161,6 +165,27 @@ function PetWidgetInner() {
   useEffect(() => {
     petsApi.myPets().then(setMyPets).catch(() => {});
   }, []);
+
+  // 轮询渠道（飞书等）触发的在跑任务，5s 一次；页面不可见时暂停
+  useEffect(() => {
+    if (!enabled || !activePet) return;
+    let stop = false;
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return;
+      petsApi
+        .activeTasks()
+        .then((list) => {
+          if (!stop) usePetStore.getState().syncRemoteTasks(list);
+        })
+        .catch(() => {});
+    };
+    tick();
+    const iv = setInterval(tick, 5000);
+    return () => {
+      stop = true;
+      clearInterval(iv);
+    };
+  }, [enabled, activePet]);
 
   const showBubble = useCallback((text: string) => {
     if (bubbleTimer.current) clearTimeout(bubbleTimer.current);
@@ -355,12 +380,70 @@ function PetWidgetInner() {
 
   if (!enabled || !activePet) return null;
 
+  // 任务条：最多平铺 2 条，超出折叠为「还有 N 个」可展开；展开后超高滚动
+  const taskList = Object.entries(tasks).sort((a, b) => {
+    const da = a[1].status === 'done' ? 1 : 0;
+    const db = b[1].status === 'done' ? 1 : 0;
+    return da - db || b[1].updatedAt - a[1].updatedAt;
+  });
+  // 渠道任务在跑时宠物进入工作态（渠道任务没有本地 SSE 事件驱动 mood）
+  const effectiveMood =
+    (mood === 'idle' || mood === 'sleep') && taskList.some(([, t]) => t.remote && t.status !== 'done')
+      ? 'work'
+      : mood;
+  const collapsedCount = tasksExpanded ? taskList.length : Math.min(taskList.length, 2);
+  const visibleRows = Math.min(collapsedCount, 5) + (taskList.length > 2 ? 1 : 0);
+  // 位置：默认挂宠物下方；下方没空间时挂上方（气泡也在上方时错开一格）
+  const taskPillBelow = pos.y + dim + visibleRows * 24 + 8 <= window.innerHeight;
+
   // 统一 transform 定位：移动走合成层，不触发布局/重绘（拖拽和 resize 都直接改这个值）
   const style: React.CSSProperties = {
     left: 0,
     top: 0,
     transform: `translate3d(${pos.x}px, ${pos.y}px, 0)`,
   };
+
+  const taskPills = taskList.length > 0 ? (
+    <div
+      className="absolute left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1"
+      style={taskPillBelow ? { top: dim + 6 } : { bottom: dim + (bubble ? 40 : 6) }}
+    >
+      <div
+        className={`flex flex-col items-center gap-1 ${tasksExpanded ? 'overflow-y-auto' : ''}`}
+        style={tasksExpanded ? { maxHeight: 5 * 24 } : undefined}
+      >
+        {(tasksExpanded ? taskList : taskList.slice(0, 2)).map(([sid, t]) => (
+          <div
+            key={sid}
+            className={`pet-task-pill pointer-events-none flex max-w-[220px] items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-card px-2.5 py-0.5 text-[11px] text-muted-foreground shadow-md ${t.status === 'done' ? 'opacity-75' : ''}`}
+          >
+            {t.status === 'done' ? (
+              <span className="shrink-0 text-[11px] font-bold leading-none" style={{ color: '#22c55e' }}>
+                ✓
+              </span>
+            ) : (
+              <span className="pet-task-dot inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+            )}
+            <span className="overflow-hidden text-ellipsis">
+              {t.source ? `${SOURCE_LABELS[t.source] ?? t.source} · ` : ''}
+              {t.label ?? '处理中'}
+              {t.tool ? ` · ${t.tool}` : ''}
+            </span>
+          </div>
+        ))}
+      </div>
+      {taskList.length > 2 && (
+        <button
+          type="button"
+          className="pet-task-pill rounded-full border border-border bg-card px-2.5 py-0.5 text-[11px] text-muted-foreground shadow-md hover:text-foreground"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => setTasksExpanded((v) => !v)}
+        >
+          {tasksExpanded ? '收起' : `还有 ${taskList.length - 2} 个任务…`}
+        </button>
+      )}
+    </div>
+  ) : null;
 
   const menuItems = [
     {
@@ -390,7 +473,11 @@ function PetWidgetInner() {
   const onMenuClick = ({ key }: { key: string }) => {
     if (key.startsWith('play-')) {
       const row = Number(key.slice('play-'.length));
-      if (!Number.isNaN(row)) playRowX(row);
+      // 菜单手动点播：播久一点（5s）、慢一点（4 FPS），看得清动作
+      if (!Number.isNaN(row)) {
+        void playRow(row, { durationMs: 5000, fps: 4 });
+        showBubble(pickBubble());
+      }
       return;
     }
     if (key.startsWith('switch-')) {
@@ -436,7 +523,7 @@ function PetWidgetInner() {
         </div>
       )}
       <div ref={bounceRef}>
-        <PetCanvas pkg={activePet.package} mood={mood} size={size} fixedRow={actionRow ?? undefined} />
+        <PetCanvas pkg={activePet.package} mood={effectiveMood} size={size} fixedRow={actionRow ?? undefined} fps={actionFps ?? undefined} />
       </div>
     </div>
   );
@@ -459,6 +546,7 @@ function PetWidgetInner() {
       >
         <div className="inline-block">{petBody}</div>
       </Dropdown>
+      {taskPills}
     </div>
   );
 }

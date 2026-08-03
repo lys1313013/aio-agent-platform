@@ -38,7 +38,9 @@ export default function ChatPage() {
     abortRef.current?.abort();
     abortRef.current = null;
     setStreaming(IDLE_STREAMING);
-    usePetStore.getState().reportEvent('interrupt');
+    usePetStore.getState().reportEvent('interrupt', {
+      sessionId: useChatStore.getState().activeSessionId ?? undefined,
+    });
   }, []);
   const { queue, enqueue, remove: removeQueued, clear: clearQueue, flushNext, sendNow: sendQueuedNow } =
     useMessageQueue(
@@ -84,17 +86,17 @@ export default function ChatPage() {
       // Start streaming state
       setError(null);
       setStreaming({ ...IDLE_STREAMING, isStreaming: true });
-      usePetStore.getState().startTask(content);
+      usePetStore.getState().startTask(sessionId, content);
 
       // Start SSE stream
       const controller = chatApi.stream(
         { session_id: sessionId, message: content },
         (event) => {
           const type = event.type as string;
-          usePetStore.getState().reportEvent(
-            type,
-            type === 'tool_call' ? ((event.name as string) || undefined) : undefined,
-          );
+          usePetStore.getState().reportEvent(type, {
+            sessionId,
+            tool: type === 'tool_call' ? ((event.name as string) || undefined) : undefined,
+          });
 
           switch (type) {
             case 'session':

@@ -604,3 +604,14 @@ export type PetMood =
   | 'sad'
   | 'sleep'
   | 'happy';
+
+/** 渠道（飞书等）触发的在跑任务（GET /api/pets/active-tasks） */
+export interface PetActiveTask {
+  session_id: string;
+  label: string;
+  tool: string | null;
+  source: string;
+  /** 渠道会话标识：同一渠道聊天（/new 换 session 仍相同），用于同会话只保留最新一条 */
+  chat_key: string;
+  started_at: number;
+}

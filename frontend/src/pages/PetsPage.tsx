@@ -12,9 +12,10 @@ import {
   Switch,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd';
-import { DownloadOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, DownloadOutlined, PlusOutlined, PoweroffOutlined } from '@ant-design/icons';
 import { petsApi } from '@/lib/api';
 import type { PetPackage, PetVisibility, UserPet } from '@/lib/types';
 import PetCanvas from '@/components/pet/PetCanvas';
@@ -153,10 +154,10 @@ function PackageCard({
   return (
     <Card
       size="small"
-      className="w-52"
+      className="w-64"
       cover={
-        <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 12 }}>
-          <PetCanvas pkg={pkg} mood="idle" size={88} />
+        <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 16 }}>
+          <PetCanvas pkg={pkg} mood="idle" size={112} />
         </div>
       }
       actions={
@@ -244,6 +245,7 @@ export default function PetsPage() {
   const [myPackages, setMyPackages] = useState<PetPackage[]>([]);
   const [market, setMarket] = useState<PetPackage[]>([]);
   const [loading, setLoading] = useState(true);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
   const [mappingPkg, setMappingPkg] = useState<PetPackage | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -298,16 +300,21 @@ export default function PetsPage() {
   };
 
   const handleActivate = async (pet: UserPet) => {
+    setBusyAction(`${pet.id}:activate`);
     try {
       await petsApi.activate(pet.id);
+      message.success(`已激活「${pet.package.display_name}」`);
       await loadActive();
       void reload();
     } catch (e) {
       message.error(e instanceof Error ? e.message : '激活失败');
+    } finally {
+      setBusyAction(null);
     }
   };
 
   const handleRemove = async (pet: UserPet) => {
+    setBusyAction(`${pet.id}:remove`);
     try {
       await petsApi.remove(pet.id);
       message.success(`已移除「${pet.package.display_name}」`);
@@ -315,16 +322,23 @@ export default function PetsPage() {
       void reload();
     } catch (e) {
       message.error(e instanceof Error ? e.message : '移除失败');
+    } finally {
+      setBusyAction(null);
     }
   };
 
   const handleDeactivate = async () => {
+    if (!activePet) return;
+    setBusyAction(`${activePet.id}:activate`);
     try {
       await petsApi.deactivate();
+      message.success('已取消激活');
       await loadActive();
       void reload();
     } catch (e) {
       message.error(e instanceof Error ? e.message : '操作失败');
+    } finally {
+      setBusyAction(null);
     }
   };
 
@@ -391,31 +405,49 @@ export default function PetsPage() {
                     <Card
                       key={pet.id}
                       size="small"
-                      className="w-52"
+                      className="w-64"
                       cover={
-                        <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 12 }}>
-                          <PetCanvas pkg={pet.package} mood="idle" size={88} />
+                        <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 16 }}>
+                          <PetCanvas pkg={pet.package} mood="idle" size={112} />
                         </div>
                       }
                       actions={[
                         pet.is_active ? (
-                          <Button key="off" type="link" size="small" onClick={handleDeactivate}>
-                            取消激活
-                          </Button>
+                          <Tooltip key="off" title="取消激活">
+                            <Button
+                              type="text"
+                              size="small"
+                              loading={busyAction === `${pet.id}:activate`}
+                              icon={<PoweroffOutlined style={{ color: '#52c41a' }} />}
+                              onClick={handleDeactivate}
+                            />
+                          </Tooltip>
                         ) : (
-                          <Button key="on" type="link" size="small" onClick={() => void handleActivate(pet)}>
-                            激活
-                          </Button>
+                          <Tooltip key="on" title="激活">
+                            <Button
+                              type="text"
+                              size="small"
+                              loading={busyAction === `${pet.id}:activate`}
+                              icon={<PoweroffOutlined />}
+                              onClick={() => void handleActivate(pet)}
+                            />
+                          </Tooltip>
                         ),
                         <Popconfirm
                           key="remove"
                           title="移除该宠物？"
-                          description="等级与经验将清空，可重新领养"
+                          description="移除后可重新领养"
                           onConfirm={() => void handleRemove(pet)}
                         >
-                          <Button type="link" size="small" danger>
-                            删除
-                          </Button>
+                          <Tooltip title="删除">
+                            <Button
+                              type="text"
+                              size="small"
+                              danger
+                              loading={busyAction === `${pet.id}:remove`}
+                              icon={<DeleteOutlined />}
+                            />
+                          </Tooltip>
                         </Popconfirm>,
                       ]}
                     >
@@ -426,7 +458,6 @@ export default function PetsPage() {
                             {pet.is_active && <Tag color="green">已激活</Tag>}
                           </span>
                         }
-                        description={<span className="text-xs">Lv.{pet.level} · 经验 {pet.exp}</span>}
                       />
                     </Card>
                   ))}

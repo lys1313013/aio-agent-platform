@@ -11,6 +11,8 @@ interface PetCanvasProps {
   className?: string;
   /** 强制渲染指定行（用于上传/映射编辑时的行预览），优先级高于 mood */
   fixedRow?: number;
+  /** 播放帧率（默认 FPS=8），右键菜单手动播放时传更小值放慢 */
+  fps?: number;
 }
 
 /** 按 row_mapping 把心情映射到精灵图行，缺行降级 idle */
@@ -23,12 +25,12 @@ function resolveRow(pkg: PetPackage, mood: PetMood): number {
  * 精灵图行动画渲染器：Codex 格式（每行一个动画、每列一帧、RGBA 透明背景）。
  * 用 <img> 离屏加载 + canvas 逐帧裁剪绘制；页面不可见时自动暂停。
  */
-export default memo(function PetCanvas({ pkg, mood, size = 96, className, fixedRow }: PetCanvasProps) {
+export default memo(function PetCanvas({ pkg, mood, size = 96, className, fixedRow, fps = FPS }: PetCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
-  const stateRef = useRef({ pkg, mood, fixedRow });
+  const stateRef = useRef({ pkg, mood, fixedRow, fps });
 
-  stateRef.current = { pkg, mood, fixedRow };
+  stateRef.current = { pkg, mood, fixedRow, fps };
 
   // 精灵图接口需要鉴权，<img src> 无法带 Bearer token，改用 blob URL
   useEffect(() => {
@@ -72,7 +74,7 @@ export default memo(function PetCanvas({ pkg, mood, size = 96, className, fixedR
     const draw = (ts: number) => {
       raf = requestAnimationFrame(draw);
       if (document.hidden) return;
-      if (ts - last < 1000 / FPS) return;
+      if (ts - last < 1000 / stateRef.current.fps) return;
       last = ts;
 
       const { pkg: p, mood: m, fixedRow: fr } = stateRef.current;

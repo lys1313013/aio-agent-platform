@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { petsApi } from '@/lib/api';
-import type { PetMood, PetPackage, UserPet } from '@/lib/types';
+import type { PetActiveTask, PetMood, PetPackage, UserPet } from '@/lib/types';
 
 const ENABLED_KEY = 'pet-widget-enabled';
 const SIZE_KEY = 'pet-widget-size';
@@ -46,37 +46,107 @@ function loadSize(): number {
   return Math.min(PET_SIZE_MAX, Math.max(PET_SIZE_MIN, raw));
 }
 
+/** 单个会话的在跑任务（按 sessionId 存于 tasks map） */
+export interface PetTask {
+  label: string | null;
+  tool: string | null;
+  updatedAt: number;
+  /** 'done' = 已完成（打勾停留片刻再移除）；undefined = 进行中 */
+  status?: 'done';
+  doneAt?: number;
+  /** 渠道来源（feishu/dingtalk/wecom），仅远端任务有 */
+  source?: string;
+  /** 渠道会话标识，同一渠道聊天的多个 session 共享，用于同会话只保留最新一条 */
+  chatKey?: string;
+  /** 远端任务（渠道触发，轮询同步）；本地任务来自本页 SSE */
+  remote?: boolean;
+}
+
 interface PetState {
   activePet: UserPet | null;
   enabled: boolean;
   mood: PetMood;
   /** 用户指定播放的精灵图行（互动菜单/左键点击），播放完自动回 null */
   actionRow: number | null;
-  /** 正在处理的任务摘要（发消息时设置，done/error/interrupt 时清除） */
-  taskLabel: string | null;
-  /** 当前正在执行的工具名（tool_call 事件更新） */
-  taskTool: string | null;
+  /** actionRow 播放时的帧率（右键菜单播得慢），null = 默认 */
+  actionFps: number | null;
+  /** 各会话正在处理的任务（key = sessionId），done/error/interrupt 或超时后移除 */
+  tasks: Record<string, PetTask>;
   size: number;
   loaded: boolean;
 
   loadActive: () => Promise<void>;
   setEnabled: (enabled: boolean) => void;
   setSize: (size: number) => void;
-  /** 开始一个任务（发送消息时调用），宠物下方展示任务条 */
-  startTask: (label: string) => void;
-  /** SSE 事件驱动的状态机入口（ChatPage / AgentChatPage 每个事件调用一次），detail 目前用于 tool_call 传工具名 */
-  reportEvent: (eventType: string, detail?: string) => void;
+  /** 开始一个任务（发送消息时调用），宠物旁展示任务条 */
+  startTask: (sessionId: string, label: string) => void;
+  /** SSE 事件驱动的状态机入口（ChatPage / AgentChatPage 每个事件调用一次） */
+  reportEvent: (eventType: string, opts?: { sessionId?: string; tool?: string }) => void;
+  /** 轮询同步渠道触发的在跑任务（全量替换 remote 条目） */
+  syncRemoteTasks: (list: PetActiveTask[]) => void;
   /** 播放指定精灵图行动画 + 后端 interact(+1 exp，每日上限) */
-  playRow: (row: number) => Promise<void>;
+  playRow: (row: number, opts?: { durationMs?: number; fps?: number }) => Promise<void>;
 }
 
 let resetTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 任务无事件超过该时长视为流已中断（页面关闭/断网未收到 error），自动清除任务条 */
+const TASK_STALE_MS = 10 * 60 * 1000;
+const TASK_SWEEP_MS = 60 * 1000;
+/** 已完成任务打勾停留时长 */
+const DONE_LINGER_MS = 60 * 1000;
+
+function pruneTasks(tasks: Record<string, PetTask>): Record<string, PetTask> {
+  const now = Date.now();
+  let changed = false;
+  const next: Record<string, PetTask> = {};
+  for (const [id, t] of Object.entries(tasks)) {
+    const alive = t.status === 'done'
+      ? now - (t.doneAt ?? 0) < DONE_LINGER_MS
+      : now - t.updatedAt < TASK_STALE_MS;
+    if (alive) next[id] = t;
+    else changed = true;
+  }
+  return changed ? next : tasks;
+}
+
+function markDone(tasks: Record<string, PetTask>, sessionId: string | undefined, doneAt: number): Record<string, PetTask> {
+  if (!sessionId || !(sessionId in tasks)) return tasks;
+  const t = tasks[sessionId];
+  if (t.status === 'done') return tasks;
+  return { ...tasks, [sessionId]: { ...t, status: 'done', tool: null, doneAt } };
+}
+
+/** doneAt 校验防止误删：linger 期间同会话又起了新任务（队列下一条/渠道新消息）则不移除 */
+function scheduleRemoval(sessionId: string, doneAt: number) {
+  setTimeout(() => {
+    usePetStore.setState((s) => {
+      const t = s.tasks[sessionId];
+      if (!t || t.status !== 'done' || t.doneAt !== doneAt) return s;
+      const next = { ...s.tasks };
+      delete next[sessionId];
+      return { tasks: next };
+    });
+  }, DONE_LINGER_MS);
+}
+
+function dropTask(tasks: Record<string, PetTask>, sessionId?: string): Record<string, PetTask> {
+  if (!sessionId || !(sessionId in tasks)) return tasks;
+  const next = { ...tasks };
+  delete next[sessionId];
+  return next;
+}
+
+function touchTask(tasks: Record<string, PetTask>, sessionId?: string): Record<string, PetTask> {
+  if (!sessionId || !(sessionId in tasks)) return tasks;
+  return { ...tasks, [sessionId]: { ...tasks[sessionId], updatedAt: Date.now() } };
+}
 
 function scheduleReset(set: (s: Partial<PetState>) => void, ms: number) {
   if (resetTimer) clearTimeout(resetTimer);
   resetTimer = setTimeout(() => {
     resetTimer = null;
-    set({ actionRow: null, mood: 'idle' });
+    set({ actionRow: null, actionFps: null, mood: 'idle' });
   }, ms);
 }
 
@@ -85,8 +155,8 @@ export const usePetStore = create<PetState>((set, get) => ({
   enabled: localStorage.getItem(ENABLED_KEY) !== '0',
   mood: 'idle',
   actionRow: null,
-  taskLabel: null,
-  taskTool: null,
+  actionFps: null,
+  tasks: {},
   size: loadSize(),
   loaded: false,
 
@@ -110,19 +180,30 @@ export const usePetStore = create<PetState>((set, get) => ({
     set({ size });
   },
 
-  startTask: (label) => {
+  startTask: (sessionId, label) => {
     const trimmed = label.trim().replace(/\s+/g, ' ');
     if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
-    set({ taskLabel: trimmed ? trimmed.slice(0, 30) : null, taskTool: null });
+    set((s) => ({
+      tasks: {
+        ...s.tasks,
+        [sessionId]: { label: trimmed ? trimmed.slice(0, 30) : null, tool: null, updatedAt: Date.now() },
+      },
+    }));
   },
 
-  reportEvent: (eventType, detail) => {
+  reportEvent: (eventType, opts) => {
     if (!get().activePet) return;
+    const sessionId = opts?.sessionId;
     switch (eventType) {
       case 'tool_call':
       case 'delegation_tool_call':
         if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
-        set({ mood: 'work', taskTool: detail ?? null });
+        set((s) => ({
+          mood: 'work',
+          tasks: sessionId && s.tasks[sessionId]
+            ? { ...s.tasks, [sessionId]: { ...s.tasks[sessionId], tool: opts?.tool ?? null, updatedAt: Date.now() } }
+            : s.tasks,
+        }));
         break;
       case 'thinking':
       case 'text_delta':
@@ -131,22 +212,25 @@ export const usePetStore = create<PetState>((set, get) => ({
       case 'delegation_text_delta':
       case 'delegation_tool_result':
         if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
-        set({ mood: 'think' });
+        set((s) => ({ mood: 'think', tasks: touchTask(s.tasks, sessionId) }));
         break;
       case 'confirmation_required':
         if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
-        set({ mood: 'wait' });
+        set((s) => ({ mood: 'wait', tasks: touchTask(s.tasks, sessionId) }));
         break;
       case 'confirmation_resolved':
-        set({ mood: 'think' });
+        set((s) => ({ mood: 'think', tasks: touchTask(s.tasks, sessionId) }));
         break;
-      case 'done':
-        set({ mood: 'celebrate', taskLabel: null, taskTool: null });
+      case 'done': {
+        const doneAt = Date.now();
+        set((s) => ({ mood: 'celebrate', tasks: markDone(s.tasks, sessionId, doneAt) }));
+        if (sessionId) scheduleRemoval(sessionId, doneAt);
         scheduleReset(set, CELEBRATE_MS);
         break;
+      }
       case 'error':
       case 'interrupt':
-        set({ mood: 'sad', taskLabel: null, taskTool: null });
+        set((s) => ({ mood: 'sad', tasks: dropTask(s.tasks, sessionId) }));
         scheduleReset(set, SAD_MS);
         break;
       default:
@@ -154,12 +238,62 @@ export const usePetStore = create<PetState>((set, get) => ({
     }
   },
 
-  playRow: async (row) => {
+  syncRemoteTasks: (list) => {
+    const now = Date.now();
+    // 同一渠道会话（chat_key）只保留最新一条（/new 会换 session_id，但用户视角是同一会话）
+    const latestByChat = new Map<string, PetActiveTask>();
+    for (const t of list) {
+      const key = t.chat_key || t.session_id;
+      const prev = latestByChat.get(key);
+      if (!prev || t.started_at > prev.started_at) latestByChat.set(key, t);
+    }
+    const incoming = [...latestByChat.values()];
+    const incomingIds = new Set(incoming.map((t) => t.session_id));
+    const incomingChatKeys = new Set(incoming.map((t) => t.chat_key || t.session_id));
+
+    const current = get().tasks;
+    const newlyDone: string[] = [];
+    const next: Record<string, PetTask> = {};
+    for (const [sid, t] of Object.entries(current)) {
+      if (!t.remote) {
+        next[sid] = t;
+        continue;
+      }
+      if (incomingIds.has(sid)) continue; // 由 incoming 写入最新状态
+      // 同会话已有更新的任务：旧条目（含 done 停留残留）直接丢弃，只保留最后一条
+      if (incomingChatKeys.has(t.chatKey || sid)) continue;
+      if (t.status === 'done') {
+        next[sid] = t; // 等 linger 定时器清除
+        continue;
+      }
+      // 远端条目从轮询结果消失 = 后端已完成：打勾停留，由 linger 定时器移除
+      next[sid] = { ...t, status: 'done', tool: null, doneAt: now };
+      newlyDone.push(sid);
+    }
+    for (const t of incoming) {
+      const existing = next[t.session_id];
+      // 同 session 已有条目（本地 SSE 在跟踪，或同会话渠道又发了新消息）：回到进行中，只补充工具名
+      next[t.session_id] = existing
+        ? { ...existing, status: undefined, doneAt: undefined, tool: t.tool ?? existing.tool, updatedAt: now }
+        : {
+            label: t.label || null,
+            tool: t.tool,
+            source: t.source,
+            chatKey: t.chat_key || undefined,
+            remote: true,
+            updatedAt: now,
+          };
+    }
+    set({ tasks: next });
+    for (const sid of newlyDone) scheduleRemoval(sid, now);
+  },
+
+  playRow: async (row, opts) => {
     const pet = get().activePet;
     if (!pet) return;
     // 本地立即反馈（不依赖接口）：直接播放该行动画
-    set({ actionRow: row, mood: 'happy' });
-    scheduleReset(set, HAPPY_MS);
+    set({ actionRow: row, actionFps: opts?.fps ?? null, mood: 'happy' });
+    scheduleReset(set, opts?.durationMs ?? HAPPY_MS);
     try {
       const updated = await petsApi.interact(pet.id);
       set({ activePet: updated });
@@ -168,3 +302,10 @@ export const usePetStore = create<PetState>((set, get) => ({
     }
   },
 }));
+
+// 周期性清扫过期任务（流中断未收到结束事件时任务条不残留）
+setInterval(() => {
+  const s = usePetStore.getState();
+  const pruned = pruneTasks(s.tasks);
+  if (pruned !== s.tasks) usePetStore.setState({ tasks: pruned });
+}, TASK_SWEEP_MS);
