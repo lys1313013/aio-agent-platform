@@ -342,7 +342,10 @@ class ChannelInboundPipeline:
 
         # 登记在跑任务，供宠物 widget 展示（渠道任务没有浏览器 SSE）
         chat_key = f"{self.channel.id}:{event.chat_id}:{event.external_id}"
-        await task_started(ctx.user_id, ctx.session_id, event.text, self.channel.channel_type, chat_key)
+        await task_started(
+            ctx.user_id, ctx.session_id, event.text, self.channel.channel_type, chat_key,
+            agent_id=str(self.channel.agent_id),
+        )
 
         final_output = ""
         tool_calls_list: list[dict] = []

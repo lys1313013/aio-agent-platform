@@ -24,6 +24,7 @@ logger = structlog.get_logger()
 TASK_TTL_SECONDS = 30 * 60
 LABEL_MAX_LEN = 30
 _KEY_PREFIX = "aio:pet_tasks:"
+_EVENT_CHANNEL = "aio:pet_task_events"
 
 
 @dataclass
@@ -33,6 +34,7 @@ class RunningTask:
     source: str  # 渠道类型: feishu/dingtalk/wecom
     # 渠道会话标识 {channel_id}:{chat_id}:{external_id}，同一渠道聊天 /new 换 session 后仍同 key
     chat_key: str = ""
+    agent_id: str = ""  # 会话所属 Agent（点击任务条跳转会话页用）
     tool: str | None = None
     started_at: float = field(default_factory=time.time)
 
@@ -43,6 +45,7 @@ class RunningTask:
                 "label": self.label,
                 "source": self.source,
                 "chat_key": self.chat_key,
+                "agent_id": self.agent_id,
                 "tool": self.tool,
                 "started_at": self.started_at,
             },
@@ -58,6 +61,7 @@ class RunningTask:
                 label=str(data["label"]),
                 source=str(data["source"]),
                 chat_key=str(data.get("chat_key") or ""),
+                agent_id=str(data.get("agent_id") or ""),
                 tool=data.get("tool"),
                 started_at=float(data.get("started_at") or time.time()),
             )
@@ -79,11 +83,22 @@ def _key(user_id: UUID) -> str:
     return f"{_KEY_PREFIX}{user_id}"
 
 
+async def _publish(user_id: str, event: dict) -> None:
+    """广播任务生命周期事件给宠物 SSE 订阅方。Redis 不可用时静默丢弃。"""
+    try:
+        payload = {"user_id": user_id, **event}
+        await _redis().publish(_EVENT_CHANNEL, json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        logger.warning("task_event_publish_failed", user_id=user_id)
+
+
 async def task_started(
-    user_id: UUID, session_id: UUID, label: str, source: str, chat_key: str = ""
+    user_id: UUID, session_id: UUID, label: str, source: str, chat_key: str = "", agent_id: str = ""
 ) -> None:
     label = " ".join(label.split())[:LABEL_MAX_LEN]
-    task = RunningTask(session_id=str(session_id), label=label, source=source, chat_key=chat_key)
+    task = RunningTask(
+        session_id=str(session_id), label=label, source=source, chat_key=chat_key, agent_id=agent_id
+    )
     try:
         pipe = _redis().pipeline()
         pipe.hset(_key(user_id), str(session_id), task.dumps())
@@ -91,6 +106,19 @@ async def task_started(
         await pipe.execute()
     except Exception:
         logger.warning("task_registry_write_failed", op="start", user_id=str(user_id))
+        return
+    await _publish(str(user_id), {
+        "type": "pet_task_started",
+        "task": {
+            "session_id": task.session_id,
+            "label": task.label,
+            "tool": task.tool,
+            "source": task.source,
+            "chat_key": task.chat_key,
+            "agent_id": task.agent_id,
+            "started_at": task.started_at,
+        },
+    })
 
 
 async def task_tool(user_id: UUID, session_id: UUID, tool: str) -> None:
@@ -108,6 +136,8 @@ async def task_tool(user_id: UUID, session_id: UUID, tool: str) -> None:
         await pipe.execute()
     except Exception:
         logger.warning("task_registry_write_failed", op="tool", user_id=str(user_id))
+        return
+    await _publish(str(user_id), {"type": "pet_task_tool", "session_id": str(session_id), "tool": tool})
 
 
 async def task_finished(user_id: UUID, session_id: UUID) -> None:
@@ -115,6 +145,8 @@ async def task_finished(user_id: UUID, session_id: UUID) -> None:
         await _redis().hdel(_key(user_id), str(session_id))
     except Exception:
         logger.warning("task_registry_write_failed", op="finish", user_id=str(user_id))
+        return
+    await _publish(str(user_id), {"type": "pet_task_finished", "session_id": str(session_id)})
 
 
 async def list_tasks(user_id: UUID) -> list[RunningTask]:

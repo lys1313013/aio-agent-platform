@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser, DbSession
 from aio_agent_platform.core import task_registry
+from aio_agent_platform.core.task_events import broker
 from aio_agent_platform.db.models import PetPackage, UserPet
 from aio_agent_platform.pets.package import PetPackageError, parse_pet_package
 from aio_agent_platform.pets.service import (
@@ -118,6 +119,7 @@ class ActiveTaskOut(BaseModel):
     tool: str | None
     source: str
     chat_key: str
+    agent_id: str
     started_at: float
 
 
@@ -130,6 +132,11 @@ def _not_found(e: PetNotFoundError) -> HTTPException:
 
 def _bad_request(e: PetPackageError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(e))
+
+
+def _sse_event(data: dict) -> str:
+    """Format a dict as an SSE data line (matches chat.py convention)."""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 # ---- 市场与包管理 ----
@@ -322,7 +329,7 @@ async def get_active_pet(user: CurrentUser, db: DbSession) -> UserPetOut | None:
 
 @router.get("/active-tasks", response_model=list[ActiveTaskOut])
 async def list_active_tasks(user: CurrentUser) -> list[ActiveTaskOut]:
-    """当前用户的在跑任务（渠道触发，如飞书）。宠物 widget 每 5s 轮询。"""
+    """当前用户的在跑任务（渠道触发，如飞书）。调试/回退用，前端已改走 SSE。"""
     return [
         ActiveTaskOut(
             session_id=t.session_id,
@@ -330,10 +337,33 @@ async def list_active_tasks(user: CurrentUser) -> list[ActiveTaskOut]:
             tool=t.tool,
             source=t.source,
             chat_key=t.chat_key,
+            agent_id=t.agent_id,
             started_at=t.started_at,
         )
         for t in await task_registry.list_tasks(user.id)
     ]
+
+
+@router.get("/tasks/events")
+async def task_events_stream(user: CurrentUser) -> StreamingResponse:
+    """用户级 SSE：渠道任务生命周期实时推送（连接即快照，再收增量 + 心跳）。"""
+
+    async def event_generator():
+        async for item in broker.stream(user.id):
+            if item is None:
+                yield ": ping\n\n"
+            else:
+                yield _sse_event(item)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ---- 管理端 ----

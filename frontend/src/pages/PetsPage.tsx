@@ -7,7 +7,6 @@ import {
   Modal,
   Popconfirm,
   Select,
-  Slider,
   Spin,
   Switch,
   Tabs,
@@ -19,14 +18,7 @@ import { DeleteOutlined, DownloadOutlined, PlusOutlined, PoweroffOutlined } from
 import { petsApi } from '@/lib/api';
 import type { PetPackage, PetVisibility, UserPet } from '@/lib/types';
 import PetCanvas from '@/components/pet/PetCanvas';
-import {
-  PET_SIZE_MAX,
-  PET_SIZE_MIN,
-  PET_SIZE_STEP,
-  PET_STATE_LABELS,
-  rowName,
-  usePetStore,
-} from '@/stores/petStore';
+import { PET_STATE_LABELS, rowName, usePetStore } from '@/stores/petStore';
 
 const PET_STATES = ['idle', 'think', 'work', 'wait', 'celebrate', 'sad', 'sleep', 'happy'] as const;
 
@@ -239,8 +231,6 @@ export default function PetsPage() {
   const { message } = App.useApp();
   const { enabled, setEnabled, loadActive } = usePetStore();
   const activePet = usePetStore((s) => s.activePet);
-  const size = usePetStore((s) => s.size);
-  const setSize = usePetStore((s) => s.setSize);
   const [myPets, setMyPets] = useState<UserPet[]>([]);
   const [myPackages, setMyPackages] = useState<PetPackage[]>([]);
   const [market, setMarket] = useState<PetPackage[]>([]);
@@ -359,18 +349,6 @@ export default function PetsPage() {
           宠物
         </Typography.Title>
         <div className="flex flex-wrap items-center gap-4">
-          <span className="flex items-center gap-2 text-sm text-muted-foreground">
-            悬浮宠物大小
-            <Slider
-              min={PET_SIZE_MIN}
-              max={PET_SIZE_MAX}
-              step={PET_SIZE_STEP}
-              value={size}
-              onChange={setSize}
-              style={{ width: 140 }}
-            />
-            <span className="w-9 text-xs tabular-nums">{size}px</span>
-          </span>
           <span className="text-sm text-muted-foreground">
             显示悬浮宠物 <Switch checked={enabled} onChange={setEnabled} size="small" />
           </span>

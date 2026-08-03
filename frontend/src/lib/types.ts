@@ -605,7 +605,7 @@ export type PetMood =
   | 'sleep'
   | 'happy';
 
-/** 渠道（飞书等）触发的在跑任务（GET /api/pets/active-tasks） */
+/** 渠道（飞书等）触发的在跑任务（SSE 快照/增量事件载荷，与 GET /api/pets/active-tasks 调试端点同构） */
 export interface PetActiveTask {
   session_id: string;
   label: string;
@@ -613,5 +613,7 @@ export interface PetActiveTask {
   source: string;
   /** 渠道会话标识：同一渠道聊天（/new 换 session 仍相同），用于同会话只保留最新一条 */
   chat_key: string;
+  /** 会话所属 Agent（点击任务条跳转会话页用） */
+  agent_id: string;
   started_at: number;
 }

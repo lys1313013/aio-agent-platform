@@ -32,7 +32,6 @@ import type {
   PetPackage,
   PetVisibility,
   UserPet,
-  PetActiveTask,
 } from './types';
 
 const API_BASE = '/api';
@@ -999,7 +998,6 @@ export const webToolSettingsApi = {
 // ---- Admin: System Config ----
 
 export interface AutoTitleConfig {
-  enabled: boolean;
   model_id: string | null;
   prompt: string;
   default_prompt: string;
@@ -1010,7 +1008,7 @@ export const systemConfigApi = {
     return request<AutoTitleConfig>('/admin/system-config/auto-title');
   },
 
-  updateAutoTitle(data: { enabled: boolean; model_id?: string | null; prompt?: string }) {
+  updateAutoTitle(data: { model_id?: string | null; prompt?: string }) {
     return request<AutoTitleConfig>('/admin/system-config/auto-title', {
       method: 'PUT',
       body: JSON.stringify(data),
@@ -1378,6 +1376,7 @@ export const agentsApi = {
     skill_ids?: string[];
     enable_memory_extraction?: boolean;
     enable_retry?: boolean;
+    enable_auto_title?: boolean;
     is_active?: boolean;
     child_ids?: string[];
     max_iterations?: number | null;
@@ -1819,7 +1818,66 @@ export const petsApi = {
   interact(userPetId: string) {
     return request<UserPet>(`/pets/${userPetId}/interact`, { method: 'POST' });
   },
-  activeTasks() {
-    return request<PetActiveTask[]>('/pets/active-tasks');
+  /**
+   * Watch channel task lifecycle via SSE (GET /api/pets/tasks/events).
+   * Fires `onEvent` per event; emits `{ type: 'error' }` on failure and
+   * `{ type: 'closed' }` when the server ends the stream. Returns a close fn.
+   */
+  watchActiveTasks(onEvent: (event: Record<string, unknown>) => void): () => void {
+    const controller = new AbortController();
+
+    (async () => {
+      // Ensure access token is fresh before opening the stream
+      if (isTokenExpiringSoon(tokenStorage.getAccess())) {
+        const refreshed = await refreshAccessToken();
+        if (!refreshed && tokenStorage.getRefresh()) {
+          onEvent({ type: 'error', message: 'Session expired' });
+          forceLogout();
+          return;
+        }
+      }
+
+      const token = tokenStorage.getAccess() || '';
+      const resp = await fetch(`${API_BASE}/pets/tasks/events`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+
+      if (!resp.ok || !resp.body) {
+        onEvent({ type: 'error', message: resp.statusText });
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE events are separated by double newlines
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+        for (const part of parts) {
+          const line = part.trim();
+          if (line.startsWith('data: ')) {
+            try {
+              onEvent(JSON.parse(line.slice(6)));
+            } catch {
+              /* ignore malformed JSON */
+            }
+          }
+        }
+      }
+
+      onEvent({ type: 'closed' });
+    })().catch((err) => {
+      if (err.name !== 'AbortError') {
+        onEvent({ type: 'error', message: err.message || '连接断开' });
+      }
+    });
+
+    return () => controller.abort();
   },
 };

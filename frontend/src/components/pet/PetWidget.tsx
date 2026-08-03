@@ -1,9 +1,11 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Dropdown } from 'antd';
+import { useNavigate } from 'react-router-dom';
+import { Dropdown, Slider } from 'antd';
 import { petsApi } from '@/lib/api';
 import type { UserPet } from '@/lib/types';
-import { rowName, usePetStore } from '@/stores/petStore';
+import { PET_SIZE_MAX, PET_SIZE_MIN, PET_SIZE_STEP, rowName, usePetStore } from '@/stores/petStore';
+import { useChatStore } from '@/stores/chatStore';
 import PetCanvas from './PetCanvas';
 
 const POS_KEY = 'pet-widget-pos';
@@ -97,7 +99,21 @@ class PetErrorBoundary extends Component<{ children: ReactNode }, { failed: bool
 }
 
 function PetWidgetInner() {
-  const { activePet, enabled, mood, actionRow, actionFps, size, loaded, tasks, loadActive, setEnabled, playRow } = usePetStore();
+  const { activePet, enabled, mood, actionRow, actionFps, size, loaded, tasks, loadActive, setEnabled, setSize, playRow } = usePetStore();
+  const navigate = useNavigate();
+
+  // 点击任务条进入对应会话：有 agentId 走 Agent 会话路由，否则通用聊天页 + 激活会话
+  const openSession = useCallback(
+    (sessionId: string, agentId?: string) => {
+      if (agentId) {
+        navigate(`/agents/${agentId}/chat/${sessionId}`);
+      } else {
+        useChatStore.getState().setActiveSession(sessionId);
+        navigate('/chat');
+      }
+    },
+    [navigate],
+  );
   const [anchor, setAnchor] = useState<AnchorPos | null>(loadPos);
   const [collapsed, setCollapsed] = useState(false);
   const [bubble, setBubble] = useState<string | null>(null);
@@ -166,24 +182,28 @@ function PetWidgetInner() {
     petsApi.myPets().then(setMyPets).catch(() => {});
   }, []);
 
-  // 轮询渠道（飞书等）触发的在跑任务，5s 一次；页面不可见时暂停
+  // 渠道（飞书等）触发的在跑任务：SSE 实时推送（连接即快照 + 增量事件），断开 3s 后重连
   useEffect(() => {
     if (!enabled || !activePet) return;
     let stop = false;
-    const tick = () => {
-      if (document.visibilityState !== 'visible') return;
-      petsApi
-        .activeTasks()
-        .then((list) => {
-          if (!stop) usePetStore.getState().syncRemoteTasks(list);
-        })
-        .catch(() => {});
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let close: (() => void) | null = null;
+    const connect = () => {
+      if (stop) return;
+      close = petsApi.watchActiveTasks((ev) => {
+        if (stop) return;
+        if (ev.type === 'error' || ev.type === 'closed') {
+          retryTimer = setTimeout(connect, 3000);
+          return;
+        }
+        usePetStore.getState().applyRemoteTaskEvent(ev);
+      });
     };
-    tick();
-    const iv = setInterval(tick, 5000);
+    connect();
     return () => {
       stop = true;
-      clearInterval(iv);
+      if (retryTimer) clearTimeout(retryTimer);
+      close?.();
     };
   }, [enabled, activePet]);
 
@@ -413,9 +433,13 @@ function PetWidgetInner() {
         style={tasksExpanded ? { maxHeight: 5 * 24 } : undefined}
       >
         {(tasksExpanded ? taskList : taskList.slice(0, 2)).map(([sid, t]) => (
-          <div
+          <button
             key={sid}
-            className={`pet-task-pill pointer-events-none flex max-w-[220px] items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-card px-2.5 py-0.5 text-[11px] text-muted-foreground shadow-md ${t.status === 'done' ? 'opacity-75' : ''}`}
+            type="button"
+            title="点击进入会话"
+            className={`pet-task-pill flex max-w-[220px] cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-card px-2.5 py-0.5 text-[11px] text-muted-foreground shadow-md hover:text-foreground ${t.status === 'done' ? 'opacity-75' : ''}`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => openSession(sid, t.agentId)}
           >
             {t.status === 'done' ? (
               <span className="shrink-0 text-[11px] font-bold leading-none" style={{ color: '#22c55e' }}>
@@ -429,7 +453,7 @@ function PetWidgetInner() {
               {t.label ?? '处理中'}
               {t.tool ? ` · ${t.tool}` : ''}
             </span>
-          </div>
+          </button>
         ))}
       </div>
       {taskList.length > 2 && (
@@ -464,6 +488,30 @@ function PetWidgetInner() {
               label: `${p.package.display_name}${p.is_active ? '（当前）' : ''}`,
             }))
           : [{ key: 'switch-empty', label: '暂无其他宠物', disabled: true }],
+    },
+    {
+      key: 'size',
+      label: (
+        <div
+          className="flex w-[190px] items-center gap-2"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <span className="shrink-0 text-xs text-muted-foreground">大小</span>
+          <Slider
+            min={PET_SIZE_MIN}
+            max={PET_SIZE_MAX}
+            step={PET_SIZE_STEP}
+            value={size}
+            onChange={setSize}
+            style={{ flex: 1 }}
+            tooltip={{ formatter: (v) => `${v}px` }}
+          />
+          <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+            {size}px
+          </span>
+        </div>
+      ),
     },
     { type: 'divider' as const },
     { key: 'collapse', label: collapsed ? '展开宠物' : '收起宠物' },

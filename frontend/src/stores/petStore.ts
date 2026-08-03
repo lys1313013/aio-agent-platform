@@ -58,6 +58,8 @@ export interface PetTask {
   source?: string;
   /** 渠道会话标识，同一渠道聊天的多个 session 共享，用于同会话只保留最新一条 */
   chatKey?: string;
+  /** 会话所属 Agent（点击任务条跳转会话页用）；ChatPage 通用会话无 */
+  agentId?: string;
   /** 远端任务（渠道触发，轮询同步）；本地任务来自本页 SSE */
   remote?: boolean;
 }
@@ -79,11 +81,13 @@ interface PetState {
   setEnabled: (enabled: boolean) => void;
   setSize: (size: number) => void;
   /** 开始一个任务（发送消息时调用），宠物旁展示任务条 */
-  startTask: (sessionId: string, label: string) => void;
+  startTask: (sessionId: string, label: string, agentId?: string) => void;
   /** SSE 事件驱动的状态机入口（ChatPage / AgentChatPage 每个事件调用一次） */
   reportEvent: (eventType: string, opts?: { sessionId?: string; tool?: string }) => void;
   /** 轮询同步渠道触发的在跑任务（全量替换 remote 条目） */
   syncRemoteTasks: (list: PetActiveTask[]) => void;
+  /** SSE 事件处理：snapshot / started / tool / finished */
+  applyRemoteTaskEvent: (ev: Record<string, unknown>) => void;
   /** 播放指定精灵图行动画 + 后端 interact(+1 exp，每日上限) */
   playRow: (row: number, opts?: { durationMs?: number; fps?: number }) => Promise<void>;
 }
@@ -137,6 +141,31 @@ function dropTask(tasks: Record<string, PetTask>, sessionId?: string): Record<st
   return next;
 }
 
+/** 单条远端任务 upsert：新消息到达替换为最新 label 并回到进行中；
+ *  同 chat_key 的旧条目（/new 换 session 后的残留）直接丢弃，由新任务替换 */
+function mergeIncoming(tasks: Record<string, PetTask>, t: PetActiveTask): Record<string, PetTask> {
+  const key = t.chat_key || t.session_id;
+  const next: Record<string, PetTask> = {};
+  for (const [sid, task] of Object.entries(tasks)) {
+    if (sid !== t.session_id && (task.chatKey || sid) === key) continue; // 同渠道旧会话由新任务替换
+    next[sid] = task;
+  }
+  const existing = next[t.session_id];
+  next[t.session_id] = {
+    ...(existing ?? {}),
+    label: t.label || existing?.label || null,
+    tool: t.tool,
+    source: t.source ?? existing?.source,
+    chatKey: t.chat_key || existing?.chatKey || undefined,
+    agentId: t.agent_id || existing?.agentId || undefined,
+    remote: true,
+    status: undefined,
+    doneAt: undefined,
+    updatedAt: Date.now(),
+  };
+  return next;
+}
+
 function touchTask(tasks: Record<string, PetTask>, sessionId?: string): Record<string, PetTask> {
   if (!sessionId || !(sessionId in tasks)) return tasks;
   return { ...tasks, [sessionId]: { ...tasks[sessionId], updatedAt: Date.now() } };
@@ -180,13 +209,18 @@ export const usePetStore = create<PetState>((set, get) => ({
     set({ size });
   },
 
-  startTask: (sessionId, label) => {
+  startTask: (sessionId, label, agentId) => {
     const trimmed = label.trim().replace(/\s+/g, ' ');
     if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
     set((s) => ({
       tasks: {
         ...s.tasks,
-        [sessionId]: { label: trimmed ? trimmed.slice(0, 30) : null, tool: null, updatedAt: Date.now() },
+        [sessionId]: {
+          label: trimmed ? trimmed.slice(0, 30) : null,
+          tool: null,
+          agentId: agentId ?? undefined,
+          updatedAt: Date.now(),
+        },
       },
     }));
   },
@@ -253,7 +287,7 @@ export const usePetStore = create<PetState>((set, get) => ({
 
     const current = get().tasks;
     const newlyDone: string[] = [];
-    const next: Record<string, PetTask> = {};
+    let next: Record<string, PetTask> = {};
     for (const [sid, t] of Object.entries(current)) {
       if (!t.remote) {
         next[sid] = t;
@@ -271,21 +305,43 @@ export const usePetStore = create<PetState>((set, get) => ({
       newlyDone.push(sid);
     }
     for (const t of incoming) {
-      const existing = next[t.session_id];
-      // 同 session 已有条目（本地 SSE 在跟踪，或同会话渠道又发了新消息）：回到进行中，只补充工具名
-      next[t.session_id] = existing
-        ? { ...existing, status: undefined, doneAt: undefined, tool: t.tool ?? existing.tool, updatedAt: now }
-        : {
-            label: t.label || null,
-            tool: t.tool,
-            source: t.source,
-            chatKey: t.chat_key || undefined,
-            remote: true,
-            updatedAt: now,
-          };
+      next = mergeIncoming(next, t);
     }
     set({ tasks: next });
     for (const sid of newlyDone) scheduleRemoval(sid, now);
+  },
+
+  applyRemoteTaskEvent: (ev) => {
+    if (!get().activePet) return;
+    const type = ev.type as string;
+    if (type === 'pet_task_snapshot') {
+      get().syncRemoteTasks((ev.tasks as PetActiveTask[]) || []);
+      return;
+    }
+    if (type === 'pet_task_started') {
+      const t = ev.task as PetActiveTask;
+      if (!t) return;
+      set((s) => ({ tasks: mergeIncoming(s.tasks, t) }));
+      return;
+    }
+    if (type === 'pet_task_tool') {
+      const sessionId = ev.session_id as string | undefined;
+      if (!sessionId) return;
+      const tool = (ev.tool as string | null) ?? null;
+      set((s) => {
+        const t = s.tasks[sessionId];
+        if (!t) return s;
+        return { tasks: { ...s.tasks, [sessionId]: { ...t, tool, updatedAt: Date.now() } } };
+      });
+      return;
+    }
+    if (type === 'pet_task_finished') {
+      const sessionId = ev.session_id as string | undefined;
+      if (!sessionId) return;
+      const doneAt = Date.now();
+      set((s) => ({ tasks: markDone(s.tasks, sessionId, doneAt) }));
+      scheduleRemoval(sessionId, doneAt);
+    }
   },
 
   playRow: async (row, opts) => {
