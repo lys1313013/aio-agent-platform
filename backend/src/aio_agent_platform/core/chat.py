@@ -446,8 +446,14 @@ async def load_conversation_history(
                     content=content,
                     tool_calls=tc_objects if tc_objects else None,
                 ))
+                emitted_ids = {tc.id for tc in tc_objects}
                 for tc in stored_tool_calls:
-                    if isinstance(tc, dict) and "result" in tc and tc["result"]:
+                    if (
+                        isinstance(tc, dict)
+                        and tc.get("id") in emitted_ids
+                        and "result" in tc
+                        and tc["result"]
+                    ):
                         r = tc["result"]
                         r_str = json.dumps(r, ensure_ascii=False) if not isinstance(r, str) else r
                         llm_messages.append(LLMMessage(
@@ -475,9 +481,36 @@ async def load_conversation_history(
             "Adaptive history load: %d -> %d messages (~%d -> ~%d tokens, budget %d)",
             len(llm_messages), len(kept), total, used, budget.history_budget,
         )
-        llm_messages = kept
+        # The truncation keeps a contiguous tail window; the budget boundary may cut
+        # at an assistant's tool_calls while its (newer) tool results survive, leaving
+        # orphan role='tool' messages at the window head. LLM APIs reject those.
+        llm_messages = drop_orphan_tool_messages(kept)
 
     return llm_messages, context_summary
+
+
+def drop_orphan_tool_messages(messages: list[LLMMessage]) -> list[LLMMessage]:
+    """Drop role='tool' messages whose tool_call_id has no preceding assistant tool_calls.
+
+    Can arise after token-budget truncation (assistant cut at the boundary) or from
+    stored tool_calls lacking id/name. LLM providers reject orphan tool messages.
+    """
+    cleaned: list[LLMMessage] = []
+    pending_tool_ids: set[str] = set()
+    for m in messages:
+        if m.role == "assistant":
+            pending_tool_ids = {tc.id for tc in m.tool_calls} if m.tool_calls else set()
+            cleaned.append(m)
+        elif m.role == "tool":
+            if m.tool_call_id in pending_tool_ids:
+                pending_tool_ids.discard(m.tool_call_id)
+                cleaned.append(m)
+        else:
+            cleaned.append(m)
+    dropped = len(messages) - len(cleaned)
+    if dropped:
+        logger.info("History cleanup: dropped %d orphan tool messages", dropped)
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
