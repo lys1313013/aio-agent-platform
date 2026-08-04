@@ -121,6 +121,11 @@ async def lifespan(app: FastAPI):
 
     web_tools.register_handlers(tool_executor)
 
+    # 9.8 Register pet action tool handler (宠物闲聊主动触发动作)
+    from aio_agent_platform.pets.smart import ensure_pet_tools_registered
+
+    ensure_pet_tools_registered(tool_executor)
+
     # 10. MCP Manager — connect to configured MCP Servers
     from aio_agent_platform.tools.mcp.manager import MCPManager
 

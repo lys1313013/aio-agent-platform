@@ -65,6 +65,13 @@ from aio_agent_platform.observation import (
     get_langfuse_client,
     set_current_observation,
 )
+from aio_agent_platform.pets.smart import (
+    PET_CHAT_WHITELIST,
+    build_chat_persona,
+    ensure_pet_tools_registered,
+    load_pet_chat_context,
+    pet_action_tool_schema,
+)
 from aio_agent_platform.storage.chat_attachments import (
     ALLOWED_MIME,
     MAX_BYTES,
@@ -859,11 +866,25 @@ async def chat_stream(
 
                 # Build tools schema + system prompt with memories (using agent config)
                 logger.debug("stream_building_prompt", session_id=str(session_id))
-                tools_list, tools_schema = _filter_tools_by_agent(tool_executor, agent)
-                system_prompt = await _build_system_prompt_with_memories(
-                    gen_db, user.id, req.message, tools_list, agent=agent,
-                    workspace_files=_file_refs_to_dicts(req.file_attachments),
-                )
+                pet_ctx = await load_pet_chat_context(gen_db, session)
+                if pet_ctx:
+                    # 宠物闲聊：白名单工具（记忆类 + pet_action），人设合成，禁用高成本工具
+                    ensure_pet_tools_registered(tool_executor)
+                    tools_list, tools_schema = _filter_tools_by_agent(tool_executor, agent)
+                    tools_list = [t for t in tools_list if t.name in PET_CHAT_WHITELIST]
+                    tools_schema = [
+                        s for s in tools_schema
+                        if s["function"]["name"] in PET_CHAT_WHITELIST
+                    ]
+                    tools_schema.append(pet_action_tool_schema())
+                    pet_ctx_pet, pet_ctx_pkg, pet_ctx_vocab = pet_ctx
+                    system_prompt = build_chat_persona(agent, pet_ctx_pet, pet_ctx_pkg, pet_ctx_vocab)
+                else:
+                    tools_list, tools_schema = _filter_tools_by_agent(tool_executor, agent)
+                    system_prompt = await _build_system_prompt_with_memories(
+                        gen_db, user.id, req.message, tools_list, agent=agent,
+                        workspace_files=_file_refs_to_dicts(req.file_attachments),
+                    )
                 logger.info(
                     "stream_prompt_built",
                     session_id=str(session_id),
@@ -875,6 +896,9 @@ async def chat_stream(
                 agent_model_id = agent.model_id if agent else None
                 agent_temperature = agent.temperature if agent else None
                 agent_max_iterations = agent.max_iterations if agent else None
+                if pet_ctx:
+                    # 宠物闲聊不跑复杂 ReAct：迭代上限收紧到 3
+                    agent_max_iterations = min(agent_max_iterations or settings.agent.max_iterations, 3)
                 workspace_id, workspace_slug = await _resolve_workspace(gen_db, session, user.id)
                 # Commit workspace_id so it's persisted
                 await gen_db.commit()

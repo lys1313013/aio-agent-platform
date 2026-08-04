@@ -83,13 +83,19 @@ interface PetState {
   /** 开始一个任务（发送消息时调用），宠物旁展示任务条 */
   startTask: (sessionId: string, label: string, agentId?: string) => void;
   /** SSE 事件驱动的状态机入口（ChatPage / AgentChatPage 每个事件调用一次） */
-  reportEvent: (eventType: string, opts?: { sessionId?: string; tool?: string }) => void;
+  reportEvent: (eventType: string, opts?: {
+    sessionId?: string;
+    tool?: string;
+    petAction?: { name?: string; row?: number };
+  }) => void;
   /** 轮询同步渠道触发的在跑任务（全量替换 remote 条目） */
   syncRemoteTasks: (list: PetActiveTask[]) => void;
   /** SSE 事件处理：snapshot / started / tool / finished */
   applyRemoteTaskEvent: (ev: Record<string, unknown>) => void;
   /** 播放指定精灵图行动画 + 后端 interact(+1 exp，每日上限) */
   playRow: (row: number, opts?: { durationMs?: number; fps?: number }) => Promise<void>;
+  /** 按动作名播放动画（不调 interact；智能体触发的情绪动作走这里） */
+  playAction: (name: string) => void;
 }
 
 let resetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -255,6 +261,18 @@ export const usePetStore = create<PetState>((set, get) => ({
       case 'confirmation_resolved':
         set((s) => ({ mood: 'think', tasks: touchTask(s.tasks, sessionId) }));
         break;
+      case 'pet_action': {
+        // 智能体主动触发的情绪动作（闲聊/气泡），按 name 或 row 播放，不记 interact 经验
+        const paName = opts?.petAction?.name;
+        const paRow = opts?.petAction?.row;
+        if (typeof paRow === 'number') {
+          set({ actionRow: paRow, actionFps: null, mood: 'happy' });
+          scheduleReset(set, HAPPY_MS);
+        } else if (paName) {
+          get().playAction(paName);
+        }
+        break;
+      }
       case 'done': {
         const doneAt = Date.now();
         set((s) => ({ mood: 'celebrate', tasks: markDone(s.tasks, sessionId, doneAt) }));
@@ -355,6 +373,16 @@ export const usePetStore = create<PetState>((set, get) => ({
       set({ activePet: updated });
     } catch {
       // 互动上报失败不影响体验
+    }
+  },
+
+  playAction: (name) => {
+    const pet = get().activePet;
+    if (!pet || !name) return;
+    const match = (pet.actions ?? []).find((a) => a.name === name);
+    if (match && typeof match.row === 'number') {
+      set({ actionRow: match.row, actionFps: null, mood: 'happy' });
+      scheduleReset(set, HAPPY_MS);
     }
   },
 }));

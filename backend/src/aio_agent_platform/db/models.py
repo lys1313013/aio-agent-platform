@@ -544,6 +544,13 @@ class Session(Base):
         comment="关联工作区ID",
     )
     title: Mapped[str | None] = mapped_column(String(512), comment="会话标题")
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="chat", server_default="chat",
+        comment="会话来源: chat(常规)/pet(宠物闲聊)",
+    )
+    pet_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), comment="宠物闲聊会话关联的用户宠物ID"
+    )
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否置顶")
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否归档")
     context_summary: Mapped[str | None] = mapped_column(Text, comment="对话历史摘要(L4 工作记忆压缩)")
@@ -1298,6 +1305,9 @@ class PetPackage(Base):
     display_name: Mapped[str] = mapped_column(String(256), nullable=False, comment="展示名称")
     description: Mapped[str | None] = mapped_column(Text, comment="描述")
     kind: Mapped[str | None] = mapped_column(String(32), comment="pet.json 的 kind(可选)")
+    default_agent_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), comment="包级默认人设智能体ID(领养者未绑定时生效)"
+    )
     owner_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="创建人ID")
     tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="归属租户ID")
     visibility: Mapped[str] = mapped_column(
@@ -1312,6 +1322,9 @@ class PetPackage(Base):
     row_mapping: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict,
         comment="平台状态→精灵图行号 映射 {idle:0, work:1, ...}",
+    )
+    actions: Mapped[dict | None] = mapped_column(
+        JSONB, comment="动作目录 {row: {name, state}}，上传时自动生成，创建人可改",
     )
     frame_width: Mapped[int] = mapped_column(Integer, nullable=False, comment="帧宽(px)")
     frame_height: Mapped[int] = mapped_column(Integer, nullable=False, comment="帧高(px)")
@@ -1344,11 +1357,20 @@ class UserPet(Base):
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="用户ID")
     package_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="宠物包ID")
+    agent_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), comment="实例级绑定智能体ID(优先级高于包级默认)"
+    )
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=1, comment="等级")
     exp: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="累计经验")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否当前激活")
     adopted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="领养时间"
+    )
+    action_aliases: Mapped[dict | None] = mapped_column(
+        JSONB, comment="实例级动作名覆盖 {row: name}，优先级高于包级动作目录"
+    )
+    state_mapping: Mapped[dict | None] = mapped_column(
+        JSONB, comment="实例级状态→行 覆盖 {state: row}，优先级高于包级 row_mapping"
     )
 
     __table_args__ = (

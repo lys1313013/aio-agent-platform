@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.db.models import PetExpLog, PetPackage, User, UserPet
+from aio_agent_platform.db.models import PetExpLog, PetPackage, SystemConfig, User, UserPet
 from aio_agent_platform.pets.package import ParsedPetPackage, PetPackageError
 from aio_agent_platform.storage.client import ObjectStorage
 
@@ -34,12 +34,55 @@ DEFAULT_ROW_MAPPING = {
     "happy": 3,  # waving
 }
 
+# 平台状态中文名（动作目录生成 + 智能体词汇表共用）
+STATE_LABELS = {
+    "idle": "待机",
+    "think": "思考",
+    "work": "工作",
+    "wait": "等待",
+    "celebrate": "庆祝",
+    "sad": "沮丧",
+    "sleep": "睡觉",
+    "happy": "开心",
+}
+
+# Codex 标准 9 行精灵图的行名（2026-08-02 校准），缺省动作名占位「动画 N」
+CODEX_ROW_NAMES = ["待机", "向右跑", "向左跑", "挥手", "跳跃", "失败", "等待", "工作", "思考"]
+PLACEHOLDER_PREFIX = "动画"
+
+# 智能体气泡每日配额（可经 SystemConfig 调整）
+BUBBLE_DAILY_LIMIT_DEFAULT = 30
+KEY_PET_SMART_ENABLED = "pet_smart_enabled"
+KEY_PET_BUBBLE_LIMIT = "pet_bubble_daily_limit"
+
+# 智能体词汇表上限（注入气泡 prompt 的动作名数量）
+AGENT_VOCAB_LIMIT = 12
+
 
 def default_row_mapping(row_count: int) -> dict:
     """标准 9 行包返回完整默认映射；不足 9 行的自定义包只保证 idle（行 0）。"""
     if row_count >= 9:
         return dict(DEFAULT_ROW_MAPPING)
     return {"idle": 0}
+
+
+def build_actions(row_mapping: dict, row_count: int) -> dict:
+    """由状态映射自动生成动作目录 {str(row): {name, state}}。
+
+    name = 状态中文名 → Codex 标准行名 → 「动画 N」；state = 反查到的状态（无则 null）。
+    """
+    state_to_row = {s: r for s, r in row_mapping.items() if not s.startswith("_")}
+    actions: dict[str, dict] = {}
+    for row in range(row_count):
+        state = next((s for s, r in state_to_row.items() if r == row), None)
+        if state:
+            name = STATE_LABELS.get(state, state)
+        elif row < len(CODEX_ROW_NAMES):
+            name = CODEX_ROW_NAMES[row]
+        else:
+            name = f"{PLACEHOLDER_PREFIX} {row}"
+        actions[str(row)] = {"name": name, "state": state}
+    return actions
 
 
 def level_from_exp(exp: int) -> int:
@@ -129,6 +172,7 @@ class PetService:
             visibility=visibility,
             manifest=parsed.manifest,
             row_mapping=mapping,
+            actions=build_actions(mapping, parsed.row_count),
             frame_width=parsed.frame_width,
             frame_height=parsed.frame_height,
             col_count=parsed.col_count,
@@ -304,3 +348,199 @@ class PetService:
         self.db.add(PetExpLog(user_id=user.id, pet_id=user_pet_id, delta=1, reason="interact"))
         await self.db.flush()
         return pet, True
+
+    # ---- 绑定智能体 ----
+
+    async def set_agent(self, user: User, user_pet_id: UUID, agent_id: UUID | None) -> UserPet:
+        pet = await self.db.get(UserPet, user_pet_id)
+        if pet is None or pet.user_id != user.id:
+            raise PetNotFoundError(str(user_pet_id))
+        if agent_id is not None:
+            from aio_agent_platform.core.chat import load_agent
+
+            agent = await load_agent(self.db, agent_id, user=user)
+            if agent is None:
+                raise PetPackageError("智能体不存在或对当前用户不可见")
+        pet.agent_id = agent_id
+        await self.db.flush()
+        return pet
+
+    async def set_default_agent(self, user: User, package_id: UUID, agent_id: UUID | None) -> PetPackage:
+        pkg = await self._get_owned_package(user, package_id)
+        if agent_id is not None:
+            from aio_agent_platform.core.chat import load_agent
+
+            agent = await load_agent(self.db, agent_id, user=user)
+            if agent is None:
+                raise PetPackageError("智能体不存在或对当前用户不可见")
+        pkg.default_agent_id = agent_id
+        await self.db.flush()
+        return pkg
+
+    async def resolve_agent(self, user: User, pet: UserPet, pkg: PetPackage):
+        """解析绑定 Agent：实例绑定 → 包级默认 → None。实时可见性校验，失败即降级。"""
+        agent_id = pet.agent_id or pkg.default_agent_id
+        if agent_id is None:
+            return None
+        try:
+            from aio_agent_platform.core.chat import load_agent
+
+            return await load_agent(self.db, agent_id, user=user)
+        except Exception:
+            return None
+
+    # ---- 动作系统 ----
+
+    async def set_package_actions(self, user: User, package_id: UUID, actions: dict) -> PetPackage:
+        """上传者改包级动作名：{row: name}。"""
+        pkg = await self._get_owned_package(user, package_id)
+        clean: dict[str, dict] = {}
+        names: set[str] = set()
+        for row_key, name in actions.items():
+            try:
+                row = int(row_key)
+            except (TypeError, ValueError):
+                raise PetPackageError(f"非法行号: {row_key}")
+            if row < 0 or row >= pkg.row_count:
+                raise PetPackageError(f"动作行号越界: {row}（共 {pkg.row_count} 行）")
+            name = str(name).strip()
+            if not name:
+                raise PetPackageError(f"第 {row} 行动作名不能为空")
+            if len(name) > 20:
+                raise PetPackageError(f"第 {row} 行动作名过长（≤20 字）")
+            if name in names:
+                raise PetPackageError(f"动作名重复: {name}")
+            names.add(name)
+            existing = (pkg.actions or {}).get(str(row), {})
+            state = existing.get("state") if isinstance(existing, dict) else None
+            clean[str(row)] = {"name": name, "state": state}
+        pkg.actions = clean
+        await self.db.flush()
+        return pkg
+
+    async def set_pet_actions(
+        self, user: User, user_pet_id: UUID, aliases: dict, state_mapping: dict | None
+    ) -> UserPet:
+        """领养者改实例级动作名覆盖 + 状态映射覆盖。aliases 空串 value 视为删除该条覆盖。"""
+        pet = await self.db.get(UserPet, user_pet_id)
+        if pet is None or pet.user_id != user.id:
+            raise PetNotFoundError(str(user_pet_id))
+        pkg = await self.db.get(PetPackage, pet.package_id)
+        if pkg is None:
+            raise PetNotFoundError(str(user_pet_id))
+
+        clean_aliases: dict[str, str] = {}
+        names: set[str] = set()
+        for row_key, raw_name in aliases.items():
+            try:
+                row = int(row_key)
+            except (TypeError, ValueError):
+                raise PetPackageError(f"非法行号: {row_key}")
+            if row < 0 or row >= pkg.row_count:
+                raise PetPackageError(f"动作行号越界: {row}（共 {pkg.row_count} 行）")
+            name = str(raw_name).strip()
+            if not name:
+                continue  # 空名删除该条覆盖
+            if len(name) > 20:
+                raise PetPackageError(f"第 {row} 行动作名过长（≤20 字）")
+            if name in names:
+                raise PetPackageError(f"动作名重复: {name}")
+            names.add(name)
+            clean_aliases[str(row)] = name
+        pet.action_aliases = clean_aliases or None
+
+        if state_mapping is not None:
+            clean_map: dict[str, int] = {}
+            for state, row in state_mapping.items():
+                if state not in VALID_ROW_STATES:
+                    raise PetPackageError(f"非法状态名: {state}")
+                if not isinstance(row, int) or row < 0 or row >= pkg.row_count:
+                    raise PetPackageError(f"状态 {state} 的行号越界: {row}")
+                clean_map[state] = row
+            pet.state_mapping = clean_map or None
+
+        await self.db.flush()
+        return pet
+
+    def resolve_actions(self, pet: UserPet, pkg: PetPackage) -> tuple[list[dict], list[str]]:
+        """解析动作目录（实例别名 > 包目录 > 状态名 > Codex 名 > 「动画 N」）。
+
+        返回 (actions, vocab)：actions 为 [{row, name, state}] 最终展示；vocab 为智能体可寻址的名称列表。
+        """
+        pkg_actions = pkg.actions if isinstance(pkg.actions, dict) else {}
+        aliases = pet.action_aliases if isinstance(pet.action_aliases, dict) else {}
+        state_to_row = {
+            s: r for s, r in (pkg.row_mapping or {}).items() if not s.startswith("_")
+        }
+        actions: list[dict] = []
+        seen: set[str] = set()
+        for row in range(pkg.row_count):
+            key = str(row)
+            pkg_entry = pkg_actions.get(key) if isinstance(pkg_actions, dict) else None
+            pkg_name = pkg_entry.get("name") if isinstance(pkg_entry, dict) else None
+            state = pkg_entry.get("state") if isinstance(pkg_entry, dict) else None
+            if state is None:
+                state = next((s for s, r in state_to_row.items() if r == row), None)
+            if key in aliases:
+                name = aliases[key]
+            elif pkg_name:
+                name = pkg_name
+            elif state:
+                name = STATE_LABELS.get(state, state)
+            elif row < len(CODEX_ROW_NAMES):
+                name = CODEX_ROW_NAMES[row]
+            else:
+                name = f"{PLACEHOLDER_PREFIX} {row}"
+            actions.append({"row": row, "name": name, "state": state})
+            if name and not name.startswith(PLACEHOLDER_PREFIX):
+                seen.add(name)
+        return actions, list(seen)[:AGENT_VOCAB_LIMIT]
+
+    def resolve_state_mapping(self, pet: UserPet, pkg: PetPackage) -> dict:
+        """解析状态映射：实例覆盖 > 包 row_mapping > 默认。idle 兜底。"""
+        inst = dict(pet.state_mapping or {})
+        pkg_map = {s: r for s, r in (pkg.row_mapping or {}).items() if not s.startswith("_")}
+        merged = dict(DEFAULT_ROW_MAPPING)
+        merged.update(pkg_map)
+        merged.update(inst)
+        merged.setdefault("idle", 0)
+        return merged
+
+    # ---- 智能互动开关与气泡配额 ----
+
+    async def smart_enabled(self) -> bool:
+        row = await self.db.scalar(
+            select(SystemConfig).where(SystemConfig.key == KEY_PET_SMART_ENABLED)
+        )
+        if row is None or not row.value:
+            return True
+        return row.value.strip().lower() in ("1", "true", "yes", "on")
+
+    async def _bubble_limit(self) -> int:
+        row = await self.db.scalar(
+            select(SystemConfig).where(SystemConfig.key == KEY_PET_BUBBLE_LIMIT)
+        )
+        if row is None or not row.value:
+            return BUBBLE_DAILY_LIMIT_DEFAULT
+        try:
+            return int(row.value)
+        except ValueError:
+            return BUBBLE_DAILY_LIMIT_DEFAULT
+
+    async def bubble_quota_remaining(self, user_id: UUID, user_pet_id: UUID) -> int:
+        limit = await self._bubble_limit()
+        used = await self.db.scalar(
+            select(func.count())
+            .select_from(PetExpLog)
+            .where(
+                PetExpLog.pet_id == user_pet_id,
+                PetExpLog.reason == "bubble_llm",
+                PetExpLog.created_at >= func.date_trunc("day", func.now()),
+            )
+        )
+        return max(limit - (used or 0), 0)
+
+    async def record_bubble(self, user_id: UUID, user_pet_id: UUID) -> None:
+        """气泡成功生成后记一次配额流水（delta 0，仅计数）。"""
+        self.db.add(PetExpLog(user_id=user_id, pet_id=user_pet_id, delta=0, reason="bubble_llm"))
+        await self.db.flush()

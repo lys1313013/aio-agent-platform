@@ -578,12 +578,30 @@ export interface PetPackage {
   status: string;
   manifest: Record<string, unknown>;
   row_mapping: PetRowMapping;
+  default_agent_id?: string | null;
+  actions?: Record<string, { name: string; state: string | null }>;
   frame_width: number;
   frame_height: number;
   col_count: number;
   row_count: number;
   created_at: string;
   spritesheet_url: string;
+}
+
+/** 宠物背后绑定的智能体简要信息（含生效层级） */
+export interface PetAgentBrief {
+  id: string;
+  name: string;
+  icon: string;
+  /** instance(实例绑定) / package(包级默认) */
+  level: 'instance' | 'package';
+}
+
+/** 动作目录条目（解析后的最终名称，含实例覆盖） */
+export interface PetAction {
+  row: number;
+  name: string;
+  state: string | null;
 }
 
 export interface UserPet {
@@ -594,6 +612,9 @@ export interface UserPet {
   is_active: boolean;
   adopted_at: string;
   package: PetPackage;
+  agent?: PetAgentBrief | null;
+  actions?: PetAction[];
+  state_mapping?: Record<string, number>;
 }
 
 export type PetMood =

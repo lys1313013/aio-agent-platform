@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Empty,
+  Input,
   Modal,
   Popconfirm,
   Select,
@@ -15,8 +16,8 @@ import {
   Typography,
 } from 'antd';
 import { DeleteOutlined, DownloadOutlined, PlusOutlined, PoweroffOutlined } from '@ant-design/icons';
-import { petsApi } from '@/lib/api';
-import type { PetPackage, PetVisibility, UserPet } from '@/lib/types';
+import { agentsApi, petsApi } from '@/lib/api';
+import type { Agent, PetPackage, PetVisibility, UserPet } from '@/lib/types';
 import PetCanvas from '@/components/pet/PetCanvas';
 import { PET_STATE_LABELS, rowName, usePetStore } from '@/stores/petStore';
 
@@ -114,22 +115,166 @@ function RowMappingModal({
   );
 }
 
+/** 行 → 平台状态 反查（包级 row_mapping） */
+function stateForRow(pkg: PetPackage, row: number): string | undefined {
+  for (const [state, r] of Object.entries(pkg.row_mapping)) {
+    if (state !== '_row_frames' && r === row) return state;
+  }
+  return undefined;
+}
+
+/** 动作名称编辑弹窗：包级改目录名；实例级改覆盖名 + 状态映射 */
+function ActionNameModal({
+  title,
+  pkg,
+  pet,
+  open,
+  onClose,
+  onSaved,
+}: {
+  title: string;
+  pkg: PetPackage;
+  pet?: UserPet;
+  open: boolean;
+  onClose: () => void;
+  onSaved: (updated: PetPackage | UserPet) => void;
+}) {
+  const { message } = App.useApp();
+  const [names, setNames] = useState<Record<number, string>>({});
+  const [states, setStates] = useState<Record<number, string>>({});
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const initNames: Record<number, string> = {};
+    const initStates: Record<number, string> = {};
+    const resolved = pet?.actions ?? [];
+    for (let row = 0; row < pkg.row_count; row++) {
+      const act = resolved.find((a) => a.row === row);
+      initNames[row] = act?.name ?? rowName(pkg, row);
+      initStates[row] = act?.state ?? stateForRow(pkg, row) ?? '';
+    }
+    setNames(initNames);
+    setStates(initStates);
+  }, [open, pkg, pet]);
+
+  const handleSave = async () => {
+    const seen = new Set<string>();
+    for (let row = 0; row < pkg.row_count; row++) {
+      const n = (names[row] ?? '').trim();
+      if (!n) {
+        message.error(`第 ${row} 行动作名不能为空`);
+        return;
+      }
+      if (seen.has(n)) {
+        message.error(`动作名重复：${n}`);
+        return;
+      }
+      seen.add(n);
+    }
+    setSaving(true);
+    try {
+      if (pet) {
+        // 实例级：只把与包级不同的行作为覆盖名；状态映射只提交与包级不同的
+        const aliases: Record<string, string> = {};
+        const pkgActions = pkg.actions ?? {};
+        for (let row = 0; row < pkg.row_count; row++) {
+          const n = (names[row] ?? '').trim();
+          const pkgName = pkgActions[String(row)]?.name ?? rowName(pkg, row);
+          if (n !== pkgName) aliases[String(row)] = n;
+        }
+        const baseMapping: Record<string, number> = {};
+        for (const [state, r] of Object.entries(pkg.row_mapping)) {
+          if (state !== '_row_frames') baseMapping[state] = r as number;
+        }
+        const stateMapping: Record<string, number> = {};
+        for (let row = 0; row < pkg.row_count; row++) {
+          const st = states[row];
+          if (st && baseMapping[st] !== row) stateMapping[st] = row;
+        }
+        const updated = await petsApi.setPetActions(pet.id, aliases, stateMapping);
+        onSaved(updated);
+        message.success('动作已保存（仅对本宠物生效）');
+      } else {
+        const actions: Record<string, string> = {};
+        for (let row = 0; row < pkg.row_count; row++) {
+          actions[String(row)] = (names[row] ?? '').trim();
+        }
+        const updated = await petsApi.setPackageActions(pkg.id, actions);
+        onSaved(updated);
+        message.success('动作已保存');
+      }
+      onClose();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={title}
+      open={open}
+      onCancel={onClose}
+      onOk={handleSave}
+      confirmLoading={saving}
+      okText="保存"
+      width={720}
+    >
+      <Typography.Paragraph type="secondary" className="text-xs">
+        动作名称会显示在右键菜单，也是智能体触发该动作的词。给动作起个有意义的名字，智能体就能用它表达情绪。
+      </Typography.Paragraph>
+      <div className="grid grid-cols-2 gap-3">
+        {Array.from({ length: pkg.row_count }, (_, row) => (
+          <div key={row} className="flex items-center gap-2 rounded-lg border border-border p-2">
+            <PetCanvas pkg={pkg} mood="idle" fixedRow={row} size={56} />
+            <div className="flex flex-1 flex-col gap-1">
+              <Input
+                size="small"
+                addonBefore={`行${row}`}
+                value={names[row]}
+                maxLength={20}
+                onChange={(e) => setNames((prev) => ({ ...prev, [row]: e.target.value }))}
+              />
+              <Select
+                size="small"
+                placeholder="状态（可选）"
+                allowClear
+                value={states[row] || undefined}
+                onChange={(v) => setStates((prev) => ({ ...prev, [row]: v ?? '' }))}
+                options={PET_STATES.map((s) => ({ value: s, label: STATE_LABELS[s] }))}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
 function PackageCard({
   pkg,
   mine,
   adopted,
+  agents,
   onAdopt,
   onChanged,
   onDeleted,
   onEditMapping,
+  onEditActions,
+  onDefaultAgent,
 }: {
   pkg: PetPackage;
   mine?: boolean;
   adopted?: boolean;
+  agents: Agent[];
   onAdopt?: (pkg: PetPackage) => void;
   onChanged?: (pkg: PetPackage) => void;
   onDeleted?: (pkg: PetPackage) => void;
   onEditMapping?: (pkg: PetPackage) => void;
+  onEditActions?: (pkg: PetPackage) => void;
+  onDefaultAgent?: (pkg: PetPackage, agentId: string | null) => void;
 }) {
   const { message } = App.useApp();
 
@@ -157,6 +302,9 @@ function PackageCard({
           ? [
               <Button key="mapping" type="link" size="small" onClick={() => onEditMapping?.(pkg)}>
                 动画映射
+              </Button>,
+              <Button key="actions" type="link" size="small" onClick={() => onEditActions?.(pkg)}>
+                动作名称
               </Button>,
               <Button
                 key="download"
@@ -211,6 +359,16 @@ function PackageCard({
         description={
           <div className="flex flex-col gap-2">
             <span className="line-clamp-2 min-h-8 text-xs">{pkg.description || '—'}</span>
+            {mine && (
+              <Select
+                size="small"
+                placeholder="默认人设智能体"
+                value={pkg.default_agent_id ?? undefined}
+                allowClear
+                options={agents.map((a) => ({ value: a.id, label: a.name }))}
+                onChange={(v) => onDefaultAgent?.(pkg, v ?? null)}
+              />
+            )}
             {mine && pkg.visibility !== 'official' && (
               <Select
                 size="small"
@@ -237,7 +395,16 @@ export default function PetsPage() {
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [mappingPkg, setMappingPkg] = useState<PetPackage | null>(null);
+  const [actionNameTarget, setActionNameTarget] = useState<{
+    pkg: PetPackage;
+    pet?: UserPet;
+  } | null>(null);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    agentsApi.list().then(setAgents).catch(() => {});
+  }, []);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -329,6 +496,36 @@ export default function PetsPage() {
       message.error(e instanceof Error ? e.message : '操作失败');
     } finally {
       setBusyAction(null);
+    }
+  };
+
+  const handleBindAgent = async (pet: UserPet, agentId: string | null) => {
+    try {
+      const updated = await petsApi.bindAgent(pet.id, agentId);
+      message.success(agentId ? '已绑定智能体' : '已解绑智能体');
+      setMyPets((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      if (pet.is_active) await loadActive();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '绑定失败');
+    }
+  };
+
+  const handleDefaultAgent = async (pkg: PetPackage, agentId: string | null) => {
+    try {
+      const updated = await petsApi.setPackageDefaultAgent(pkg.id, agentId);
+      message.success(agentId ? '已设置默认人设' : '已清除默认人设');
+      setMyPackages((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '设置失败');
+    }
+  };
+
+  const handleActionsSaved = (updated: PetPackage | UserPet) => {
+    if ('package_id' in updated && 'level' in updated) {
+      setMyPets((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      if (updated.is_active) void loadActive();
+    } else {
+      setMyPackages((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
     }
   };
 
@@ -436,6 +633,51 @@ export default function PetsPage() {
                             {pet.is_active && <Tag color="green">已激活</Tag>}
                           </span>
                         }
+                        description={
+                          <div className="flex flex-col gap-2">
+                            <div className="flex items-center gap-2">
+                              <Select
+                                size="small"
+                                className="flex-1"
+                                placeholder="绑定智能体"
+                                value={pet.agent?.id ?? undefined}
+                                allowClear
+                                options={agents.map((a) => ({ value: a.id, label: a.name }))}
+                                onChange={(v) => void handleBindAgent(pet, v ?? null)}
+                              />
+                              <Tooltip
+                                title={
+                                  pet.agent
+                                    ? pet.agent.level === 'instance'
+                                      ? '实例绑定'
+                                      : '包级默认'
+                                    : '未绑定'
+                                }
+                              >
+                                <Tag
+                                  className="shrink-0"
+                                  color={
+                                    pet.agent
+                                      ? pet.agent.level === 'instance'
+                                        ? 'blue'
+                                        : 'purple'
+                                      : 'default'
+                                  }
+                                >
+                                  {pet.agent ? (pet.agent.level === 'instance' ? '实例' : '包级') : '未绑定'}
+                                </Tag>
+                              </Tooltip>
+                            </div>
+                            <Button
+                              type="link"
+                              size="small"
+                              className="!h-auto !p-0 text-left"
+                              onClick={() => setActionNameTarget({ pkg: pet.package, pet })}
+                            >
+                              动作名称
+                            </Button>
+                          </div>
+                        }
                       />
                     </Card>
                   ))}
@@ -455,6 +697,7 @@ export default function PetsPage() {
                       key={pkg.id}
                       pkg={pkg}
                       mine
+                      agents={agents}
                       onChanged={(updated) =>
                         setMyPackages((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))
                       }
@@ -462,6 +705,8 @@ export default function PetsPage() {
                         setMyPackages((prev) => prev.filter((p) => p.id !== deleted.id))
                       }
                       onEditMapping={setMappingPkg}
+                      onEditActions={(p) => setActionNameTarget({ pkg: p })}
+                      onDefaultAgent={handleDefaultAgent}
                     />
                   ))}
                 </div>
@@ -479,6 +724,7 @@ export default function PetsPage() {
                     <PackageCard
                       key={pkg.id}
                       pkg={pkg}
+                      agents={agents}
                       adopted={adoptedIds.has(pkg.id)}
                       onAdopt={handleAdopt}
                     />
@@ -497,6 +743,21 @@ export default function PetsPage() {
           onSaved={(updated) =>
             setMyPackages((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))
           }
+        />
+      )}
+
+      {actionNameTarget && (
+        <ActionNameModal
+          title={
+            actionNameTarget.pet
+              ? `动作名称 — ${actionNameTarget.pet.package.display_name}`
+              : `动作名称 — ${actionNameTarget.pkg.display_name}`
+          }
+          pkg={actionNameTarget.pkg}
+          pet={actionNameTarget.pet}
+          open
+          onClose={() => setActionNameTarget(null)}
+          onSaved={handleActionsSaved}
         />
       )}
     </div>

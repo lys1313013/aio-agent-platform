@@ -174,6 +174,13 @@ export default function AgentChatPage() {
           usePetStore.getState().reportEvent(type, {
             sessionId,
             tool: type === 'tool_call' ? ((event.name as string) || undefined) : undefined,
+            petAction:
+              type === 'pet_action'
+                ? {
+                    name: (event.name as string) || undefined,
+                    row: typeof event.row === 'number' ? (event.row as number) : undefined,
+                  }
+                : undefined,
           });
 
           switch (type) {
@@ -533,6 +540,13 @@ export default function AgentChatPage() {
         usePetStore.getState().reportEvent(type, {
           sessionId: urlSessionId,
           tool: type === 'tool_call' ? ((event.name as string) || undefined) : undefined,
+          petAction:
+            type === 'pet_action'
+              ? {
+                  name: (event.name as string) || undefined,
+                  row: typeof event.row === 'number' ? (event.row as number) : undefined,
+                }
+              : undefined,
         });
 
         switch (type) {

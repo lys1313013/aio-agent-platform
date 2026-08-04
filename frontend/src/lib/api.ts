@@ -1890,6 +1890,125 @@ export const petsApi = {
   interact(userPetId: string) {
     return request<UserPet>(`/pets/${userPetId}/interact`, { method: 'POST' });
   },
+  /** 实例级绑定/解绑智能体（agentId 为 null 解绑，回退包级默认） */
+  bindAgent(userPetId: string, agentId: string | null) {
+    return request<UserPet>(`/pets/${userPetId}/agent`, {
+      method: 'PUT',
+      body: JSON.stringify({ agent_id: agentId }),
+    });
+  },
+  /** 包级默认人设 Agent（仅创建人） */
+  setPackageDefaultAgent(packageId: string, agentId: string | null) {
+    return request<PetPackage>(`/pets/packages/${packageId}/default-agent`, {
+      method: 'PUT',
+      body: JSON.stringify({ agent_id: agentId }),
+    });
+  },
+  /** 上传者改包级动作名 */
+  setPackageActions(packageId: string, actions: Record<string, string>) {
+    return request<PetPackage>(`/pets/packages/${packageId}/actions`, {
+      method: 'PUT',
+      body: JSON.stringify({ actions }),
+    });
+  },
+  /** 领养者改实例级动作名 + 状态映射（stateMapping 不传则不改映射） */
+  setPetActions(
+    userPetId: string,
+    aliases: Record<string, string>,
+    stateMapping?: Record<string, number>,
+  ) {
+    return request<UserPet>(`/pets/${userPetId}/actions`, {
+      method: 'PUT',
+      body: JSON.stringify({ aliases, state_mapping: stateMapping ?? null }),
+    });
+  },
+  /** 开启/复用宠物闲聊会话，返回 conversation_id */
+  petChat(userPetId: string) {
+    return request<{ conversation_id: string; agent_id: string | null }>(
+      `/pets/${userPetId}/chat`,
+      { method: 'POST' },
+    );
+  },
+  /**
+   * 智能气泡：正常时 SSE 流式返回 pet_action / text_delta / bubble_done 事件；
+   * 未绑定/失败/超限时返回 fallback JSON（type: 'fallback'）。返回 close 函数。
+   */
+  bubble(
+    userPetId: string,
+    onEvent: (ev: {
+      type: string;
+      text?: string;
+      name?: string;
+      row?: number;
+      fallback?: boolean;
+      quota_exceeded?: boolean;
+    }) => void,
+  ): () => void {
+    const controller = new AbortController();
+    (async () => {
+      if (isTokenExpiringSoon(tokenStorage.getAccess())) {
+        const refreshed = await refreshAccessToken();
+        if (!refreshed && tokenStorage.getRefresh()) {
+          onEvent({ type: 'error' });
+          forceLogout();
+          return;
+        }
+      }
+      const token = tokenStorage.getAccess() || '';
+      const resp = await fetch(`${API_BASE}/pets/${userPetId}/bubble`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+      if (!resp.ok || !resp.body) {
+        onEvent({ type: 'error' });
+        return;
+      }
+      const ctype = resp.headers.get('content-type') || '';
+      if (ctype.includes('text/event-stream')) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || '';
+          for (const part of parts) {
+            const line = part.trim();
+            if (line.startsWith('data: ')) {
+              try {
+                onEvent(JSON.parse(line.slice(6)));
+              } catch {
+                /* ignore malformed JSON */
+              }
+            }
+          }
+        }
+        onEvent({ type: 'closed' });
+      } else {
+        try {
+          const data = await resp.json();
+          if (data?.fallback) {
+            onEvent({
+              type: 'fallback',
+              fallback: true,
+              text: data.text ?? null,
+              quota_exceeded: !!data.quota_exceeded,
+            });
+          } else {
+            onEvent({ type: 'error' });
+          }
+        } catch {
+          onEvent({ type: 'error' });
+        }
+      }
+    })().catch((err) => {
+      if (err.name !== 'AbortError') onEvent({ type: 'error' });
+    });
+    return () => controller.abort();
+  },
   /**
    * Watch channel task lifecycle via SSE (GET /api/pets/tasks/events).
    * Fires `onEvent` per event; emits `{ type: 'error' }` on failure and

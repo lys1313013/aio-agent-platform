@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import logging
 from datetime import datetime
 from typing import Annotated
 from uuid import UUID
@@ -11,16 +13,21 @@ from uuid import UUID
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser, DbSession
 from aio_agent_platform.core import task_registry
 from aio_agent_platform.core.task_events import broker
-from aio_agent_platform.db.models import PetPackage, UserPet
+from aio_agent_platform.core.usage import record_llm_usage
+from aio_agent_platform.db.models import PetPackage, Session, UserPet
 from aio_agent_platform.pets.package import PetPackageError, parse_pet_package
 from aio_agent_platform.pets.service import (
     PetNotFoundError,
     PetService,
 )
+from aio_agent_platform.pets.smart import generate_bubble
+
+logger = logging.getLogger("aio_agent_platform.routes.pets")
 
 router = APIRouter(prefix="/api/pets", tags=["pets"])
 admin_router = APIRouter(prefix="/api/admin/pet-packages", tags=["admin-pets"])
@@ -41,6 +48,8 @@ class PetPackageOut(BaseModel):
     status: str
     manifest: dict
     row_mapping: dict
+    default_agent_id: UUID | None = None
+    actions: dict | None = None
     frame_width: int
     frame_height: int
     col_count: int
@@ -64,6 +73,8 @@ class PetPackageOut(BaseModel):
             status=p.status,
             manifest=p.manifest,
             row_mapping=p.row_mapping,
+            default_agent_id=p.default_agent_id,
+            actions=p.actions,
             frame_width=p.frame_width,
             frame_height=p.frame_height,
             col_count=p.col_count,
@@ -71,6 +82,19 @@ class PetPackageOut(BaseModel):
             created_at=p.created_at,
             spritesheet_url=f"/api/pets/packages/{p.id}/spritesheet",
         )
+
+
+class AgentBriefOut(BaseModel):
+    id: UUID
+    name: str
+    icon: str = "robot"
+    level: str = "instance"  # 生效层级: instance(实例绑定) / package(包级默认)
+
+
+class PetActionOut(BaseModel):
+    row: int
+    name: str
+    state: str | None = None
 
 
 class UserPetOut(BaseModel):
@@ -81,9 +105,20 @@ class UserPetOut(BaseModel):
     is_active: bool
     adopted_at: datetime
     package: PetPackageOut
+    agent: AgentBriefOut | None = None
+    actions: list[PetActionOut] = Field(default_factory=list)
+    state_mapping: dict[str, int] = Field(default_factory=dict)
 
     @classmethod
-    def from_pair(cls, pet: UserPet, pkg: PetPackage) -> UserPetOut:
+    def from_pair(
+        cls,
+        pet: UserPet,
+        pkg: PetPackage,
+        *,
+        agent: AgentBriefOut | None = None,
+        actions: list[dict] | None = None,
+        state_mapping: dict[str, int] | None = None,
+    ) -> UserPetOut:
         return cls(
             id=pet.id,
             package_id=pet.package_id,
@@ -92,6 +127,9 @@ class UserPetOut(BaseModel):
             is_active=pet.is_active,
             adopted_at=pet.adopted_at,
             package=PetPackageOut.from_model(pkg),
+            agent=agent,
+            actions=[PetActionOut(**a) for a in (actions or [])],
+            state_mapping=state_mapping or {},
         )
 
 
@@ -101,6 +139,24 @@ class VisibilityUpdate(BaseModel):
 
 class RowMappingUpdate(BaseModel):
     row_mapping: dict[str, int]
+
+
+class AgentBindUpdate(BaseModel):
+    agent_id: UUID | None = None
+
+
+class PackageActionsUpdate(BaseModel):
+    actions: dict[str, str]  # {row: name}
+
+
+class PetActionsUpdate(BaseModel):
+    aliases: dict[str, str] = Field(default_factory=dict)  # {row: name}，空串 value 删除覆盖
+    state_mapping: dict[str, int] | None = None  # {state: row}，None 表示不改映射
+
+
+class PetChatOut(BaseModel):
+    conversation_id: UUID
+    agent_id: UUID | None = None
 
 
 class AdminVisibilityUpdate(BaseModel):
@@ -137,6 +193,23 @@ def _bad_request(e: PetPackageError) -> HTTPException:
 def _sse_event(data: dict) -> str:
     """Format a dict as an SSE data line (matches chat.py convention)."""
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _user_pet_out(db, user, pet: UserPet, pkg: PetPackage) -> UserPetOut:
+    """解析绑定 Agent + 动作目录 + 状态映射后组装 UserPetOut（供 active/mine/绑定/改名接口共用）。"""
+    svc = PetService(db)
+    agent = await svc.resolve_agent(user, pet, pkg)
+    agent_brief = None
+    if agent is not None:
+        agent_brief = AgentBriefOut(
+            id=agent.id,
+            name=agent.name,
+            icon=agent.icon or "robot",
+            level="instance" if pet.agent_id == agent.id else "package",
+        )
+    actions, _ = svc.resolve_actions(pet, pkg)
+    state_mapping = svc.resolve_state_mapping(pet, pkg)
+    return UserPetOut.from_pair(pet, pkg, agent=agent_brief, actions=actions, state_mapping=state_mapping)
 
 
 # ---- 市场与包管理 ----
@@ -199,6 +272,36 @@ async def set_row_mapping(
     svc = PetService(db)
     try:
         pkg = await svc.set_row_mapping(user, package_id, req.row_mapping)
+    except PetNotFoundError as e:
+        raise _not_found(e) from e
+    except PetPackageError as e:
+        raise _bad_request(e) from e
+    return PetPackageOut.from_model(pkg)
+
+
+@router.put("/packages/{package_id}/default-agent", response_model=PetPackageOut)
+async def set_default_agent(
+    package_id: UUID, req: AgentBindUpdate, user: CurrentUser, db: DbSession
+) -> PetPackageOut:
+    """包级默认人设 Agent（仅创建人/管理员）。agent_id 为 null 表示清除。"""
+    svc = PetService(db)
+    try:
+        pkg = await svc.set_default_agent(user, package_id, req.agent_id)
+    except PetNotFoundError as e:
+        raise _not_found(e) from e
+    except PetPackageError as e:
+        raise _bad_request(e) from e
+    return PetPackageOut.from_model(pkg)
+
+
+@router.put("/packages/{package_id}/actions", response_model=PetPackageOut)
+async def set_package_actions(
+    package_id: UUID, req: PackageActionsUpdate, user: CurrentUser, db: DbSession
+) -> PetPackageOut:
+    """上传者改包级动作名（仅创建人/管理员）。"""
+    svc = PetService(db)
+    try:
+        pkg = await svc.set_package_actions(user, package_id, req.actions)
     except PetNotFoundError as e:
         raise _not_found(e) from e
     except PetPackageError as e:
@@ -290,7 +393,131 @@ async def interact_pet(user_pet_id: UUID, user: CurrentUser, db: DbSession) -> U
         raise _not_found(e) from e
     pkg = await db.get(PetPackage, pet.package_id)
     assert pkg is not None
-    return UserPetOut.from_pair(pet, pkg)
+    return await _user_pet_out(db, user, pet, pkg)
+
+
+@router.put("/{user_pet_id}/agent", response_model=UserPetOut)
+async def bind_agent(
+    user_pet_id: UUID, req: AgentBindUpdate, user: CurrentUser, db: DbSession
+) -> UserPetOut:
+    """实例级绑定/解绑智能体。agent_id 为 null 表示解绑（回退包级默认）。"""
+    svc = PetService(db)
+    try:
+        pet = await svc.set_agent(user, user_pet_id, req.agent_id)
+    except PetNotFoundError as e:
+        raise _not_found(e) from e
+    except PetPackageError as e:
+        raise _bad_request(e) from e
+    pkg = await db.get(PetPackage, pet.package_id)
+    assert pkg is not None
+    return await _user_pet_out(db, user, pet, pkg)
+
+
+@router.put("/{user_pet_id}/actions", response_model=UserPetOut)
+async def set_pet_actions(
+    user_pet_id: UUID, req: PetActionsUpdate, user: CurrentUser, db: DbSession
+) -> UserPetOut:
+    """领养者改实例级动作名覆盖 + 状态映射覆盖。aliases 空串 value 删除该条覆盖；传 {} 恢复包级。"""
+    svc = PetService(db)
+    try:
+        pet = await svc.set_pet_actions(user, user_pet_id, req.aliases, req.state_mapping)
+    except PetNotFoundError as e:
+        raise _not_found(e) from e
+    except PetPackageError as e:
+        raise _bad_request(e) from e
+    pkg = await db.get(PetPackage, pet.package_id)
+    assert pkg is not None
+    return await _user_pet_out(db, user, pet, pkg)
+
+
+@router.post("/{user_pet_id}/bubble")
+async def pet_bubble(user_pet_id: UUID, user: CurrentUser, db: DbSession):
+    """智能气泡：绑定 Agent 时流式返回 pet_action + text_delta 事件；未绑定/失败/超限回退 JSON。"""
+    svc = PetService(db)
+    pet = await db.get(UserPet, user_pet_id)
+    if pet is None or pet.user_id != user.id:
+        raise HTTPException(status_code=404, detail="宠物不存在")
+    pkg = await db.get(PetPackage, pet.package_id)
+    if pkg is None:
+        raise HTTPException(status_code=404, detail="宠物包不存在")
+
+    fallback = {"fallback": True, "text": None, "action": None, "quota_exceeded": False}
+    if not await svc.smart_enabled():
+        return fallback
+    agent = await svc.resolve_agent(user, pet, pkg)
+    if agent is None:
+        return fallback
+    if await svc.bubble_quota_remaining(user.id, user_pet_id) <= 0:
+        fallback["quota_exceeded"] = True
+        return fallback
+
+    try:
+        result = await generate_bubble(db, agent, pet, pkg, mood="happy")
+    except Exception as e:
+        logger.warning("pet_bubble_generation_failed", exc_info=True, error=str(e))
+        return fallback
+    if result is None:
+        return fallback
+    text, action, model_name, usage = result
+    await svc.record_bubble(user.id, user_pet_id)
+    if model_name:
+        record_llm_usage(user.id, model_name, usage)
+
+    actions_list, _ = svc.resolve_actions(pet, pkg)
+    actions_map = {a["name"]: a["row"] for a in actions_list}
+    action_row = actions_map.get(action) if action else None
+
+    async def event_stream():
+        if action_row is not None:
+            yield _sse_event({"type": "pet_action", "name": action, "row": action_row})
+        for i in range(0, len(text), 8):
+            yield _sse_event({"type": "text_delta", "text": text[i : i + 8]})
+            await asyncio.sleep(0.02)
+        yield _sse_event({"type": "bubble_done", "text": text})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/{user_pet_id}/chat", response_model=PetChatOut)
+async def pet_chat(user_pet_id: UUID, user: CurrentUser, db: DbSession) -> PetChatOut:
+    """开启/复用宠物闲聊会话（source='pet'）。之后走现有会话消息接口 + SSE。"""
+    svc = PetService(db)
+    pet = await db.get(UserPet, user_pet_id)
+    if pet is None or pet.user_id != user.id:
+        raise HTTPException(status_code=404, detail="宠物不存在")
+    pkg = await db.get(PetPackage, pet.package_id)
+    if pkg is None:
+        raise HTTPException(status_code=404, detail="宠物包不存在")
+    agent = await svc.resolve_agent(user, pet, pkg)
+    if agent is None:
+        raise HTTPException(status_code=400, detail="请先为该宠物绑定智能体")
+
+    result = await db.execute(
+        select(Session)
+        .where(
+            Session.user_id == user.id,
+            Session.pet_id == user_pet_id,
+            Session.source == "pet",
+        )
+        .order_by(Session.updated_at.desc())
+        .limit(1)
+    )
+    session = result.scalars().first()
+    if session is None:
+        session = Session(
+            user_id=user.id,
+            agent_id=agent.id,
+            source="pet",
+            pet_id=user_pet_id,
+            title=f"与{pkg.display_name}的闲聊",
+        )
+        db.add(session)
+        await db.flush()
+    return PetChatOut(conversation_id=session.id, agent_id=agent.id)
 
 
 @router.post("/deactivate", status_code=204)
@@ -314,7 +541,10 @@ async def remove_pet(user_pet_id: UUID, user: CurrentUser, db: DbSession) -> Res
 async def list_my_pets(user: CurrentUser, db: DbSession) -> list[UserPetOut]:
     svc = PetService(db)
     pairs = await svc.list_my_pets(user)
-    return [UserPetOut.from_pair(pet, pkg) for pet, pkg in pairs]
+    out = []
+    for pet, pkg in pairs:
+        out.append(await _user_pet_out(db, user, pet, pkg))
+    return out
 
 
 @router.get("/active", response_model=UserPetOut | None)
@@ -324,7 +554,7 @@ async def get_active_pet(user: CurrentUser, db: DbSession) -> UserPetOut | None:
     if pair is None:
         return None
     pet, pkg = pair
-    return UserPetOut.from_pair(pet, pkg)
+    return await _user_pet_out(db, user, pet, pkg)
 
 
 @router.get("/active-tasks", response_model=list[ActiveTaskOut])

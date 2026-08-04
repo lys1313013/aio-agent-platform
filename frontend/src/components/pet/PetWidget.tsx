@@ -222,6 +222,52 @@ function PetWidgetInner() {
     [playRow, showBubble],
   );
 
+  // 智能气泡：绑定 Agent 时点击走接口，SSE 流式上屏 + 智能体挑动作；失败静默回退静态气泡
+  const bubbleStreamRef = useRef<(() => void) | null>(null);
+  const bubbleHasText = useRef(false);
+  const playSmartBubble = useCallback(() => {
+    const pet = activePet;
+    if (!pet || !pet.agent) return;
+    // 记 interact 经验（与现状点击一致，每日上限 5 后端去重）
+    void petsApi
+      .interact(pet.id)
+      .then((updated) => usePetStore.setState({ activePet: updated }))
+      .catch(() => {});
+    if (bubbleStreamRef.current) {
+      bubbleStreamRef.current();
+      bubbleStreamRef.current = null;
+    }
+    if (bubbleTimer.current) clearTimeout(bubbleTimer.current);
+    bubbleHasText.current = false;
+    setBubble('');
+    bubbleStreamRef.current = petsApi.bubble(pet.id, (ev) => {
+      if (ev.type === 'pet_action') {
+        usePetStore.getState().playAction(ev.name ?? '');
+      } else if (ev.type === 'text_delta') {
+        bubbleHasText.current = true;
+        setBubble((prev) => (prev ?? '') + (ev.text ?? ''));
+      } else if (ev.type === 'bubble_done') {
+        bubbleTimer.current = setTimeout(() => setBubble(null), BUBBLE_MS + 1200);
+      } else if (ev.type === 'fallback') {
+        setBubble(ev.text || pickBubble());
+        bubbleTimer.current = setTimeout(() => setBubble(null), BUBBLE_MS);
+      } else if (ev.type === 'error' || ev.type === 'closed') {
+        if (!bubbleHasText.current) {
+          setBubble(pickBubble());
+          bubbleTimer.current = setTimeout(() => setBubble(null), BUBBLE_MS);
+        }
+      }
+    });
+  }, [activePet]);
+
+  // 卸载时中断气泡流
+  useEffect(
+    () => () => {
+      bubbleStreamRef.current?.();
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!loaded) void loadActive();
   }, [loaded, loadActive]);
@@ -291,10 +337,15 @@ function PetWidgetInner() {
       // 松手才提交状态（触发持久化）；React 重渲染后的 style 与拖拽中的 DOM 值一致，无跳变
       setAnchor(fromAbsolute(drag.lastX ?? drag.baseX, drag.lastY ?? drag.baseY, dim));
     } else if (activePet) {
-      // 左键单击默认播放「开心」行（无映射则行 0）
-      playRowX(activePet.package.row_mapping.happy ?? 0);
+      if (activePet.agent) {
+        // 绑定智能体：点击走智能气泡（LLM 生成一句话 + 智能体挑动作）
+        playSmartBubble();
+      } else {
+        // 未绑定：左键单击默认播放「开心」行（无映射则行 0）
+        playRowX(activePet.package.row_mapping.happy ?? 0);
+      }
     }
-  }, [playRowX, activePet, dim]);
+  }, [playRowX, playSmartBubble, activePet, dim]);
 
   // 记录右键时的光标位置 + 角色可见内容的包围盒：contextMenu 触发下 antd 强制
   // alignPoint（菜单锚定光标而非宠物），且画布四周有透明边——按内容边缘算 offset 菜单才贴得近
@@ -475,7 +526,7 @@ function PetWidgetInner() {
       label: '播放动画',
       children: Array.from({ length: activePet.package.row_count }, (_, row) => ({
         key: `play-${row}`,
-        label: `${rowName(activePet.package, row)}（行${row}）`,
+        label: `${activePet.actions?.find((a) => a.row === row)?.name ?? rowName(activePet.package, row)}`,
       })),
     },
     {
