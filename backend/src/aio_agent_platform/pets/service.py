@@ -51,7 +51,7 @@ CODEX_ROW_NAMES = ["待机", "向右跑", "向左跑", "挥手", "跳跃", "失�
 PLACEHOLDER_PREFIX = "动画"
 
 # 智能体气泡每日配额（可经 SystemConfig 调整）
-BUBBLE_DAILY_LIMIT_DEFAULT = 30
+BUBBLE_DAILY_LIMIT_DEFAULT = 3000
 KEY_PET_SMART_ENABLED = "pet_smart_enabled"
 KEY_PET_BUBBLE_LIMIT = "pet_bubble_daily_limit"
 

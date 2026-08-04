@@ -443,20 +443,24 @@ async def pet_bubble(user_pet_id: UUID, user: CurrentUser, db: DbSession):
 
     fallback = {"fallback": True, "text": None, "action": None, "quota_exceeded": False}
     if not await svc.smart_enabled():
+        logger.warning("pet_bubble_fallback reason=smart_disabled user_id=%s pet_id=%s", user.id, user_pet_id)
         return fallback
     agent = await svc.resolve_agent(user, pet, pkg)
     if agent is None:
+        logger.warning("pet_bubble_fallback reason=no_agent user_id=%s pet_id=%s", user.id, user_pet_id)
         return fallback
     if await svc.bubble_quota_remaining(user.id, user_pet_id) <= 0:
         fallback["quota_exceeded"] = True
+        logger.warning("pet_bubble_fallback reason=quota_exceeded user_id=%s pet_id=%s", user.id, user_pet_id)
         return fallback
 
     try:
         result = await generate_bubble(db, agent, pet, pkg, mood="happy")
     except Exception as e:
-        logger.warning("pet_bubble_generation_failed", exc_info=True, error=str(e))
+        logger.warning("pet_bubble_generation_failed error=%s", e, exc_info=True)
         return fallback
     if result is None:
+        logger.warning("pet_bubble_fallback reason=generate_failed user_id=%s pet_id=%s", user.id, user_pet_id)
         return fallback
     text, action, model_name, usage = result
     await svc.record_bubble(user.id, user_pet_id)

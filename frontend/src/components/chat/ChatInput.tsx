@@ -52,6 +52,8 @@ interface Props {
   /** Interrupt the current turn and send this queued message immediately. */
   onQueueSendNow?: (id: string) => void;
   onQueueRemove?: (id: string) => void;
+  /** 极简模式：隐藏工作区选择、图片/文件上传、starter 提示（宠物对话等轻量场景） */
+  simple?: boolean;
 }
 
 function formatSize(bytes: number): string {
@@ -60,7 +62,7 @@ function formatSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessionId, onEnsureSession, starterPrompts, onStarterPromptClick, queue, onQueue, onQueueSendNow, onQueueRemove }: Props) {
+export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessionId, onEnsureSession, starterPrompts, onStarterPromptClick, queue, onQueue, onQueueSendNow, onQueueRemove, simple }: Props) {
   const [input, setInput] = useState('');
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -265,12 +267,12 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
   return (
     <div
       className={`border-t border-border p-4 ${isDragging ? 'bg-primary/5' : ''}`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      onDragOver={simple ? undefined : handleDragOver}
+      onDragLeave={simple ? undefined : handleDragLeave}
+      onDrop={simple ? undefined : handleDrop}
     >
       {/* Starter prompts */}
-      {starterPrompts && starterPrompts.length > 0 && (
+      {!simple && starterPrompts && starterPrompts.length > 0 && (
         <div className="mx-auto max-w-3xl mb-3 flex flex-wrap gap-2">
           {starterPrompts.map((hint) => (
             <button
@@ -287,30 +289,34 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
       )}
 
       {/* Hidden inputs */}
-      <input
-        ref={imageInputRef}
-        type="file"
-        accept="image/jpeg,image/png,image/gif,image/webp"
-        multiple
-        hidden
-        onChange={(e) => {
-          if (e.target.files) handleImageFiles(e.target.files);
-          e.target.value = '';
-        }}
-      />
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        hidden
-        onChange={(e) => {
-          if (e.target.files) handleFileUpload(e.target.files);
-          e.target.value = '';
-        }}
-      />
+      {!simple && (
+        <>
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/gif,image/webp"
+            multiple
+            hidden
+            onChange={(e) => {
+              if (e.target.files) handleImageFiles(e.target.files);
+              e.target.value = '';
+            }}
+          />
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            onChange={(e) => {
+              if (e.target.files) handleFileUpload(e.target.files);
+              e.target.value = '';
+            }}
+          />
+        </>
+      )}
 
       {/* Image previews */}
-      {pending.length > 0 && (
+      {!simple && pending.length > 0 && (
         <div className="mx-auto max-w-3xl mb-3">
           <Image.PreviewGroup>
             <div className="flex flex-wrap gap-3">
@@ -363,7 +369,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
       )}
 
       {/* File attachment previews */}
-      {pendingFiles.length > 0 && (
+      {!simple && pendingFiles.length > 0 && (
         <div className="mx-auto max-w-3xl mb-3">
           <div className="flex flex-wrap gap-2">
             {pendingFiles.map((p) => (
@@ -449,34 +455,40 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
 
       {/* Input form */}
       <form onSubmit={handleSubmit} className="mx-auto flex max-w-3xl items-end gap-3">
-        <Button
-          type="text"
-          icon={<PictureOutlined />}
-          onClick={() => imageInputRef.current?.click()}
-          disabled={disabled || totalPending() >= MAX_ATTACHMENTS}
-          className="flex-shrink-0"
-          style={{ height: 44, width: 44 }}
-          title="上传图片"
-        />
-        <Button
-          type="text"
-          icon={<FileOutlined />}
-          onClick={() => fileInputRef.current?.click()}
-          disabled={disabled || totalPending() >= MAX_ATTACHMENTS}
-          className="flex-shrink-0"
-          style={{ height: 44, width: 44 }}
-          title="上传文件"
-        />
+        {!simple && (
+          <>
+            <Button
+              type="text"
+              icon={<PictureOutlined />}
+              onClick={() => imageInputRef.current?.click()}
+              disabled={disabled || totalPending() >= MAX_ATTACHMENTS}
+              className="flex-shrink-0"
+              style={{ height: 44, width: 44 }}
+              title="上传图片"
+            />
+            <Button
+              type="text"
+              icon={<FileOutlined />}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={disabled || totalPending() >= MAX_ATTACHMENTS}
+              className="flex-shrink-0"
+              style={{ height: 44, width: 44 }}
+              title="上传文件"
+            />
+          </>
+        )}
         <TextArea
           ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
+          onPaste={simple ? undefined : handlePaste}
           placeholder={
-            isStreaming
-              ? '回复中，Enter 将消息加入队列，可随时继续输入...'
-              : '输入消息... (Enter 发送, Shift+Enter 换行, 支持拖拽/粘贴图片和文件)'
+            simple
+              ? '输入消息... (Enter 发送, Shift+Enter 换行)'
+              : isStreaming
+                ? '回复中，Enter 将消息加入队列，可随时继续输入...'
+                : '输入消息... (Enter 发送, Shift+Enter 换行, 支持拖拽/粘贴图片和文件)'
           }
           autoSize={{ minRows: 1, maxRows: 6 }}
           disabled={disabled}
@@ -517,30 +529,32 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
       </form>
 
       {/* Workspace selector */}
-      <div className="mx-auto max-w-3xl mt-2 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <FolderOutlined className="text-xs text-muted-foreground" />
-          <Select
-            size="small"
-            value={selectedWorkspaceId}
-            onChange={setSelectedWorkspace}
-            loading={isWorkspacesLoading}
-            style={{ minWidth: 160 }}
-            options={workspaces.map((ws) => ({
-              value: ws.id,
-              label: ws.is_default ? `${ws.name} (默认)` : ws.name,
-            }))}
-            placeholder="选择工作区"
-          />
-          {selectedWorkspace && (
-            <span className="text-xs text-muted-foreground">
-              文件将保存到 /workspace/{selectedWorkspace.slug}/
-            </span>
-          )}
+      {!simple && (
+        <div className="mx-auto max-w-3xl mt-2 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <FolderOutlined className="text-xs text-muted-foreground" />
+            <Select
+              size="small"
+              value={selectedWorkspaceId}
+              onChange={setSelectedWorkspace}
+              loading={isWorkspacesLoading}
+              style={{ minWidth: 160 }}
+              options={workspaces.map((ws) => ({
+                value: ws.id,
+                label: ws.is_default ? `${ws.name} (默认)` : ws.name,
+              }))}
+              placeholder="选择工作区"
+            />
+            {selectedWorkspace && (
+              <span className="text-xs text-muted-foreground">
+                文件将保存到 /workspace/{selectedWorkspace.slug}/
+              </span>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
-      {isDragging && (
+      {!simple && isDragging && (
         <div className="fixed inset-0 bg-primary/10 border-2 border-dashed border-primary pointer-events-none z-50 flex items-center justify-center">
           <div className="bg-background rounded-lg px-6 py-3 shadow-lg text-primary font-semibold">
             拖放文件到此处

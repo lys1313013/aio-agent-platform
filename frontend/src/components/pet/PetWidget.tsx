@@ -8,10 +8,13 @@ import type { UserPet } from '@/lib/types';
 import { PET_SIZE_MAX, PET_SIZE_MIN, PET_SIZE_STEP, rowName, usePetStore } from '@/stores/petStore';
 import { useChatStore } from '@/stores/chatStore';
 import PetCanvas from './PetCanvas';
+import PetChatPanel from './PetChatPanel';
 
 const POS_KEY = 'pet-widget-pos';
 const SLEEP_AFTER_MS = 30 * 60 * 1000;
 const BUBBLE_MS = 1800;
+/** 智能气泡请求超时：LLM 长时间无响应时回退静态气泡，避免点击后空气泡 */
+const BUBBLE_TIMEOUT_MS = 6000;
 const COLLAPSED_SIZE = 28;
 
 /** 互动播放的随机气泡（本地库，不走 LLM，零 token） */
@@ -120,6 +123,11 @@ function PetWidgetInner() {
   const [bubble, setBubble] = useState<string | null>(null);
   const [tasksExpanded, setTasksExpanded] = useState(false);
   const [myPets, setMyPets] = useState<UserPet[]>([]);
+  const [chatDlg, setChatDlg] = useState<{ open: boolean; sessionId: string | null; agentId: string | null }>({
+    open: false,
+    sessionId: null,
+    agentId: null,
+  });
   const bubbleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bounceRef = useRef<HTMLDivElement | null>(null);
 
@@ -226,6 +234,7 @@ function PetWidgetInner() {
   // 智能气泡：绑定 Agent 时点击走接口，SSE 流式上屏 + 智能体挑动作；失败静默回退静态气泡
   const bubbleStreamRef = useRef<(() => void) | null>(null);
   const bubbleHasText = useRef(false);
+  const bubbleTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const playSmartBubble = useCallback(() => {
     const pet = activePet;
     if (!pet || !pet.agent) return;
@@ -239,9 +248,18 @@ function PetWidgetInner() {
       bubbleStreamRef.current = null;
     }
     if (bubbleTimer.current) clearTimeout(bubbleTimer.current);
+    if (bubbleTimeout.current) {
+      clearTimeout(bubbleTimeout.current);
+      bubbleTimeout.current = null;
+    }
     bubbleHasText.current = false;
     setBubble('');
     bubbleStreamRef.current = petsApi.bubble(pet.id, (ev) => {
+      // 收到任何事件说明接口有响应，取消超时兜底
+      if (bubbleTimeout.current) {
+        clearTimeout(bubbleTimeout.current);
+        bubbleTimeout.current = null;
+      }
       if (ev.type === 'pet_action') {
         usePetStore.getState().playAction(ev.name ?? '');
       } else if (ev.type === 'text_delta') {
@@ -250,7 +268,11 @@ function PetWidgetInner() {
       } else if (ev.type === 'bubble_done') {
         bubbleTimer.current = setTimeout(() => setBubble(null), BUBBLE_MS + 1200);
       } else if (ev.type === 'fallback') {
-        setBubble(ev.text || pickBubble());
+        if (ev.quota_exceeded) {
+          setBubble('今天的互动次数用完啦，明天再来找我玩~');
+        } else {
+          setBubble(ev.text || pickBubble());
+        }
         bubbleTimer.current = setTimeout(() => setBubble(null), BUBBLE_MS);
       } else if (ev.type === 'error' || ev.type === 'closed') {
         if (!bubbleHasText.current) {
@@ -259,11 +281,21 @@ function PetWidgetInner() {
         }
       }
     });
+    // LLM 无响应超时：回退静态气泡
+    bubbleTimeout.current = setTimeout(() => {
+      bubbleTimeout.current = null;
+      if (bubbleHasText.current) return;
+      bubbleStreamRef.current?.();
+      bubbleStreamRef.current = null;
+      setBubble(pickBubble());
+      bubbleTimer.current = setTimeout(() => setBubble(null), BUBBLE_MS);
+    }, BUBBLE_TIMEOUT_MS);
   }, [activePet]);
 
   // 卸载时中断气泡流
   useEffect(
     () => () => {
+      if (bubbleTimeout.current) clearTimeout(bubbleTimeout.current);
       bubbleStreamRef.current?.();
     },
     [],
@@ -577,11 +609,11 @@ function PetWidgetInner() {
 
   const onMenuClick = ({ key }: { key: string }) => {
     if (key === 'chat') {
-      // 开启/复用宠物闲聊会话并跳转；未绑定智能体时后端返回 400 提示
+      // 开启/复用宠物闲聊会话并打开弹窗；未绑定智能体时后端返回 400 提示
       void (async () => {
         try {
           const r = await petsApi.petChat(activePet.id);
-          openSession(r.conversation_id, r.agent_id ?? undefined);
+          setChatDlg({ open: true, sessionId: r.conversation_id, agentId: r.agent_id ?? null });
         } catch (err) {
           message.warning(err instanceof Error ? err.message : '请先为该宠物绑定智能体');
         }
@@ -664,6 +696,13 @@ function PetWidgetInner() {
         <div className="inline-block">{petBody}</div>
       </Dropdown>
       {taskPills}
+      <PetChatPanel
+        open={chatDlg.open}
+        pet={activePet}
+        sessionId={chatDlg.sessionId}
+        agentId={chatDlg.agentId}
+        onClose={() => setChatDlg((d) => ({ ...d, open: false }))}
+      />
     </div>
   );
 }

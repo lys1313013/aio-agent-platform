@@ -167,6 +167,7 @@ async def generate_bubble(
     actions_map = {a["name"]: a["row"] for a in actions}
     provider, model_name = await resolve_bubble_provider(db, agent)
     if provider is None:
+        logger.warning("pet_bubble_generate reason=provider_unavailable")
         return None
     prompt = build_bubble_prompt(agent, pet, pkg, mood, vocab)
     response = await provider.complete(
@@ -179,6 +180,7 @@ async def generate_bubble(
     )
     text, action = parse_bubble_output(response.content or "")
     if not text:
+        logger.warning("pet_bubble_generate reason=empty_text raw=%s", (response.content or "")[:200])
         return None
     if action and action not in actions_map:
         action = None

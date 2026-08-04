@@ -8,14 +8,17 @@ interface Props {
   messages: Message[];
   streaming: StreamingState;
   agent?: Agent | null;
-  onNewChat: () => void;
+  onNewChat?: () => void;
   onEditResend?: (content: string) => void;
+  /** 覆盖空态欢迎语（宠物弹窗等无独立「新对话」场景） */
+  emptyTitle?: string;
+  emptySubtitle?: string;
 }
 
-export default function MessageList({ messages, streaming, agent, onNewChat, onEditResend }: Props) {
+export default function MessageList({ messages, streaming, agent, onNewChat, onEditResend, emptyTitle, emptySubtitle }: Props) {
   if (messages.length === 0 && !streaming.isStreaming) {
-    const title = agent ? `欢迎使用 ${agent.name}` : '欢迎使用智能体平台';
-    const subtitle = agent?.description || '发送消息开始对话';
+    const title = emptyTitle ?? (agent ? `欢迎使用 ${agent.name}` : '欢迎使用智能体平台');
+    const subtitle = emptySubtitle ?? (agent?.description || '发送消息开始对话');
 
     return (
       <div className="flex flex-1 items-center justify-center">
@@ -41,13 +44,15 @@ export default function MessageList({ messages, streaming, agent, onNewChat, onE
           )}
 
           {/* New chat button */}
-          <button
-            onClick={onNewChat}
-            className="mt-8 flex items-center gap-2 rounded-lg bg-brand-gradient px-5 py-2.5 text-sm font-semibold text-white shadow-brand transition-all hover:shadow-brand-lg hover:-translate-y-[1px] active:translate-y-0"
-          >
-            <PlusOutlined />
-            <span>开始新对话</span>
-          </button>
+          {onNewChat && (
+            <button
+              onClick={onNewChat}
+              className="mt-8 flex items-center gap-2 rounded-lg bg-brand-gradient px-5 py-2.5 text-sm font-semibold text-white shadow-brand transition-all hover:shadow-brand-lg hover:-translate-y-[1px] active:translate-y-0"
+            >
+              <PlusOutlined />
+              <span>开始新对话</span>
+            </button>
+          )}
         </div>
       </div>
     );

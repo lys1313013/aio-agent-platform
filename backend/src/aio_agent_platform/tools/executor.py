@@ -173,6 +173,34 @@ class ToolExecutor:
         tool = self.registry.get(tool_name)
 
         if not tool:
+            # 允许仅注册 direct handler 而无 registry ToolDef 的工具（如 pet_action）
+            if tool_name in self.direct_handlers:
+                try:
+                    output = await self._execute_direct(
+                        tool_name, arguments, user_id, session_id, delegation, event_queue,
+                        tool_call_id=tool_call_id,
+                        workspace_id=workspace_id,
+                        workspace_slug=workspace_slug,
+                    )
+                    output = self._truncate(output)
+                    return ToolResult(
+                        tool_call_id=tool_call_id,
+                        name=tool_name,
+                        arguments=arguments,
+                        output=output,
+                        success=True,
+                        duration_ms=(time.monotonic() - t_start) * 1000,
+                    )
+                except Exception as e:
+                    return ToolResult(
+                        tool_call_id=tool_call_id,
+                        name=tool_name,
+                        arguments=arguments,
+                        output="",
+                        success=False,
+                        error=str(e),
+                        duration_ms=(time.monotonic() - t_start) * 1000,
+                    )
             return ToolResult(
                 tool_call_id=tool_call_id,
                 name=tool_name,
