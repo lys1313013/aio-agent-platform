@@ -320,7 +320,7 @@ export default function SkillEditorDrawer({ open, mode: initialMode, skill, onCl
         body: { padding: 0, height: 'calc(85vh - 110px)', overflow: 'hidden' },
         header: { padding: '14px 20px', borderBottom: '1px solid hsl(var(--border))' },
       }}
-      destroyOnClose
+      destroyOnHidden
       classNames={{ body: '!p-0' }}
     >
       {/* ── Top status bar (view mode) ── */}

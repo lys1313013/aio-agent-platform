@@ -57,7 +57,7 @@ export default function PublishVersionModal({ open, agentId, onClose, onPublishe
       okText="发布"
       cancelText="取消"
       confirmLoading={loading}
-      destroyOnClose
+      destroyOnHidden
     >
       <Form
         form={form}

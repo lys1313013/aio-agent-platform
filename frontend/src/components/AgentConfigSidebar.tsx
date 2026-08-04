@@ -1205,7 +1205,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
               okText="确定"
               cancelText="取消"
               width={1320}
-              destroyOnClose
+              destroyOnHidden
               styles={{ body: { maxHeight: '80vh', overflowY: 'auto' } }}
             >
               <div className="relative mb-3">
@@ -1348,7 +1348,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
               }}
               footer={null}
               width={800}
-              destroyOnClose
+              destroyOnHidden
             >
               {selectedToolDetail && (
                 <div className="space-y-4">
@@ -1873,7 +1873,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
               okText="确定"
               cancelText="取消"
               width={Math.min(1100, window.innerWidth - 80)}
-              destroyOnClose
+              destroyOnHidden
               styles={{ body: { maxHeight: '75vh', overflowY: 'auto', padding: '20px' } }}
             >
               <div className="flex items-center gap-3 mb-4">
@@ -2178,7 +2178,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
             okText="确定"
             cancelText="取消"
             width={1000}
-            destroyOnClose
+            destroyOnHidden
             styles={{ body: { maxHeight: '75vh', overflowY: 'auto' } }}
           >
             <div className="relative mb-3">
@@ -2336,7 +2336,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
             }}
             footer={null}
             width={800}
-            destroyOnClose
+            destroyOnHidden
             styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
           >
             {selectedChildDetail && (

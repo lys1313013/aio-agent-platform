@@ -391,7 +391,7 @@ export default function TenantManagementPage() {
         title={selectedTenant ? `${selectedTenant.name} · 用户` : '租户用户'}
         open={Boolean(selectedTenant)}
         onClose={() => setSelectedTenant(null)}
-        width={760}
+        size={760}
         extra={
           <Button
             type="primary"

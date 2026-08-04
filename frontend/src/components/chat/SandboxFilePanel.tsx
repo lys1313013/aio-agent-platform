@@ -364,7 +364,7 @@ export default function SandboxFilePanel({ workspaceId }: SandboxFilePanelProps)
             </div>
           ) : null
         }
-        destroyOnClose
+        destroyOnHidden
       >
         {modalEntry && !isTextFile(modalEntry.path) ? (
           <div className="text-center py-8 text-muted-foreground">

@@ -454,7 +454,7 @@ export default function SkillsPage() {
           ) : '版本历史'}
           open={versionsOpen}
           onClose={() => setVersionsOpen(false)}
-          width={480}
+          size={480}
           styles={{ body: { padding: '16px' } }}
         >
           <Spin spinning={versionsLoading}>
