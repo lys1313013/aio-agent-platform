@@ -20,6 +20,7 @@ from aio_agent_platform.db.models import (
     AgentSkill,
     KnowledgeBase,
     LLMModel,
+    MCPServer,
 )
 
 router = APIRouter(tags=["agents"])
@@ -178,6 +179,10 @@ async def admin_create_agent(
     db.add(agent)
     await db.flush()
 
+    # Validate MCP server bindings belong to the same tenant
+    if req.mcp_server_ids:
+        await _validate_mcp_servers(db, user, req.mcp_server_ids)
+
     # Bind skills
     if req.skill_ids:
         for sid in req.skill_ids:
@@ -258,6 +263,8 @@ async def admin_update_agent(
     if req.is_set("enabled_tools"):
         agent.enabled_tools = req.enabled_tools if req.enabled_tools is not None else []
     if req.is_set("mcp_server_ids"):
+        if req.mcp_server_ids:
+            await _validate_mcp_servers(db, user, req.mcp_server_ids)
         agent.mcp_server_ids = req.mcp_server_ids if req.mcp_server_ids is not None else []
     if req.is_set("temperature"):
         agent.temperature = req.temperature
@@ -654,6 +661,20 @@ async def _validate_knowledge_bases(
     )
     if set(result.scalars().all()) != set(ids):
         raise HTTPException(status_code=404, detail="知识库不存在或无权访问")
+
+
+async def _validate_mcp_servers(db: AsyncSession, user, mcp_server_ids: list[str]) -> None:
+    ids = [UUID(value) if isinstance(value, str) else value for value in mcp_server_ids]
+    if not ids:
+        return
+    result = await db.execute(
+        select(MCPServer.id).where(
+            MCPServer.id.in_(ids),
+            MCPServer.tenant_id == user.tenant_id,
+        )
+    )
+    if set(result.scalars().all()) != set(ids):
+        raise HTTPException(status_code=404, detail="MCP Server 不存在或无权访问")
 
 
 def _agent_to_dict(agent: Agent, include_prompt: bool = True, user=None) -> dict:

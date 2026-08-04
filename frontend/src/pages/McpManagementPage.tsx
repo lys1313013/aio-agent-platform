@@ -377,10 +377,10 @@ export default function McpManagementPage() {
             >
               <Select>
                 <Option value="streamable-http">
-                  Streamable HTTP — HTTP POST + 可选 SSE 流式响应（推荐）
+                  Streamable HTTP
                 </Option>
                 <Option value="sse">
-                  SSE — Server-Sent Events 长连接
+                  SSE
                 </Option>
               </Select>
             </Form.Item>

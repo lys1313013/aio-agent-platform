@@ -205,6 +205,78 @@ export const sessionsApi = {
     return request<SessionDetail>(`/sessions/${id}`);
   },
 
+  getStatus(id: string) {
+    return request<import('./types').SessionStatus>(`/sessions/${id}/status`);
+  },
+
+  /**
+   * Replay a running channel task's agent events via SSE (GET /sessions/{id}/events).
+   * Fires `onEvent` per event; emits `{ type: 'closed' }` on normal EOF so the
+   * caller can finalize streaming state. Returns an AbortController for cancel.
+   */
+  watchEvents(id: string, onEvent: (event: Record<string, unknown>) => void): AbortController {
+    const controller = new AbortController();
+
+    (async () => {
+      // Ensure access token is fresh before opening the stream
+      if (isTokenExpiringSoon(tokenStorage.getAccess())) {
+        const refreshed = await refreshAccessToken();
+        if (!refreshed && tokenStorage.getRefresh()) {
+          onEvent({ type: 'error', message: 'Session expired' });
+          forceLogout();
+          return;
+        }
+      }
+
+      const token = tokenStorage.getAccess() || '';
+      const resp = await fetch(`${API_BASE}/sessions/${id}/events`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+
+      if (!resp.ok || !resp.body) {
+        onEvent({ type: 'error', message: resp.statusText });
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      const flush = () => {
+        if (buffer.trim().startsWith('data: ')) {
+          try {
+            onEvent(JSON.parse(buffer.trim().slice(6)));
+          } catch { /* ignore malformed JSON */ }
+        }
+        buffer = '';
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith('data: ')) continue; // heartbeat comments
+          try {
+            onEvent(JSON.parse(line.slice(6)));
+          } catch { /* ignore malformed JSON */ }
+        }
+      }
+      flush();
+      onEvent({ type: 'closed' });
+    })().catch((err) => {
+      if (err.name !== 'AbortError') {
+        onEvent({ type: 'error', message: err.message || '网络请求失败' });
+      }
+    });
+
+    return controller;
+  },
+
   create(title?: string, agentId?: string | null, workspaceId?: string | null) {
     return request<Session>('/sessions', {
       method: 'POST',

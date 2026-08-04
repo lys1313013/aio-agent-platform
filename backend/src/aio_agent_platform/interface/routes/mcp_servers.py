@@ -149,11 +149,15 @@ async def _try_connect(mcp_manager, server: MCPServer) -> tuple[str, str | None,
 @router.get("", response_model=list[MCPServerOut])
 async def list_mcp_servers(
     request: Request,
-    _admin: AdminUser,
+    user: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
-    """List all MCP Servers with their current status."""
-    result = await db.execute(select(MCPServer).order_by(MCPServer.created_at))
+    """List MCP Servers for the admin's tenant with their current status."""
+    result = await db.execute(
+        select(MCPServer)
+        .where(MCPServer.tenant_id == user.tenant_id)
+        .order_by(MCPServer.created_at)
+    )
     servers = result.scalars().all()
 
     mcp_manager = getattr(request.app.state, "mcp_manager", None)
@@ -170,11 +174,12 @@ async def list_mcp_servers(
 async def create_mcp_server(
     req: MCPServerCreate,
     request: Request,
-    _admin: AdminUser,
+    user: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Create a new MCP Server and attempt to connect."""
     server = MCPServer(
+        tenant_id=user.tenant_id,
         name=req.name,
         transport_type=req.transport_type,
         url=req.url,
@@ -206,11 +211,13 @@ async def create_mcp_server(
 async def get_mcp_server(
     server_id: UUID,
     request: Request,
-    _admin: AdminUser,
+    user: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Get a specific MCP Server."""
-    result = await db.execute(select(MCPServer).where(MCPServer.id == server_id))
+    result = await db.execute(
+        select(MCPServer).where(MCPServer.id == server_id, MCPServer.tenant_id == user.tenant_id)
+    )
     server = result.scalar_one_or_none()
     if not server:
         raise HTTPException(status_code=404, detail="MCP Server 不存在")
@@ -226,11 +233,13 @@ async def update_mcp_server(
     server_id: UUID,
     req: MCPServerUpdate,
     request: Request,
-    _admin: AdminUser,
+    user: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Update an MCP Server configuration."""
-    result = await db.execute(select(MCPServer).where(MCPServer.id == server_id))
+    result = await db.execute(
+        select(MCPServer).where(MCPServer.id == server_id, MCPServer.tenant_id == user.tenant_id)
+    )
     server = result.scalar_one_or_none()
     if not server:
         raise HTTPException(status_code=404, detail="MCP Server 不存在")
@@ -279,11 +288,13 @@ async def update_mcp_server(
 async def delete_mcp_server(
     server_id: UUID,
     request: Request,
-    _admin: AdminUser,
+    user: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Delete an MCP Server."""
-    result = await db.execute(select(MCPServer).where(MCPServer.id == server_id))
+    result = await db.execute(
+        select(MCPServer).where(MCPServer.id == server_id, MCPServer.tenant_id == user.tenant_id)
+    )
     server = result.scalar_one_or_none()
     if not server:
         raise HTTPException(status_code=404, detail="MCP Server 不存在")
@@ -302,11 +313,13 @@ async def delete_mcp_server(
 async def refresh_mcp_server(
     server_id: UUID,
     request: Request,
-    _admin: AdminUser,
+    user: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Refresh MCP Server connection and rediscover tools."""
-    result = await db.execute(select(MCPServer).where(MCPServer.id == server_id))
+    result = await db.execute(
+        select(MCPServer).where(MCPServer.id == server_id, MCPServer.tenant_id == user.tenant_id)
+    )
     server = result.scalar_one_or_none()
     if not server:
         raise HTTPException(status_code=404, detail="MCP Server 不存在")
@@ -327,9 +340,16 @@ async def refresh_mcp_server(
 async def list_mcp_server_tools(
     server_id: UUID,
     request: Request,
-    _admin: AdminUser,
+    user: AdminUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
     """List tools provided by a specific MCP Server."""
+    result = await db.execute(
+        select(MCPServer).where(MCPServer.id == server_id, MCPServer.tenant_id == user.tenant_id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="MCP Server 不存在")
+
     mcp_manager = getattr(request.app.state, "mcp_manager", None)
     if not mcp_manager:
         raise HTTPException(status_code=503, detail="MCP Manager 未初始化")

@@ -147,6 +147,11 @@ async def _run_manual_migrations(conn) -> None:
         """UPDATE knowledge_bases SET tenant_id = '00000000-0000-0000-0000-000000000001'
            WHERE tenant_id IS NULL""",
         "ALTER TABLE knowledge_bases ALTER COLUMN tenant_id SET NOT NULL",
+        "ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS tenant_id UUID",
+        """UPDATE mcp_servers SET tenant_id = '00000000-0000-0000-0000-000000000001'
+           WHERE tenant_id IS NULL""",
+        "ALTER TABLE mcp_servers ALTER COLUMN tenant_id SET NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_mcp_servers_tenant ON mcp_servers (tenant_id)",
         "ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS created_by UUID",
         """UPDATE knowledge_bases SET created_by = (
                SELECT id FROM users ORDER BY created_at LIMIT 1

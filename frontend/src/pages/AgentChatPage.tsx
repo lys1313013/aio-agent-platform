@@ -2,16 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useChatStore } from '@/stores/chatStore';
 import { usePetStore } from '@/stores/petStore';
-import { chatApi } from '@/lib/api';
+import { chatApi, sessionsApi } from '@/lib/api';
 import { useMessageQueue } from '@/hooks/useMessageQueue';
 import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import AgentConfigSidebar from '@/components/AgentConfigSidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
 import { Alert, App, Typography, Spin, Tag, Button } from 'antd';
-import { PlusOutlined } from '@ant-design/icons';
+import { PlusOutlined, LinkOutlined } from '@ant-design/icons';
 import { agentsApi } from '@/lib/api';
-import type { Agent, ChatAttachment, FileAttachmentRef, StreamingState } from '@/lib/types';
+import type { Agent, ChatAttachment, FileAttachmentRef, StreamingState, SessionStatus } from '@/lib/types';
 import { getAgentIcon } from '@/lib/agent-icons';
 
 const { Text } = Typography;
@@ -38,6 +38,8 @@ export default function AgentChatPage() {
   const abortRef = useRef<AbortController | null>(null);
   const [agent, setAgent] = useState<Agent | null>(null);
   const [agentLoading, setAgentLoading] = useState(true);
+  const [sessionStatus, setSessionStatus] = useState<SessionStatus | null>(null);
+  const [checkingStatus, setCheckingStatus] = useState(false);
 
   // Codex-style message queue: while streaming, sent messages are queued and
   // flushed one by one as each turn completes.
@@ -80,6 +82,29 @@ export default function AgentChatPage() {
       setActiveSession(null);
     }
   }, [urlSessionId, agentId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 检查当前会话是否有后端渠道任务在跑（飞书等无浏览器 SSE 的场景）。
+  // Web 端直接发送的消息不会注册在跑任务，因此只会在渠道触发时显示重新连接入口。
+  const checkSessionStatus = useCallback(async (sessionId: string) => {
+    setCheckingStatus(true);
+    try {
+      const status = await sessionsApi.getStatus(sessionId);
+      setSessionStatus(status);
+    } catch (err) {
+      // 静默失败：状态查询失败不影响现有消息展示
+      setSessionStatus(null);
+    } finally {
+      setCheckingStatus(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (urlSessionId && !streaming.isStreaming) {
+      void checkSessionStatus(urlSessionId);
+    } else {
+      setSessionStatus(null);
+    }
+  }, [urlSessionId, streaming.isStreaming, checkSessionStatus]);
 
   // Load sessions for this agent.
   // loadSessions does a full reset (clears activeSessionId); refreshSessions
@@ -495,6 +520,322 @@ export default function AgentChatPage() {
     interruptStream();
   };
 
+  const handleReconnect = useCallback(() => {
+    if (!urlSessionId || !agentId) return;
+    setSessionStatus(null);
+    setStreaming({ ...IDLE_STREAMING, isStreaming: true });
+    usePetStore.getState().startTask(urlSessionId, sessionStatus?.label || '重新连接', agentId);
+
+    const controller = sessionsApi.watchEvents(
+      urlSessionId,
+      (event) => {
+        const type = event.type as string;
+        usePetStore.getState().reportEvent(type, {
+          sessionId: urlSessionId,
+          tool: type === 'tool_call' ? ((event.name as string) || undefined) : undefined,
+        });
+
+        switch (type) {
+          case 'session':
+            break;
+
+          case 'session_title': {
+            const sid = (event.session_id as string) || urlSessionId;
+            const newTitle = event.title as string;
+            if (sid && newTitle) {
+              useChatStore.getState().setSessionTitleLocal(sid, newTitle);
+            }
+            break;
+          }
+
+          case 'thinking':
+            setStreaming((prev) => {
+              const content = (event.content as string) || '';
+              const lastAction = prev.actionOrder[prev.actionOrder.length - 1];
+              if (lastAction?.type === 'thinking') {
+                return {
+                  ...prev,
+                  isStreaming: true,
+                  thinking: prev.thinking + content,
+                  thinkingChunks: prev.thinkingChunks.map((c, i) =>
+                    i === prev.thinkingChunks.length - 1
+                      ? { ...c, content: c.content + content }
+                      : c,
+                  ),
+                };
+              }
+              const newId = `thinking-${prev.thinkingChunks.length}`;
+              return {
+                ...prev,
+                isStreaming: true,
+                thinking: prev.thinking + content,
+                thinkingChunks: [...prev.thinkingChunks, { id: newId, content }],
+                actionOrder: [...prev.actionOrder, { type: 'thinking' as const, id: newId }],
+              };
+            });
+            break;
+
+          case 'tool_call':
+            setStreaming((prev) => ({
+              ...prev,
+              toolCalls: [
+                ...prev.toolCalls,
+                {
+                  id: (event.id as string) || '',
+                  name: (event.name as string) || '',
+                  arguments: (event.arguments as Record<string, unknown>) || {},
+                },
+              ],
+              actionOrder: [
+                ...prev.actionOrder,
+                { type: 'tool', id: (event.id as string) || '' },
+              ],
+            }));
+            break;
+
+          case 'tool_result':
+            setStreaming((prev) => ({
+              ...prev,
+              toolCalls: prev.toolCalls.map((tc) =>
+                tc.id === event.tool_call_id
+                  ? {
+                      ...tc,
+                      result: {
+                        status: (event.status as string) || '',
+                        preview: (event.preview as string) || '',
+                      },
+                    }
+                  : tc,
+              ),
+            }));
+            break;
+
+          case 'text_delta':
+            setStreaming((prev) => ({
+              ...prev,
+              isStreaming: true,
+              finalText: prev.finalText + ((event.content as string) || ''),
+            }));
+            break;
+
+          case 'text':
+            setStreaming((prev) => ({
+              ...prev,
+              isStreaming: false,
+              finalText: (event.content as string) || '',
+            }));
+            break;
+
+          case 'done': {
+            const finalText = (event.content as string) || '';
+            const msgId = (event.message_id as string) || `msg-assistant-${Date.now()}`;
+            const toolCalls = event.tool_calls as Record<string, unknown>[] | undefined;
+
+            addMessage(urlSessionId, {
+              id: msgId,
+              role: 'assistant',
+              content: finalText,
+              tool_calls: toolCalls || null,
+              created_at: new Date().toISOString(),
+            });
+
+            setStreaming(IDLE_STREAMING);
+            refreshSessions(agentId);
+            break;
+          }
+
+          case 'error': {
+            setStreaming(IDLE_STREAMING);
+            const raw = event.message;
+            const errStr = typeof raw === 'string' ? raw
+              : Array.isArray(raw) ? raw.map((d: unknown) => typeof d === 'object' && d !== null ? (d as Record<string, unknown>).msg || JSON.stringify(d) : String(d)).join('; ')
+              : String(raw ?? '未知错误');
+            setError(errStr);
+            message.error(errStr);
+            break;
+          }
+
+          case 'delegation_start': {
+            const delegToolCallId = (event.tool_call_id as string) || '';
+            const newDelegation = {
+              delegation_id: (event.delegation_id as string) || '',
+              child_agent_id: (event.child_agent_id as string) || '',
+              child_agent_name: (event.child_agent_name as string) || '',
+              child_agent_icon: (event.child_agent_icon as string) || undefined,
+              task: (event.task as string) || '',
+              status: 'running' as const,
+              thinking: '',
+              toolCalls: [],
+              tool_call_id: delegToolCallId,
+            };
+
+            setStreaming((prev) => {
+              const newActionOrder = [...prev.actionOrder];
+              let inserted = false;
+
+              if (delegToolCallId) {
+                const idx = newActionOrder.findIndex(
+                  (a) => a.type === 'tool' && a.id === delegToolCallId
+                );
+                if (idx >= 0) {
+                  newActionOrder[idx] = {
+                    type: 'delegation',
+                    id: newDelegation.delegation_id,
+                  };
+                  inserted = true;
+                }
+              }
+
+              if (!inserted) {
+                newActionOrder.push({
+                  type: 'delegation',
+                  id: newDelegation.delegation_id,
+                });
+              }
+
+              return {
+                ...prev,
+                delegations: [...prev.delegations, newDelegation],
+                actionOrder: newActionOrder,
+              };
+            });
+            break;
+          }
+
+          case 'delegation_thinking':
+            setStreaming((prev) => ({
+              ...prev,
+              delegations: prev.delegations.map((d) =>
+                d.delegation_id === event.delegation_id
+                  ? { ...d, thinking: (d.thinking || '') + ((event.content as string) || '') }
+                  : d,
+              ),
+            }));
+            break;
+
+          case 'delegation_tool_call':
+            setStreaming((prev) => ({
+              ...prev,
+              delegations: prev.delegations.map((d) =>
+                d.delegation_id === event.delegation_id
+                  ? {
+                      ...d,
+                      toolCalls: [
+                        ...(d.toolCalls || []),
+                        {
+                          id: (event.id as string) || '',
+                          name: (event.name as string) || '',
+                          arguments: (event.arguments as Record<string, unknown>) || {},
+                        },
+                      ],
+                    }
+                  : d,
+              ),
+            }));
+            break;
+
+          case 'delegation_tool_result':
+            setStreaming((prev) => ({
+              ...prev,
+              delegations: prev.delegations.map((d) =>
+                d.delegation_id === event.delegation_id
+                  ? {
+                      ...d,
+                      toolCalls: (d.toolCalls || []).map((tc) =>
+                        tc.id === event.tool_call_id
+                          ? {
+                              ...tc,
+                              result: {
+                                status: (event.status as string) || '',
+                                preview: (event.preview as string) || '',
+                              },
+                            }
+                          : tc,
+                      ),
+                    }
+                  : d,
+              ),
+            }));
+            break;
+
+          case 'delegation_text_delta':
+            setStreaming((prev) => ({
+              ...prev,
+              delegations: prev.delegations.map((d) =>
+                d.delegation_id === event.delegation_id
+                  ? { ...d, result: (d.result || '') + ((event.content as string) || '') }
+                  : d,
+              ),
+            }));
+            break;
+
+          case 'delegation_end':
+            setStreaming((prev) => ({
+              ...prev,
+              delegations: prev.delegations.map((d) =>
+                d.delegation_id === event.delegation_id
+                  ? {
+                      ...d,
+                      status: (event.status as 'completed' | 'failed' | 'timeout') || 'completed',
+                      error: (event.error as string) || undefined,
+                      duration_ms: (event.duration_ms as number) || undefined,
+                      result: d.result || (event.result_preview as string) || '',
+                    }
+                  : d,
+              ),
+            }));
+            break;
+
+          case 'confirmation_required':
+            setStreaming((prev) => ({
+              ...prev,
+              confirmations: [
+                ...prev.confirmations,
+                {
+                  confirmation_id: (event.confirmation_id as string) || '',
+                  question: (event.question as string) || '',
+                  mode: (event.mode as import('@/lib/types').ConfirmationMode) || 'single_select',
+                  options: (event.options as import('@/lib/types').ConfirmationOption[]) || [],
+                  table_schema: (event.table_schema as import('@/lib/types').TableSchema) || undefined,
+                  context: (event.context as import('@/lib/types').ConfirmationContext) || { timeout_seconds: 300 },
+                  created_at: (event.created_at as string) || new Date().toISOString(),
+                },
+              ],
+              actionOrder: [
+                ...prev.actionOrder,
+                { type: 'confirmation', id: (event.confirmation_id as string) || '' },
+              ],
+            }));
+            break;
+
+          case 'confirmation_resolved':
+            setStreaming((prev) => ({
+              ...prev,
+              confirmationsResolved: {
+                ...prev.confirmationsResolved,
+                [(event.confirmation_id as string) || '']: {
+                  confirmation_id: (event.confirmation_id as string) || '',
+                  status: (event.status as import('@/lib/types').ConfirmationStatus) || 'timeout',
+                  selected_options: (event.selected_options as string[]) || undefined,
+                  user_input: (event.user_input as string) || undefined,
+                  table_data: (event.table_data as Record<string, unknown>[]) || undefined,
+                  resolved_at: (event.resolved_at as string) || new Date().toISOString(),
+                },
+              },
+            }));
+            break;
+
+          case 'closed':
+            // 回放流正常结束但未收到 done（如空流/任务已结束）：复位 streaming。
+            setStreaming((prev) => (prev.isStreaming ? IDLE_STREAMING : prev));
+            break;
+        }
+      },
+    );
+
+    abortRef.current = controller;
+  }, [urlSessionId, agentId, sessionStatus?.label, addMessage, refreshSessions, message]);
+
   const currentMessages = activeSessionId ? messages[activeSessionId] || [] : [];
 
   const activeSession = useMemo(
@@ -564,6 +905,32 @@ export default function AgentChatPage() {
           {error && (
             <div className="mx-auto max-w-3xl w-full px-4 pb-2">
               <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} />
+            </div>
+          )}
+
+          {sessionStatus?.is_running && !streaming.isStreaming && (
+            <div className="mx-auto max-w-3xl w-full px-4 pb-2">
+              <Alert
+                message={
+                  <span className="flex items-center gap-2">
+                    智能体正在处理
+                    {sessionStatus.tool && <Tag className="text-xs">{sessionStatus.tool}</Tag>}
+                  </span>
+                }
+                description={sessionStatus.label ? `任务：${sessionStatus.label}` : '来自渠道会话，点击重新连接查看实时进度'}
+                type="info"
+                showIcon
+                action={
+                  <Button
+                    size="small"
+                    icon={<LinkOutlined />}
+                    loading={checkingStatus}
+                    onClick={handleReconnect}
+                  >
+                    重新连接
+                  </Button>
+                }
+              />
             </div>
           )}
 

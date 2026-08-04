@@ -1009,6 +1009,9 @@ class MCPServer(Base):
     __tablename__ = "mcp_servers"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=DEFAULT_TENANT_ID, comment="所属租户ID"
+    )
     name: Mapped[str] = mapped_column(String(128), nullable=False, comment="显示名称")
     transport_type: Mapped[str] = mapped_column(String(32), nullable=False, comment="传输类型: sse/streamable-http")
 
@@ -1028,7 +1031,10 @@ class MCPServer(Base):
         DateTime(timezone=True), default=func.now(), onupdate=func.now(), comment="更新时间"
     )
 
-    __table_args__ = ({"comment": "MCP 服务器配置表"},)
+    __table_args__ = (
+        Index("idx_mcp_servers_tenant", "tenant_id"),
+        {"comment": "MCP 服务器配置表"},
+    )
 
 
 # ---- Knowledge Base (RAGFlow Integration) ----

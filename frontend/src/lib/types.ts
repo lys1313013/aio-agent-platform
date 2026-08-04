@@ -606,6 +606,16 @@ export type PetMood =
   | 'sleep'
   | 'happy';
 
+/** 会话当前处理状态（GET /api/sessions/{id}/status） */
+export interface SessionStatus {
+  session_id: string;
+  is_running: boolean;
+  label: string | null;
+  tool: string | null;
+  source: string | null;
+  started_at: number | null;
+}
+
 /** 渠道（飞书等）触发的在跑任务（SSE 快照/增量事件载荷，与 GET /api/pets/active-tasks 调试端点同构） */
 export interface PetActiveTask {
   session_id: string;

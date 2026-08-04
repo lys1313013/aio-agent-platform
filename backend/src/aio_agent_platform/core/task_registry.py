@@ -149,6 +149,27 @@ async def task_finished(user_id: UUID, session_id: UUID) -> None:
     await _publish(str(user_id), {"type": "pet_task_finished", "session_id": str(session_id)})
 
 
+async def get_task(user_id: UUID, session_id: UUID) -> RunningTask | None:
+    """获取指定会话的在跑任务，不存在或已过期返回 None。"""
+    try:
+        raw = await _redis().hget(_key(user_id), str(session_id))
+    except Exception:
+        logger.warning("task_registry_read_failed", op="get", user_id=str(user_id))
+        return None
+    if raw is None:
+        return None
+    task = RunningTask.loads(raw)
+    if task is None:
+        return None
+    if time.time() - task.started_at > TASK_TTL_SECONDS:
+        try:
+            await _redis().hdel(_key(user_id), str(session_id))
+        except Exception:
+            pass
+        return None
+    return task
+
+
 async def list_tasks(user_id: UUID) -> list[RunningTask]:
     try:
         raw = await _redis().hgetall(_key(user_id))

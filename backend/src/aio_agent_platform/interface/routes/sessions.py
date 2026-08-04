@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import json
+import time
 from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.dependencies import CurrentUser
+from aio_agent_platform.core import task_event_log, task_registry
 from aio_agent_platform.db import Session
 from aio_agent_platform.db.connection import get_db
 
@@ -56,7 +60,7 @@ class AttachmentInfo(BaseModel):
 
 
 class FileAttachmentInfo(BaseModel):
-    """File attachment metadata stored alongside a user message."""
+    """File attachment metadata stored alongside a workspace message."""
 
     file_id: str
     filename: str
@@ -81,6 +85,17 @@ class MessageOut(BaseModel):
 
 class SessionDetailOut(SessionOut):
     messages: list[MessageOut] = []
+
+
+class SessionStatusOut(BaseModel):
+    """会话当前处理状态 —— 用于前端进入历史会话时判断是否需要重新连接 SSE。"""
+
+    session_id: str
+    is_running: bool
+    label: str | None = None
+    tool: str | None = None
+    source: str | None = None
+    started_at: float | None = None
 
 
 # ---- Routes ----
@@ -142,6 +157,97 @@ async def get_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return session
+
+
+@router.get("/{session_id}/status", response_model=SessionStatusOut)
+async def get_session_status(
+    session_id: UUID,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> SessionStatusOut:
+    """查询会话当前是否有 AgentLoop / 渠道任务在跑。
+
+    后端不持久化「处理中」状态，只读 Redis 在跑任务注册表。Web 端发送消息时
+    没有注册任务，因此 web 会话会返回 is_running=false；从飞书/企微等渠道
+    触发的会话会返回 running=true，前端据此显示「重新连接」入口。
+    """
+    result = await db.execute(
+        select(Session.id).where(Session.id == session_id, Session.user_id == user.id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    task = await task_registry.get_task(user.id, session_id)
+    if task is None:
+        return SessionStatusOut(session_id=str(session_id), is_running=False)
+    return SessionStatusOut(
+        session_id=str(session_id),
+        is_running=True,
+        label=task.label or None,
+        tool=task.tool,
+        source=task.source or None,
+        started_at=task.started_at,
+    )
+
+
+def _sse_event(data: dict) -> str:
+    """Format a dict as an SSE data line (matches chat.py convention)."""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@router.get("/{session_id}/events")
+async def session_events_stream(
+    session_id: UUID,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StreamingResponse:
+    """SSE 回放渠道任务在跑期间的完整 Agent 事件（连接即回放 + 实时尾随）。
+
+    与 ``/{session_id}/status`` 配套：status 告诉前端该会话有渠道任务在跑，这里把
+    任务跑过的 thinking/tool_call/tool_result/text_delta/text/done 事件按序下发。
+    事件由 channel pipeline 实时写入 Redis Stream（``core.task_event_log``）。
+    Redis 不可用时流为空，前端收到 EOF 以 ``closed`` 收尾。
+    """
+    result = await db.execute(
+        select(Session.id).where(Session.id == session_id, Session.user_id == user.id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    async def event_generator():
+        last_id = "0"
+        events = await task_event_log.read_events(user.id, session_id)
+        for stream_id, ev in events:
+            last_id = stream_id
+            yield _sse_event(ev)
+        if events and events[-1][1].get("type") in ("done", "error"):
+            return
+        if not events:
+            # 无事件且任务已不在跑（Redis 不可用或任务刚结束）：无事可回放
+            if await task_registry.get_task(user.id, session_id) is None:
+                return
+
+        # 实时尾随：等待 done/error 事件，超时兜底防止连接泄漏
+        deadline = time.monotonic() + task_event_log.TASK_TTL_SECONDS
+        while time.monotonic() < deadline:
+            tail = await task_event_log.tail_events(user.id, session_id, last_id)
+            if tail is None:
+                yield ": ping\n\n"
+                continue
+            last_id, ev = tail
+            yield _sse_event(ev)
+            if ev.get("type") in ("done", "error"):
+                return
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.patch("/{session_id}", response_model=SessionOut)

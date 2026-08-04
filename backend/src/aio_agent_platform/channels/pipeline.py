@@ -43,6 +43,7 @@ from aio_agent_platform.core.chat import (
     update_context_summary,
 )
 from aio_agent_platform.core.context import prepare_context
+from aio_agent_platform.core.task_event_log import log_event
 from aio_agent_platform.core.task_registry import task_finished, task_started, task_tool
 from aio_agent_platform.db import Message
 from aio_agent_platform.db import Session as ChatSession
@@ -363,17 +364,35 @@ class ChannelInboundPipeline:
                     if not final_output:
                         final_output = step.final_output or ""
                 elif isinstance(step, str):
-                    if step.startswith("text_delta:"):
-                        final_output += step[len("text_delta:"):]
+                    if step.startswith("reasoning:"):
+                        # 推理过程实时广播（Web 端「重新连接」回放用）
+                        await log_event(ctx.user_id, ctx.session_id, {
+                            "type": "thinking",
+                            "content": step[len("reasoning:"):],
+                        })
+                    elif step.startswith("text_delta:"):
+                        delta = step[len("text_delta:"):]
+                        final_output += delta
+                        await log_event(ctx.user_id, ctx.session_id, {
+                            "type": "text_delta",
+                            "content": delta,
+                        })
                     elif step.startswith("tool_call:"):
                         parts = step.split(":", 3)
                         try:
                             tc_args = json.loads(parts[3]) if len(parts) > 3 else {}
                         except json.JSONDecodeError:
                             tc_args = {}
+                        tc_id = parts[1] if len(parts) > 1 else ""
                         tool_name = parts[2] if len(parts) > 2 else ""
                         tool_calls_list.append({
-                            "id": parts[1] if len(parts) > 1 else "",
+                            "id": tc_id,
+                            "name": tool_name,
+                            "arguments": tc_args,
+                        })
+                        await log_event(ctx.user_id, ctx.session_id, {
+                            "type": "tool_call",
+                            "id": tc_id,
                             "name": tool_name,
                             "arguments": tc_args,
                         })
@@ -382,6 +401,7 @@ class ChannelInboundPipeline:
                     elif step.startswith("tool_result:"):
                         parts = step.split(":", 4)
                         tc_id = parts[1] if len(parts) > 1 else ""
+                        tc_name = parts[2] if len(parts) > 2 else ""
                         try:
                             preview = json.loads(parts[4]) if len(parts) > 4 else ""
                         except json.JSONDecodeError:
@@ -390,6 +410,13 @@ class ChannelInboundPipeline:
                             "status": parts[3] if len(parts) > 3 else "",
                             "preview": preview,
                         }
+                        await log_event(ctx.user_id, ctx.session_id, {
+                            "type": "tool_result",
+                            "tool_call_id": tc_id,
+                            "name": tc_name,
+                            "status": parts[3] if len(parts) > 3 else "",
+                            "preview": preview,
+                        })
                         for tc in tool_calls_list:
                             if tc["id"] in tool_results_map:
                                 tc["result"] = tool_results_map[tc["id"]]
@@ -404,6 +431,7 @@ class ChannelInboundPipeline:
                 await self.adapter.send(event, f"❌ 执行出错：{e}")
             except Exception:
                 pass
+            await log_event(ctx.user_id, ctx.session_id, {"type": "error", "message": str(e)})
             return
         finally:
             await task_finished(ctx.user_id, ctx.session_id)
@@ -414,14 +442,25 @@ class ChannelInboundPipeline:
                     pass
 
         # Persist the assistant reply (with tool call details for rendering).
-        db.add(Message(
+        assistant_msg = Message(
             session_id=ctx.session_id,
             user_id=ctx.user_id,
             role="assistant",
             content=final_output,
             tool_calls=tool_calls_list if tool_calls_list else None,
-        ))
+        )
+        db.add(assistant_msg)
+        await db.flush()
         await db.commit()
+
+        # 记录最终结果事件，Web 端「重新连接」据此收尾（message_id 供前端定位消息）。
+        await log_event(ctx.user_id, ctx.session_id, {"type": "text", "content": final_output})
+        await log_event(ctx.user_id, ctx.session_id, {
+            "type": "done",
+            "message_id": str(assistant_msg.id),
+            "content": final_output,
+            "tool_calls": tool_calls_list,
+        })
 
         # Fire-and-forget: memory extraction (skip for shadow accounts — they
         # don't write L2 long-term memory) and context summary update.
