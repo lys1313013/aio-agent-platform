@@ -1230,6 +1230,17 @@ export const memoriesApi = {
     return request<void>(`/memories/${id}`, { method: 'DELETE' });
   },
 
+  deleteMany(ids: string[]) {
+    return request<{ deleted: number }>('/memories/batch-delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    });
+  },
+
+  stats() {
+    return request<Record<'L1' | 'L2' | 'L3', number>>('/memories/stats');
+  },
+
   search(query: string, params?: { layer?: string; top_k?: number }) {
     const searchParams = new URLSearchParams({ q: query });
     if (params?.layer) searchParams.set('layer', params.layer);

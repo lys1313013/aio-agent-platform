@@ -62,6 +62,10 @@ class MemoryListResponse(BaseModel):
     layer: str | None = None
 
 
+class MemoryBatchDelete(BaseModel):
+    ids: list[UUID] = Field(..., min_length=1, max_length=200)
+
+
 class MemorySearchResult(BaseModel):
     id: UUID
     layer: str
@@ -96,6 +100,23 @@ async def search_memories(
         ).model_dump(mode="json")
         for m, score in results
     ]
+
+
+@router.get("/stats", response_model=dict[str, int])
+async def memory_stats(
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Return memory counts per layer."""
+    rows = await db.execute(
+        select(Memory.layer, func.count())
+        .where(Memory.user_id == user.id)
+        .group_by(Memory.layer)
+    )
+    counts = {"L1": 0, "L2": 0, "L3": 0}
+    for layer, count in rows:
+        counts[layer] = count
+    return counts
 
 
 @router.get("", response_model=MemoryListResponse)
@@ -136,6 +157,17 @@ async def create_memory(
         db, user.id, req.layer, req.content, meta=req.metadata
     )
     return MemoryOut.from_model(memory).model_dump(mode="json")
+
+
+@router.post("/batch-delete", response_model=dict[str, int])
+async def batch_delete_memories(
+    req: MemoryBatchDelete,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Delete multiple memories at once."""
+    deleted = await MemoryService.delete_memories(db, user.id, req.ids)
+    return {"deleted": deleted}
 
 
 @router.get("/{memory_id}", response_model=MemoryOut)

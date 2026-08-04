@@ -8,7 +8,7 @@ from uuid import UUID
 
 import rjieba
 import structlog
-from sqlalchemy import func, literal, select
+from sqlalchemy import delete, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.db.models import Memory
@@ -135,6 +135,21 @@ class MemoryService:
         await db.delete(memory)
         await db.flush()
         return True
+
+    @staticmethod
+    async def delete_memories(
+        db: AsyncSession,
+        user_id: UUID,
+        memory_ids: list[UUID],
+    ) -> int:
+        """Batch delete memories owned by a user. Returns number deleted."""
+        if not memory_ids:
+            return 0
+        result = await db.execute(
+            delete(Memory).where(Memory.user_id == user_id, Memory.id.in_(memory_ids))
+        )
+        await db.flush()
+        return result.rowcount or 0
 
     # ---- Search ----
 
