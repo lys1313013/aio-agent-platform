@@ -300,7 +300,8 @@ def test_pending_attachment_expires(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_build_image_data_uri_format() -> None:
     uri = _build_image_data_uri(b"\x89PNG", "image/png")
-    assert uri == f"data:image/png;base64,{base64.b64encode(b'\x89PNG').decode()}"
+    expected = "data:image/png;base64," + base64.b64encode(b"\x89PNG").decode()
+    assert uri == expected
 
 
 def test_collect_image_attachments_extracts_data_uri() -> None:
@@ -373,11 +374,14 @@ class _FeishuAPIStub:
         self.reaction_code = 0
         self.download_code = 0
         self.upload_code = 0
+        self.image_code = 0
         self.last_send_url: str | None = None
         self.last_resource_url: str | None = None
         self.last_send_body = ""
         self.last_upload_url: str | None = None
         self.last_upload_body = ""
+        self.last_image_url: str | None = None
+        self.last_image_body = ""
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -405,6 +409,12 @@ class _FeishuAPIStub:
             if self.upload_code != 0:
                 return httpx.Response(200, json={"code": self.upload_code, "msg": "upload failed"})
             return httpx.Response(200, json={"code": 0, "data": {"file_key": "file_v2_test"}})
+        if path.endswith("/images") and request.method == "POST":
+            self.last_image_url = str(request.url)
+            self.last_image_body = request.content.decode("utf-8", errors="replace")
+            if self.image_code != 0:
+                return httpx.Response(200, json={"code": self.image_code, "msg": "image failed"})
+            return httpx.Response(200, json={"code": 0, "data": {"image_key": "img_v2_test"}})
         if request.method == "PUT":
             return httpx.Response(200, json={"code": self.update_code, "data": {}})
         if request.method == "POST" and "/messages" in path:
@@ -537,6 +547,46 @@ async def test_send_file_reply_endpoint(feishu_stub) -> None:
     assert "/messages/om_parent/reply" in stub.last_send_url
 
 
+async def test_upload_image_returns_image_key(feishu_stub) -> None:
+    client, stub = feishu_stub
+    key = await client.upload_image(b"\x89PNG", "chart.png")
+    assert key == "img_v2_test"
+    assert stub.last_image_url is not None
+    assert stub.last_image_url.endswith("/im/v1/images")
+    assert 'name="image_type"' in stub.last_image_body
+    assert "chart.png" in stub.last_image_body
+
+
+async def test_upload_image_failure_returns_none(feishu_stub) -> None:
+    client, stub = feishu_stub
+    stub.image_code = 12345
+    assert await client.upload_image(b"x", "a.png") is None
+
+
+async def test_send_image_uses_image_msg_type(feishu_stub) -> None:
+    client, stub = feishu_stub
+    await client.send_image("oc_1", "img_v2_abc")
+    body = json.loads(stub.last_send_body)
+    assert body["msg_type"] == "image"
+    assert json.loads(body["content"])["image_key"] == "img_v2_abc"
+
+
+async def test_send_audio_uses_audio_msg_type(feishu_stub) -> None:
+    client, stub = feishu_stub
+    await client.send_audio("oc_1", "file_v2_opus")
+    body = json.loads(stub.last_send_body)
+    assert body["msg_type"] == "audio"
+    assert json.loads(body["content"])["file_key"] == "file_v2_opus"
+
+
+async def test_send_media_uses_media_msg_type(feishu_stub) -> None:
+    client, stub = feishu_stub
+    await client.send_media("oc_1", "file_v2_mp4")
+    body = json.loads(stub.last_send_body)
+    assert body["msg_type"] == "media"
+    assert json.loads(body["content"])["file_key"] == "file_v2_mp4"
+
+
 # ---------------------------------------------------------------------------
 # FeishuAdapter — 出站语义
 # ---------------------------------------------------------------------------
@@ -645,6 +695,56 @@ async def test_adapter_send_file_upload_failure() -> None:
     client.upload_file.return_value = None
     assert await adapter.send_file(_make_event_obj(), "a.txt", b"x") is None
     client.send_file.assert_not_awaited()
+
+
+async def test_adapter_send_image_routes_to_image() -> None:
+    adapter, client = _make_adapter()
+    client.upload_image.return_value = "img_v2_up"
+    client.send_image.return_value = "om_img"
+    result = await adapter.send_file(_make_event_obj(mentions_bot=True), "chart.png", b"\x89PNG")
+    assert result == "om_img"
+    client.upload_image.assert_awaited_once_with(b"\x89PNG", "chart.png")
+    client.send_image.assert_awaited_once_with(
+        receive_id="oc_chat", image_key="img_v2_up", reply_to="om_in"
+    )
+    client.upload_file.assert_not_awaited()
+
+
+async def test_adapter_send_opus_routes_to_audio() -> None:
+    adapter, client = _make_adapter()
+    client.upload_file.return_value = "file_v2_opus"
+    client.send_audio.return_value = "om_audio"
+    result = await adapter.send_file(_make_event_obj(), "voice.opus", b"audio")
+    assert result == "om_audio"
+    client.upload_file.assert_awaited_once_with(b"audio", "voice.opus", file_type="opus")
+    client.send_audio.assert_awaited_once_with(
+        receive_id="oc_chat", file_key="file_v2_opus", reply_to=None
+    )
+
+
+async def test_adapter_send_mp4_routes_to_media() -> None:
+    adapter, client = _make_adapter()
+    client.upload_file.return_value = "file_v2_mp4"
+    client.send_media.return_value = "om_media"
+    result = await adapter.send_file(_make_event_obj(), "clip.mp4", b"video")
+    assert result == "om_media"
+    client.upload_file.assert_awaited_once_with(b"video", "clip.mp4", file_type="mp4")
+    client.send_media.assert_awaited_once_with(
+        receive_id="oc_chat", file_key="file_v2_mp4", reply_to=None
+    )
+
+
+async def test_adapter_send_mp3_falls_back_to_file() -> None:
+    # 飞书语音仅支持 opus，mp3 等其它格式回退为文件消息
+    adapter, client = _make_adapter()
+    client.upload_file.return_value = "file_v2_mp3"
+    client.send_file.return_value = "om_file"
+    result = await adapter.send_file(_make_event_obj(), "song.mp3", b"audio")
+    assert result == "om_file"
+    client.upload_file.assert_awaited_once_with(b"audio", "song.mp3")
+    client.send_file.assert_awaited_once_with(
+        receive_id="oc_chat", file_key="file_v2_mp3", reply_to=None
+    )
 
 
 # ---------------------------------------------------------------------------
