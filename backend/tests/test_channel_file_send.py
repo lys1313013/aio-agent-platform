@@ -70,7 +70,7 @@ async def test_send_file_success(monkeypatch) -> None:
         AsyncMock(return_value=b"csv-data"),
     )
     output = await _run_with_ctx(adapter, {"file_path": "uploads/a.csv"})
-    assert "已通过当前渠道发送文件" in output
+    assert "已通过当前渠道发送" in output
     assert "a.csv" in output
     adapter.send_file.assert_awaited_once()
     _filename, _data = adapter.send_file.await_args.args[1:3]

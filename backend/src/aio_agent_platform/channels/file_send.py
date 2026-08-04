@@ -140,5 +140,5 @@ async def handle_send_file(
 
     message_id = await ctx.adapter.send_file(ctx.event, filename, data)
     if not message_id:
-        return f"❌ 文件 {filename} 发送失败，请稍后重试。"
-    return f"✅ 已通过当前渠道发送文件 {filename}。"
+        return "❌ 发送失败，请稍后重试。"
+    return f"✅ 已通过当前渠道发送 {filename}。"

@@ -19,8 +19,9 @@ _RESOURCE_URL = (
     "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{resource_key}"
 )
 _UPLOAD_FILE_URL = "https://open.feishu.cn/open-apis/im/v1/files"
+_UPLOAD_IMAGE_URL = "https://open.feishu.cn/open-apis/im/v1/images"
 # 下载消息资源所需权限：im:resource
-# 上传文件所需权限：im:resource
+# 上传文件/图片所需权限：im:resource
 # Minimum refresh buffer — refresh 60s before expiry.
 _TOKEN_REFRESH_BUFFER_SECONDS = 60
 
@@ -199,6 +200,93 @@ class FeishuClient:
             receive_id=receive_id,
             receive_id_type=receive_id_type,
             msg_type="file",
+            content=content,
+            reply_to=reply_to,
+        )
+
+    async def upload_image(
+        self, file_bytes: bytes, file_name: str = "image"
+    ) -> str | None:
+        """Upload an image for messaging, returning the image_key.
+
+        Requires the ``im:resource`` permission. Message-type images are capped
+        at 10MB by Feishu.
+        """
+        token = await self.tenant_access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            resp = await self._http.post(
+                _UPLOAD_IMAGE_URL,
+                headers=headers,
+                data={"image_type": "message"},
+                files={"image": (file_name, file_bytes)},
+            )
+        except httpx.HTTPError:
+            logger.warning("feishu_upload_image_http_error")
+            return None
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.warning(
+                "feishu_upload_image_failed",
+                code=data.get("code"),
+                msg=data.get("msg"),
+            )
+            return None
+        return data.get("data", {}).get("image_key")
+
+    async def send_image(
+        self,
+        receive_id: str,
+        image_key: str,
+        reply_to: str | None = None,
+        receive_id_type: str = "chat_id",
+    ) -> str | None:
+        """Send an image message using a previously uploaded image_key."""
+        import json as _json
+
+        content = _json.dumps({"image_key": image_key}, ensure_ascii=False)
+        return await self.send_message(
+            receive_id=receive_id,
+            receive_id_type=receive_id_type,
+            msg_type="image",
+            content=content,
+            reply_to=reply_to,
+        )
+
+    async def send_audio(
+        self,
+        receive_id: str,
+        file_key: str,
+        reply_to: str | None = None,
+        receive_id_type: str = "chat_id",
+    ) -> str | None:
+        """Send an audio message (opus-only in Feishu) from a file_key."""
+        import json as _json
+
+        content = _json.dumps({"file_key": file_key}, ensure_ascii=False)
+        return await self.send_message(
+            receive_id=receive_id,
+            receive_id_type=receive_id_type,
+            msg_type="audio",
+            content=content,
+            reply_to=reply_to,
+        )
+
+    async def send_media(
+        self,
+        receive_id: str,
+        file_key: str,
+        reply_to: str | None = None,
+        receive_id_type: str = "chat_id",
+    ) -> str | None:
+        """Send a video message (mp4-only in Feishu) from a file_key."""
+        import json as _json
+
+        content = _json.dumps({"file_key": file_key}, ensure_ascii=False)
+        return await self.send_message(
+            receive_id=receive_id,
+            receive_id_type=receive_id_type,
+            msg_type="media",
             content=content,
             reply_to=reply_to,
         )

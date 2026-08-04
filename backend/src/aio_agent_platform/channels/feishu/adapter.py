@@ -16,6 +16,11 @@ from aio_agent_platform.channels.pipeline import ChannelInboundPipeline
 
 logger = structlog.get_logger()
 
+# 出站媒体按扩展名路由：飞书语音仅支持 opus、视频仅支持 mp4，其余格式回退为文件消息。
+_IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "bmp"}
+_AUDIO_EXTS = {"opus"}
+_VIDEO_EXTS = {"mp4"}
+
 
 class FeishuAdapter(ChannelAdapter):
     """Feishu-specific adapter.
@@ -67,8 +72,34 @@ class FeishuAdapter(ChannelAdapter):
         await self.client.update_message(message_id, text)
 
     async def send_file(self, event: InboundEvent, filename: str, data: bytes) -> str | None:
-        """Upload and send a file message to the originating chat."""
+        """Upload and send a message to the originating chat.
+
+        Routes by file extension so images/audio/video render as native Feishu
+        message types instead of a generic file attachment.
+        """
         reply_to = event.message_id if event.mentions_bot else None
+        ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+        if ext in _IMAGE_EXTS:
+            image_key = await self.client.upload_image(data, filename)
+            if not image_key:
+                return None
+            return await self.client.send_image(
+                receive_id=event.chat_id, image_key=image_key, reply_to=reply_to
+            )
+        if ext in _AUDIO_EXTS:
+            file_key = await self.client.upload_file(data, filename, file_type="opus")
+            if not file_key:
+                return None
+            return await self.client.send_audio(
+                receive_id=event.chat_id, file_key=file_key, reply_to=reply_to
+            )
+        if ext in _VIDEO_EXTS:
+            file_key = await self.client.upload_file(data, filename, file_type="mp4")
+            if not file_key:
+                return None
+            return await self.client.send_media(
+                receive_id=event.chat_id, file_key=file_key, reply_to=reply_to
+            )
         file_key = await self.client.upload_file(data, filename)
         if not file_key:
             return None
