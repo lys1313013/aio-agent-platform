@@ -15,6 +15,9 @@ import type {
   Skill,
   SkillListResponse,
   SkillSearchResult,
+  SkillsShImportResult,
+  SkillsShResolveResult,
+  SkillsShSearchItem,
   SkillVersion,
   SkillFile,
   ConfirmationRequest,
@@ -1320,6 +1323,25 @@ export const skillsApi = {
       if (!resp.ok) throw new ApiError(resp.status, 'Download failed');
       return resp.blob();
     })();
+  },
+
+  // ---- skills.sh sync ----
+
+  shSearch(query: string, limit = 20) {
+    const sp = new URLSearchParams({ q: query, limit: String(limit) });
+    return request<SkillsShSearchItem[]>(`/skills/sh/search?${sp.toString()}`);
+  },
+
+  shResolve(input: string) {
+    const sp = new URLSearchParams({ url: input });
+    return request<SkillsShResolveResult>(`/skills/sh/resolve?${sp.toString()}`);
+  },
+
+  shImport(entries: Array<{ source: string; skill_id: string }>) {
+    return request<SkillsShImportResult>('/skills/sh/import', {
+      method: 'POST',
+      body: JSON.stringify({ entries }),
+    });
   },
 
   // Import skill from zip

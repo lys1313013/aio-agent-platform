@@ -238,6 +238,40 @@ export interface SkillSearchResult {
   score: number;
 }
 
+/** GitHub repo metadata attached to skills.sh entries (None when unavailable). */
+export interface SkillsShRepoMeta {
+  stars: number | null;
+  forks: number | null;
+  repo_description: string | null;
+  language: string | null;
+  license: string | null;
+}
+
+export interface SkillsShSearchItem extends SkillsShRepoMeta {
+  skill_id: string;
+  name: string;
+  source: string;
+  installs: number;
+  url: string;
+}
+
+export interface SkillsShResolveResult extends SkillsShRepoMeta {
+  source: string;
+  skill_id: string;
+  name: string;
+  description: string | null;
+  category: string;
+  tags: string[];
+  installs: number;
+  content_preview: string;
+  files: Array<{ filename: string; type: string; size: number }>;
+}
+
+export interface SkillsShImportResult {
+  imported: Skill[];
+  errors: Array<{ source: string; skill_id: string; error: string }>;
+}
+
 // ---- Tools ----
 
 export interface ToolInfo {

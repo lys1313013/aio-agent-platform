@@ -13,6 +13,9 @@ import {
   PaperClipOutlined,
   InboxOutlined,
   ImportOutlined,
+  CloudSyncOutlined,
+  StarOutlined,
+  ForkOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
   ExclamationCircleOutlined,
@@ -34,9 +37,10 @@ import {
   Timeline,
   Upload,
   Tooltip,
+  Checkbox,
 } from 'antd';
 import { skillsApi } from '@/lib/api';
-import type { Skill, SkillVersion, SkillFile } from '@/lib/types';
+import type { Skill, SkillVersion, SkillFile, SkillsShRepoMeta, SkillsShResolveResult, SkillsShSearchItem } from '@/lib/types';
 import SkillEditorDrawer from '@/components/skills/SkillEditorDrawer';
 
 const { Text } = Typography;
@@ -46,6 +50,17 @@ const CATEGORY_MAP: Record<string, string> = { '全部': '', '通用': 'general'
 const CATEGORY_REVERSE: Record<string, string> = Object.fromEntries(Object.entries(CATEGORY_MAP).map(([k, v]) => [v, k]));
 
 type EditorMode = 'view' | 'edit' | 'create';
+
+/** skills.sh 市场搜索结果条目（含 GitHub 仓库元信息） */
+interface ShResult extends SkillsShRepoMeta {
+  key: string;
+  skill_id: string;
+  name: string;
+  source: string;
+  installs: number;
+  description?: string;
+  tags?: string[];
+}
 
 export default function SkillsPage() {
   const [activeCategory, setActiveCategory] = useState('全部');
@@ -66,6 +81,13 @@ export default function SkillsPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
+
+  const [shOpen, setShOpen] = useState(false);
+  const [shInput, setShInput] = useState('');
+  const [shLoading, setShLoading] = useState(false);
+  const [shResults, setShResults] = useState<ShResult[]>([]);
+  const [shSelected, setShSelected] = useState<Set<string>>(new Set());
+  const [shImporting, setShImporting] = useState(false);
 
   const fetchSkills = useCallback(async () => {
     setLoading(true);
@@ -147,6 +169,88 @@ export default function SkillsPage() {
     } finally { setImporting(false); }
   };
 
+  const openShSync = () => {
+    setShOpen(true);
+    setShInput('');
+    setShResults([]);
+    setShSelected(new Set());
+  };
+
+  const handleShSearch = async () => {
+    const input = shInput.trim();
+    if (!input) { message.warning('请输入 skills.sh 链接或关键词'); return; }
+    setShLoading(true);
+    try {
+      let results: ShResult[];
+      const looksLikeRef = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input);
+      if (input.includes('skills.sh/') || looksLikeRef) {
+        const r: SkillsShResolveResult = await skillsApi.shResolve(input);
+        results = [{
+          key: `${r.source}/${r.skill_id}`,
+          skill_id: r.skill_id,
+          name: r.name,
+          source: r.source,
+          installs: r.installs ?? 0,
+          description: r.description || undefined,
+          tags: r.tags,
+          stars: r.stars,
+          forks: r.forks,
+          repo_description: r.repo_description,
+          language: r.language,
+          license: r.license,
+        }];
+      } else {
+        results = (await skillsApi.shSearch(input)).map((s: SkillsShSearchItem) => ({
+          key: `${s.source}/${s.skill_id}`,
+          skill_id: s.skill_id,
+          name: s.name,
+          source: s.source,
+          installs: s.installs,
+          stars: s.stars,
+          forks: s.forks,
+          repo_description: s.repo_description,
+          language: s.language,
+          license: s.license,
+        }));
+      }
+      if (results.length === 0) message.info('未找到匹配的技能');
+      setShResults(results);
+      setShSelected(new Set());
+    } catch (e: any) {
+      message.error(e?.message || '搜索失败');
+    } finally { setShLoading(false); }
+  };
+
+  const toggleShSelect = (key: string) => {
+    setShSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const handleShImport = async () => {
+    const entries = shResults
+      .filter((r) => shSelected.has(r.key))
+      .map((r) => ({ source: r.source, skill_id: r.skill_id }));
+    if (entries.length === 0) { message.warning('请先选择要同步的技能'); return; }
+    setShImporting(true);
+    try {
+      const res = await skillsApi.shImport(entries);
+      if (res.imported.length > 0) message.success(`已同步 ${res.imported.length} 个技能`);
+      if (res.errors.length > 0) {
+        message.error(`${res.errors.length} 个技能同步失败: ${res.errors[0].error}`);
+      }
+      if (res.imported.length > 0) {
+        setShOpen(false);
+        fetchSkills();
+      }
+    } catch (e: any) {
+      message.error(e?.message || '同步失败');
+    } finally { setShImporting(false); }
+  };
+
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="w-full max-w-[1400px] mx-auto px-6 py-8">
@@ -162,6 +266,9 @@ export default function SkillsPage() {
             <Text type="secondary" className="mt-1 block">查看和管理 Agent 从完成任务中学到的技能</Text>
           </div>
           <div className="flex items-center gap-2">
+            <Tooltip title="从 skills.sh 技能市场同步">
+              <Button icon={<CloudSyncOutlined />} onClick={openShSync}>同步</Button>
+            </Tooltip>
             <Tooltip title="从 zip 包导入技能">
               <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>导入</Button>
             </Tooltip>
@@ -372,6 +479,111 @@ export default function SkillsPage() {
             )}
           </Spin>
         </Drawer>
+
+        {/* skills.sh sync modal */}
+        <Modal
+          title={
+            <span className="flex items-center gap-2">
+              <CloudSyncOutlined className="text-primary" />
+              <span className="font-semibold">从 skills.sh 同步</span>
+            </span>
+          }
+          open={shOpen}
+          onCancel={() => setShOpen(false)}
+          width={720}
+          footer={[
+            <Button key="cancel" onClick={() => setShOpen(false)}>取消</Button>,
+            <Button
+              key="sync"
+              type="primary"
+              icon={<CloudSyncOutlined />}
+              loading={shImporting}
+              disabled={shSelected.size === 0}
+              onClick={handleShImport}
+            >
+              同步所选 ({shSelected.size})
+            </Button>,
+          ]}
+        >
+          <div className="space-y-4 pt-2">
+            <div className="flex gap-2">
+              <Input
+                prefix={<SearchOutlined className="text-muted-foreground" />}
+                placeholder="粘贴 skills.sh 链接（如 https://www.skills.sh/vercel-labs/skills/find-skills），或输入关键词搜索"
+                value={shInput}
+                onChange={(e) => setShInput(e.target.value)}
+                onPressEnter={handleShSearch}
+                allowClear
+                size="large"
+              />
+              <Button type="primary" size="large" loading={shLoading} onClick={handleShSearch}>搜索</Button>
+            </div>
+            <Text type="secondary" className="text-xs block">粘贴单个技能链接可直接解析该技能；输入关键词则搜索 skills.sh 技能市场，勾选后点击「同步所选」导入。</Text>
+
+            <Spin spinning={shLoading}>
+              {shResults.length === 0 ? (
+                <Empty description={shLoading ? ' ' : '暂无结果'} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              ) : (
+                <div className="max-h-[360px] overflow-y-auto space-y-2 pr-1">
+                  {shResults.map((r) => {
+                    const checked = shSelected.has(r.key);
+                    return (
+                      <div
+                        key={r.key}
+                        className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
+                          checked ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40'
+                        }`}
+                        onClick={() => toggleShSelect(r.key)}
+                      >
+                        <Checkbox
+                          checked={checked}
+                          className="mt-0.5"
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={() => toggleShSelect(r.key)}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <Text strong className="text-sm">{r.name}</Text>
+                            <Tag color="blue" className="!ml-0 !text-[10px]">{r.source}</Tag>
+                          </div>
+                          {(r.description || r.repo_description) && (
+                            <Text type="secondary" className="text-xs block mt-1 line-clamp-2">
+                              {r.description || r.repo_description}
+                            </Text>
+                          )}
+                          {r.tags && r.tags.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {r.tags.slice(0, 4).map((t) => (
+                                <Tag key={t} className="!text-[10px] !px-1.5 !py-0 rounded-full bg-gray-50 dark:bg-gray-800 border-0">{t}</Tag>
+                              ))}
+                            </div>
+                          )}
+                          <div className="flex flex-wrap items-center gap-3 mt-1.5 text-[11px] text-muted-foreground">
+                            {r.installs > 0 && (
+                              <span className="inline-flex items-center gap-1"><DownloadOutlined className="text-geekblue-500" />{r.installs.toLocaleString()}</span>
+                            )}
+                            {r.stars != null && (
+                              <span className="inline-flex items-center gap-1"><StarOutlined className="text-amber-500" />{r.stars.toLocaleString()}</span>
+                            )}
+                            {r.forks != null && (
+                              <span className="inline-flex items-center gap-1"><ForkOutlined className="text-muted-foreground" />{r.forks.toLocaleString()}</span>
+                            )}
+                            {r.language && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800">{r.language}</span>
+                            )}
+                            {r.license && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800">{r.license}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Spin>
+          </div>
+        </Modal>
 
         {/* Import modal */}
         <Modal

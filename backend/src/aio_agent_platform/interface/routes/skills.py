@@ -20,6 +20,12 @@ from aio_agent_platform.db.connection import get_db
 from aio_agent_platform.db.models import Skill
 from aio_agent_platform.interface.headers import attachment_disposition
 from aio_agent_platform.skills.service import SkillService
+from aio_agent_platform.skills.sh_client import (
+    SkillsShError,
+    fetch_skill,
+    parse_skills_sh_input,
+    search_skills_sh,
+)
 from aio_agent_platform.skills.storage import SCRIPT_EXTENSIONS, SkillStorage
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -124,6 +130,50 @@ class SkillSearchResult(BaseModel):
     score: float
 
 
+class SkillsShSearchItem(BaseModel):
+    skill_id: str
+    name: str
+    source: str
+    installs: int
+    url: str
+    stars: int | None = None
+    forks: int | None = None
+    repo_description: str | None = None
+    language: str | None = None
+    license: str | None = None
+
+
+class SkillsShResolveOut(BaseModel):
+    source: str
+    skill_id: str
+    name: str
+    description: str | None = None
+    category: str
+    tags: list[str] = Field(default_factory=list)
+    content_preview: str = ""
+    files: list[dict] = Field(default_factory=list)
+    installs: int | None = None
+    stars: int | None = None
+    forks: int | None = None
+    repo_description: str | None = None
+    language: str | None = None
+    license: str | None = None
+
+
+class SkillsShImportEntry(BaseModel):
+    source: str = Field(..., min_length=1)
+    skill_id: str = Field(..., min_length=1)
+
+
+class SkillsShImportRequest(BaseModel):
+    entries: list[SkillsShImportEntry] = Field(..., min_length=1)
+
+
+class SkillsShImportResponse(BaseModel):
+    imported: list[dict] = Field(default_factory=list)
+    errors: list[dict] = Field(default_factory=list)
+
+
 # ---- Helpers ----
 
 
@@ -133,6 +183,18 @@ def _get_storage() -> SkillStorage | None:
         return SkillStorage()
     except Exception:
         return None
+
+
+async def _lookup_installs(source: str, skill_id: str) -> int | None:
+    """Best-effort lookup of a skill's install count from the skills.sh search API."""
+    try:
+        matches = await search_skills_sh(skill_id, limit=10)
+    except SkillsShError:
+        return None
+    for m in matches:
+        if m["source"] == source and m["skill_id"] == skill_id:
+            return m["installs"]
+    return None
 
 
 # ---- Endpoints ----
@@ -194,6 +256,105 @@ async def list_skills(
         total=total,
         category=category,
     ).model_dump(mode="json")
+
+
+@router.get("/sh/search", response_model=list[SkillsShSearchItem])
+async def skills_sh_search(
+    user: CurrentUser,
+    q: str = Query(..., min_length=1, max_length=200),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> list[dict]:
+    """Search the skills.sh skill marketplace."""
+    try:
+        return await search_skills_sh(q, limit)
+    except SkillsShError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.get("/sh/resolve", response_model=SkillsShResolveOut)
+async def skills_sh_resolve(
+    user: CurrentUser,
+    url: str | None = Query(default=None),
+    source: str | None = Query(default=None),
+    skill_id: str | None = Query(default=None),
+) -> dict:
+    """Resolve a skills.sh URL (or source+skill_id) into a skill preview.
+
+    Fetches the skill folder from its backing GitHub repo so the user can
+    review name/description/files before importing.
+    """
+    try:
+        if url:
+            src, sid = parse_skills_sh_input(url)
+        elif source and skill_id:
+            src, sid = source, skill_id
+        else:
+            raise SkillsShError("需要 url 或 source+skill_id")
+        data = await fetch_skill(src, sid)
+        installs = await _lookup_installs(src, sid)
+    except SkillsShError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {
+        "source": data["source"],
+        "skill_id": data["skill_id"],
+        "name": data["name"],
+        "description": data["description"],
+        "category": data["category"],
+        "tags": data["tags"],
+        "content_preview": data["content"][:500],
+        "files": [
+            {"filename": f["filename"], "type": f["type"], "size": len(f["content"])}
+            for f in data["files"]
+        ],
+        "installs": installs,
+        "stars": data.get("stars"),
+        "forks": data.get("forks"),
+        "repo_description": data.get("repo_description"),
+        "language": data.get("language"),
+        "license": data.get("license"),
+    }
+
+
+@router.post("/sh/import", response_model=SkillsShImportResponse, status_code=201)
+async def skills_sh_import(
+    req: SkillsShImportRequest,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Import skills from skills.sh by fetching their GitHub folders."""
+    storage = _get_storage()
+    imported: list[dict] = []
+    errors: list[dict] = []
+    for entry in req.entries:
+        try:
+            data = await fetch_skill(entry.source, entry.skill_id)
+            skill = await SkillService.create_skill(
+                db=db,
+                user_id=user.id,
+                name=data["name"],
+                description=data["description"],
+                content=data["content"],
+                tags=data["tags"],
+                category=data["category"],
+                trigger_condition=data["trigger_condition"],
+                storage=storage,
+                files=data["files"] if data["files"] else None,
+            )
+            imported.append(SkillOut.from_model(skill).model_dump(mode="json"))
+        except SkillsShError as e:
+            errors.append({
+                "source": entry.source,
+                "skill_id": entry.skill_id,
+                "error": str(e),
+            })
+        except Exception as e:
+            errors.append({
+                "source": entry.source,
+                "skill_id": entry.skill_id,
+                "error": f"导入失败: {e}",
+            })
+    await db.commit()
+    return {"imported": imported, "errors": errors}
 
 
 @router.post("/import", response_model=SkillOut, status_code=201)

@@ -202,6 +202,11 @@ class ServerSettings(BaseSettings):
                     "Used for generating publicly-accessible image URLs. "
                     "If empty, falls back to http://localhost:{port}.",
     )
+    github_token: str = Field(
+        default="",
+        description="Optional GitHub token to raise the API rate limit when "
+                    "enriching skills.sh search results with repo metadata.",
+    )
 
 
 class AppSettings(BaseSettings):
