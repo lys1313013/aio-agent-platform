@@ -28,6 +28,15 @@ class ChatKind(enum.StrEnum):
 
 
 @dataclass
+class AttachmentInfo:
+    """A file/image the user sent as a separate message (e.g. Feishu file msg)."""
+
+    resource_key: str   # 飞书 file_key / image_key，用于下载
+    resource_type: str  # "file" | "image"
+    filename: str
+
+
+@dataclass
 class InboundEvent:
     """Normalized inbound message from an IM channel.
 
@@ -43,6 +52,7 @@ class InboundEvent:
     chat_kind: ChatKind = ChatKind.DIRECT
     message_id: str | None = None     # 原始消息 ID（用于回复/引用）
     mentions_bot: bool = False        # 群聊中是否 @ 了本机器人
+    attachment: AttachmentInfo | None = None  # 文件/图片消息的附件信息
     raw: dict[str, Any] = field(default_factory=dict)  # 原始 payload，需要时可用
 
 

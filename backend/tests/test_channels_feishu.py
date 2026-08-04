@@ -51,7 +51,18 @@ from aio_agent_platform.channels.feishu.webhook_transport import (
     register_webhook,
 )
 from aio_agent_platform.channels.feishu.ws_transport import FeishuWebSocketTransport
-from aio_agent_platform.channels.pipeline import _dedup, _event_seen, _split_text
+from aio_agent_platform.channels.pipeline import (
+    _PendingAttachment,
+    _build_image_data_uri,
+    _collect_image_attachments,
+    _dedup,
+    _event_seen,
+    _pending_attachments,
+    _pending_key,
+    _pop_pending,
+    _split_text,
+    _strip_internal_keys,
+)
 from aio_agent_platform.db import Session as ChatSession
 from aio_agent_platform.db.models import ChannelBinding, User
 
@@ -151,9 +162,50 @@ def test_normalize_direct_text_message() -> None:
     assert inbound.mentions_bot is False
 
 
-def test_normalize_skips_non_text() -> None:
-    event = _make_event(message_type="image")
+def test_normalize_skips_unsupported_non_text() -> None:
+    event = _make_event(message_type="audio")
     assert normalize_event(uuid4(), "evt_2", event, BOT_APP_ID) is None
+    event = _make_event(message_type="media")
+    assert normalize_event(uuid4(), "evt_2b", event, BOT_APP_ID) is None
+
+
+def test_normalize_file_message_carries_attachment() -> None:
+    event = _make_event(message_type="file")
+    event["event"]["message"]["content"] = json.dumps(
+        {"file_key": "file_v2_abc", "file_name": "合同.pdf"}
+    )
+    inbound = normalize_event(uuid4(), "evt_file", event, BOT_APP_ID)
+    assert inbound is not None
+    assert inbound.text == ""
+    assert inbound.attachment is not None
+    assert inbound.attachment.resource_key == "file_v2_abc"
+    assert inbound.attachment.resource_type == "file"
+    assert inbound.attachment.filename == "合同.pdf"
+
+
+def test_normalize_image_message_carries_attachment() -> None:
+    event = _make_event(message_type="image")
+    event["event"]["message"]["content"] = json.dumps(
+        {"image_key": "img_v2_xyz", "width": 100, "height": 80}
+    )
+    inbound = normalize_event(uuid4(), "evt_img", event, BOT_APP_ID)
+    assert inbound is not None
+    assert inbound.attachment is not None
+    assert inbound.attachment.resource_key == "img_v2_xyz"
+    assert inbound.attachment.resource_type == "image"
+    assert inbound.attachment.filename == "image"
+
+
+def test_normalize_file_message_without_key_skipped() -> None:
+    event = _make_event(message_type="file")
+    event["event"]["message"]["content"] = json.dumps({"file_name": "x.pdf"})
+    assert normalize_event(uuid4(), "evt_file2", event, BOT_APP_ID) is None
+
+
+def test_normalize_text_message_has_no_attachment() -> None:
+    inbound = normalize_event(uuid4(), "evt_text", _make_event(), BOT_APP_ID)
+    assert inbound is not None
+    assert inbound.attachment is None
 
 
 def test_normalize_group_message_with_bot_mention() -> None:
@@ -220,6 +272,61 @@ def test_dedup_expires_old_entries(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "evt_old" not in _event_seen
 
 
+def test_pending_attachment_roundtrip() -> None:
+    _pending_attachments.clear()
+    key = _pending_key(uuid4(), "oc_chat", "ou_user")
+    assert key.endswith("oc_chat:ou_user")
+    ref = {"file_id": "abc123", "filename": "x.pdf", "workspace_path": "uploads/abc_x.pdf"}
+    _pending_attachments[key] = [_PendingAttachment(ref=ref, ts=time.monotonic())]
+    assert _pop_pending(key) == [ref]
+    # 已被清空，再次弹出为空
+    assert _pop_pending(key) == []
+
+
+def test_pending_attachment_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    _pending_attachments.clear()
+    key = _pending_key(uuid4(), "oc_chat2", "ou_user2")
+    ref = {"file_id": "abc", "filename": "x.pdf", "workspace_path": "uploads/abc_x.pdf"}
+    _pending_attachments[key] = [
+        _PendingAttachment(ref=ref, ts=time.monotonic() - 4000)  # 超过 30min TTL
+    ]
+    assert _pop_pending(key) == []
+
+
+# ---------------------------------------------------------------------------
+# 图片多模态直喂 — 纯函数
+# ---------------------------------------------------------------------------
+
+
+def test_build_image_data_uri_format() -> None:
+    uri = _build_image_data_uri(b"\x89PNG", "image/png")
+    assert uri == f"data:image/png;base64,{base64.b64encode(b'\x89PNG').decode()}"
+
+
+def test_collect_image_attachments_extracts_data_uri() -> None:
+    refs = [
+        {"file_id": "f1", "filename": "a.pdf", "workspace_path": "uploads/f1_a.pdf"},
+        {"file_id": "i1", "filename": "image.png", "workspace_path": "uploads/i1_image.png",
+         "mime": "image/png", "size": 100, "_image_data_uri": "data:image/png;base64,AAA"},
+    ]
+    out = _collect_image_attachments(refs)
+    assert len(out) == 1
+    assert out[0]["key"] == "data:image/png;base64,AAA"
+    assert out[0]["filename"] == "image.png"
+    assert out[0]["url"] == "uploads/i1_image.png"
+
+
+def test_collect_image_attachments_empty_without_images() -> None:
+    refs = [{"file_id": "f1", "filename": "a.pdf", "workspace_path": "uploads/f1_a.pdf"}]
+    assert _collect_image_attachments(refs) == []
+    assert _collect_image_attachments([]) == []
+
+
+def test_strip_internal_keys_removes_data_uri() -> None:
+    refs = [{"file_id": "i1", "filename": "image.png", "_image_data_uri": "data:x"}]
+    assert _strip_internal_keys(refs) == [{"file_id": "i1", "filename": "image.png"}]
+
+
 def test_split_text_short_text_unchanged() -> None:
     assert _split_text("hello", 100) == ["hello"]
 
@@ -264,10 +371,17 @@ class _FeishuAPIStub:
         self.send_code = 0
         self.update_code = 0
         self.reaction_code = 0
+        self.download_code = 0
         self.last_send_url: str | None = None
+        self.last_resource_url: str | None = None
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
+        if "/resources/" in path and request.method == "GET":
+            self.last_resource_url = str(request.url)
+            if self.download_code != 0:
+                return httpx.Response(404, json={"code": self.download_code, "msg": "no permission"})
+            return httpx.Response(200, content=b"file-binary-content")
         if "tenant_access_token" in path:
             self.token_calls += 1
             if self.token_code != 0:
@@ -350,6 +464,28 @@ async def test_reactions(feishu_stub) -> None:
     stub.reaction_code = 123
     assert await client.add_reaction("om_1", "Typing") is None
     assert await client.delete_reaction("om_1", "r_1") is False
+
+
+async def test_download_resource_returns_bytes(feishu_stub) -> None:
+    client, stub = feishu_stub
+    data = await client.download_resource("om_1", "file_v2_abc", "file")
+    assert data == b"file-binary-content"
+    assert stub.last_resource_url is not None
+    assert "/messages/om_1/resources/file_v2_abc" in stub.last_resource_url
+    assert "type=file" in stub.last_resource_url
+
+
+async def test_download_resource_failure_returns_none(feishu_stub) -> None:
+    client, stub = feishu_stub
+    stub.download_code = 99991671
+    assert await client.download_resource("om_1", "file_v2_abc", "file") is None
+
+
+async def test_download_image_resource(feishu_stub) -> None:
+    client, stub = feishu_stub
+    data = await client.download_resource("om_2", "img_v2_xyz", "image")
+    assert data == b"file-binary-content"
+    assert "type=image" in stub.last_resource_url
 
 
 # ---------------------------------------------------------------------------

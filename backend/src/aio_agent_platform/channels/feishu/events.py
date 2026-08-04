@@ -19,9 +19,32 @@ from uuid import UUID
 
 import structlog
 
-from aio_agent_platform.channels.adapter import ChatKind, InboundEvent
+from aio_agent_platform.channels.adapter import AttachmentInfo, ChatKind, InboundEvent
 
 logger = structlog.get_logger()
+
+
+def _parse_attachment(message_type: str, content: dict) -> AttachmentInfo | None:
+    """Extract file/image resource info from a Feishu message content."""
+    if message_type == "file":
+        file_key = content.get("file_key", "")
+        if not file_key:
+            return None
+        return AttachmentInfo(
+            resource_key=file_key,
+            resource_type="file",
+            filename=content.get("file_name", "") or "file",
+        )
+    if message_type == "image":
+        image_key = content.get("image_key", "")
+        if not image_key:
+            return None
+        return AttachmentInfo(
+            resource_key=image_key,
+            resource_type="image",
+            filename="image",  # 扩展名下载后按 magic bytes 判定
+        )
+    return None
 
 
 def normalize_event(
@@ -32,26 +55,39 @@ def normalize_event(
 ) -> InboundEvent | None:
     """Convert a Feishu ``im.message.receive_v1`` payload into an InboundEvent.
 
-    Returns None if the message is not a text message (we skip non-text in
-    this milestone).
+    Supports text, file and image messages. ``file`` / ``image`` messages carry
+    an ``attachment`` (resource_key + filename) so the pipeline can download
+    and store the resource; other non-text types are skipped.
     """
     msg = event.get("event", {}).get("message", {}) or {}
 
     message_type = msg.get("message_type")
-    if message_type != "text":
-        logger.debug(
-            "feishu_non_text_skipped",
-            message_type=message_type,
-            chat_id=msg.get("chat_id"),
-        )
-        return None
 
     try:
         content = json.loads(msg.get("content") or "{}")
     except (json.JSONDecodeError, TypeError):
         content = {}
 
-    raw_text = content.get("text", "") or ""
+    attachment = None
+    if message_type == "text":
+        raw_text = content.get("text", "") or ""
+    elif message_type in ("file", "image"):
+        attachment = _parse_attachment(message_type, content)
+        if attachment is None:
+            logger.debug(
+                "feishu_attachment_missing_key",
+                message_type=message_type,
+                chat_id=msg.get("chat_id"),
+            )
+            return None
+        raw_text = ""
+    else:
+        logger.debug(
+            "feishu_non_text_skipped",
+            message_type=message_type,
+            chat_id=msg.get("chat_id"),
+        )
+        return None
 
     # Parse mentions.
     mentions = msg.get("mentions") or []
@@ -84,5 +120,6 @@ def normalize_event(
         chat_kind=chat_kind,
         message_id=msg.get("message_id"),
         mentions_bot=bot_mentioned,
+        attachment=attachment,
         raw=event,
     )

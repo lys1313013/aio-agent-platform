@@ -15,14 +15,16 @@ The pipeline is shared by all transports for a given channel. It:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import time
 from dataclasses import dataclass
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.channels.adapter import ChannelAdapter, InboundEvent
 from aio_agent_platform.channels.binding import (
@@ -38,8 +40,11 @@ from aio_agent_platform.core.chat import (
     build_system_prompt_with_memories,
     filter_tools_by_agent,
     fire_memory_extraction,
+    inject_file_refs_into_message,
     load_agent,
     load_conversation_history,
+    resolve_provider_type,
+    resolve_workspace,
     update_context_summary,
 )
 from aio_agent_platform.core.context import prepare_context
@@ -51,7 +56,12 @@ from aio_agent_platform.db.connection import current_user_id, get_session_factor
 from aio_agent_platform.db.models import (
     ChannelConfig,
     ChannelSessionMapping,
+    LLMModel,
 )
+from aio_agent_platform.interface.routes.chat import _compress_image
+from aio_agent_platform.llm.client import build_user_content
+from aio_agent_platform.storage.client import ObjectStorage
+from aio_agent_platform.storage.workspace import WorkspaceStorage
 
 logger = structlog.get_logger()
 
@@ -76,6 +86,82 @@ def _dedup(event_id: str) -> bool:
 
 # Feishu's per-message text limit is ~30KB; we use a conservative char cap.
 _MAX_CHARS_PER_MESSAGE = 3500
+
+# --- Pending file/image attachments (Feishu file msg → next text msg) ---
+# 飞书文件消息与文字消息分离：文件到达先下载存储，缓存为「待处理附件」，
+# 等用户下一条文字消息到达时注入文件引用一并驱动 Agent。
+_PENDING_TTL_SECONDS = 1800  # 30 分钟
+
+
+@dataclass
+class _PendingAttachment:
+    ref: dict  # FileAttachmentRef 的 dict 形式（file_id/filename/mime/size/workspace_path）
+    ts: float
+
+
+_pending_attachments: dict[str, list[_PendingAttachment]] = {}
+
+
+def _pending_key(channel_id: UUID, chat_id: str, external_id: str) -> str:
+    return f"{channel_id}:{chat_id}:{external_id}"
+
+
+def _pop_pending(key: str) -> list[dict]:
+    """Return non-expired pending attachment refs for a chat, clearing the slot."""
+    now = time.monotonic()
+    # Lazy prune expired chat slots.
+    if len(_pending_attachments) > 1000:
+        for k in [k for k, v in _pending_attachments.items() if now - v[-1].ts > _PENDING_TTL_SECONDS]:
+            _pending_attachments.pop(k, None)
+    items = _pending_attachments.pop(key, [])
+    return [p.ref for p in items if now - p.ts <= _PENDING_TTL_SECONDS]
+
+
+def _sniff_mime(data: bytes) -> str | None:
+    """Detect MIME from magic bytes (images only, used to name image uploads)."""
+    if data[:2] == b"\xff\xd8":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and len(data) > 12 and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+_IMAGE_EXT_BY_MIME = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+
+def _build_image_data_uri(data: bytes, mime: str) -> str:
+    """Base64 data URI for direct multimodal input to vision models."""
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+
+
+def _collect_image_attachments(refs: list[dict]) -> list[dict]:
+    """Extract vision-ready image refs (with cached data URI) for build_user_content."""
+    out: list[dict] = []
+    for r in refs:
+        uri = r.get("_image_data_uri")
+        if uri:
+            out.append({
+                "key": uri,  # 已是 data URI；build_user_content 的 to_data_uri 原样返回
+                "url": r.get("workspace_path", ""),
+                "mime": r.get("mime", "image/jpeg"),
+                "size": r.get("size", 0),
+                "filename": r.get("filename", "image"),
+            })
+    return out
+
+
+def _strip_internal_keys(refs: list[dict]) -> list[dict]:
+    """Remove internal cache keys (``_image_data_uri``) before persisting."""
+    return [{k: v for k, v in r.items() if not k.startswith("_")} for r in refs]
 
 
 @dataclass
@@ -162,7 +248,12 @@ class ChannelInboundPipeline:
                 await self._handle_help(event)
                 return
 
-            # 6. Drive AgentLoop.
+            # 6. File/image message: download + store, wait for next text message.
+            if event.attachment is not None:
+                await self._handle_attachment(db, event, ctx)
+                return
+
+            # 7. Drive AgentLoop.
             await self._drive_agent(db, event, ctx)
 
     # --- Context resolution ---
@@ -283,6 +374,88 @@ class ChannelInboundPipeline:
         )
         await self.adapter.send(event, reply)
 
+    # --- Attachment (file/image) handling ---
+
+    async def _handle_attachment(
+        self, db: AsyncSession, event: InboundEvent, ctx: _ResolvedContext
+    ) -> None:
+        """Download a file/image message into the user's workspace and hold it
+        as a pending attachment for their next text message."""
+        assert ctx.user_id is not None and ctx.session_id is not None
+        assert event.attachment is not None
+
+        session = await db.get(ChatSession, ctx.session_id)
+        if session is None:
+            await self.adapter.send(event, "⚠️ 会话不可用，请发送 /new 后重试。")
+            return
+
+        data = await self.adapter.download_attachment(event)
+        if not data:
+            await self.adapter.send(event, "⚠️ 文件下载失败，请稍后重试。")
+            return
+
+        workspace_id, _slug = await resolve_workspace(db, session, ctx.user_id)
+
+        file_id = uuid4().hex[:8]
+        filename = event.attachment.filename.replace("/", "_").replace("\\", "_")
+        mime = _sniff_mime(data) or "application/octet-stream"
+        if event.attachment.resource_type == "image":
+            ext = _IMAGE_EXT_BY_MIME.get(mime, "")
+            if ext and not filename.lower().endswith(ext):
+                filename = f"{filename}{ext}"
+            # 压缩并缓存 base64 data URI，供视觉模型直喂（与页面 _compress_image 一致）。
+            data, mime = _compress_image(data, mime)
+
+        workspace_path = f"uploads/{file_id}_{filename}"
+        WorkspaceStorage(ObjectStorage()).put_file(str(workspace_id), workspace_path, data)
+
+        ref = {
+            "file_id": file_id,
+            "filename": filename,
+            "mime": mime,
+            "size": len(data),
+            "workspace_path": workspace_path,
+        }
+        if event.attachment.resource_type == "image":
+            ref["_image_data_uri"] = _build_image_data_uri(data, mime)
+        key = _pending_key(self.channel.id, event.chat_id, event.external_id)
+        _pending_attachments.setdefault(key, []).append(
+            _PendingAttachment(ref=ref, ts=time.monotonic())
+        )
+
+        logger.info(
+            "feishu_attachment_stored",
+            workspace_path=workspace_path,
+            size=len(data),
+            resource_type=event.attachment.resource_type,
+        )
+        await self.adapter.send(event, f"📎 已收到 {filename}，请补充你的需求。")
+
+    async def _resolve_vision_capability(
+        self, db: AsyncSession, agent_model_id: UUID | None
+    ) -> tuple[bool, str]:
+        """Resolve (is_multimodal, provider_type_for_content) for the agent's model."""
+        provider_type_for_content = "openai"
+        model = None
+        if agent_model_id:
+            result = await db.execute(
+                select(LLMModel)
+                .options(selectinload(LLMModel.provider))
+                .where(LLMModel.id == agent_model_id)
+            )
+            model = result.scalar_one_or_none()
+        if model is None:
+            result = await db.execute(
+                select(LLMModel)
+                .options(selectinload(LLMModel.provider))
+                .where(LLMModel.is_default, LLMModel.is_active)
+                .limit(1)
+            )
+            model = result.scalar_one_or_none()
+        if model and model.provider:
+            provider_type_for_content = resolve_provider_type(model.provider.provider_type)
+        return bool(model and model.is_multimodal), provider_type_for_content
+
     # --- Agent execution ---
 
     async def _drive_agent(
@@ -290,10 +463,34 @@ class ChannelInboundPipeline:
     ) -> None:
         assert ctx.user_id is not None  # only reached for bound users
         assert ctx.session_id is not None
+
+        # Pending file/image attachments carried by this text message.
+        pending_refs = _pop_pending(
+            _pending_key(self.channel.id, event.chat_id, event.external_id)
+        )
+        user_message_for_llm = (
+            inject_file_refs_into_message(event.text, pending_refs)
+            if pending_refs else event.text
+        )
+
         agent = await load_agent(db, self.channel.agent_id, tenant_id=self.channel.tenant_id)
         if agent is None:
             await self.adapter.send(event, "⚠️ 渠道绑定的智能体不可用，请联系管理员。")
             return
+
+        # 视觉模型：图片以 base64 data URI 直喂；否则图片仅作为工作区路径引用。
+        is_multimodal, provider_type_for_content = await self._resolve_vision_capability(
+            db, agent.model_id
+        )
+        image_attachments = _collect_image_attachments(pending_refs)
+        user_content: str | list[dict] = user_message_for_llm
+        if is_multimodal and image_attachments:
+            user_content = build_user_content(
+                text=user_message_for_llm,
+                attachments=image_attachments,
+                provider_type=provider_type_for_content,
+                to_data_uri=lambda _key, _mime: _key,  # key 已是 data URI
+            )
 
         # Filter tools + apply channel blacklist.
         blacklist = set(self.channel.tool_blacklist or [])
@@ -305,10 +502,17 @@ class ChannelInboundPipeline:
         )
 
         system_prompt = await build_system_prompt_with_memories(
-            db, ctx.user_id, event.text, tools_list, agent=agent
+            db, ctx.user_id, user_message_for_llm, tools_list, agent=agent,
+            workspace_files=pending_refs or None,
         )
 
         history, context_summary = await load_conversation_history(db, ctx.session_id)
+
+        # Resolve workspace so the agent can access uploaded files.
+        session = await db.get(ChatSession, ctx.session_id)
+        workspace_id = workspace_slug = None
+        if session is not None:
+            workspace_id, workspace_slug = await resolve_workspace(db, session, ctx.user_id)
 
         agent_loop = await build_agent_loop(
             self.tool_executor, system_prompt, db,
@@ -316,18 +520,23 @@ class ChannelInboundPipeline:
             agent_temperature=agent.temperature,
             agent_max_iterations=agent.max_iterations,
             agent_enable_retry=agent.enable_retry if agent.enable_retry is not None else True,
+            workspace_id=workspace_id,
+            workspace_slug=workspace_slug,
         )
 
         prepared_messages, _ = await prepare_context(
             system_prompt=system_prompt,
             history=history,
-            user_input=event.text,
+            user_input=user_content if isinstance(user_content, str) else user_message_for_llm,
             provider=agent_loop.provider,
             existing_summary=context_summary,
         )
         processed_history = [
             m for m in prepared_messages
-            if m.role != "system" and not (m.role == "user" and m.content == event.text)
+            if m.role != "system" and not (
+                m.role == "user"
+                and (m.content == user_content or m.content == user_message_for_llm)
+            )
         ]
 
         # Show a typing indicator on the user's message while the agent runs.
@@ -343,13 +552,14 @@ class ChannelInboundPipeline:
             user_id=ctx.user_id,
             role="user",
             content=event.text,
+            file_attachments=_strip_internal_keys(pending_refs) or None,
         ))
         await db.commit()
 
         # 登记在跑任务，供宠物 widget 展示（渠道任务没有浏览器 SSE）
         chat_key = f"{self.channel.id}:{event.chat_id}:{event.external_id}"
         await task_started(
-            ctx.user_id, ctx.session_id, event.text, self.channel.channel_type, chat_key,
+            ctx.user_id, ctx.session_id, user_message_for_llm, self.channel.channel_type, chat_key,
             agent_id=str(self.channel.agent_id),
         )
 
@@ -359,7 +569,7 @@ class ChannelInboundPipeline:
 
         try:
             async for step in agent_loop.run(
-                user_input=event.text,
+                user_input=user_content,
                 user_id=ctx.user_id,
                 session_id=ctx.session_id,
                 conversation_history=processed_history,

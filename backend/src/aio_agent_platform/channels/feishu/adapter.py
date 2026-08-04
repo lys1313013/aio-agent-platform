@@ -66,6 +66,16 @@ class FeishuAdapter(ChannelAdapter):
     async def update(self, message_id: str, text: str) -> None:
         await self.client.update_message(message_id, text)
 
+    async def download_attachment(self, event: InboundEvent) -> bytes | None:
+        """Download the file/image resource attached to an inbound message."""
+        if not event.message_id or not event.attachment:
+            return None
+        return await self.client.download_resource(
+            event.message_id,
+            event.attachment.resource_key,
+            event.attachment.resource_type,
+        )
+
     async def add_reaction(self, event: InboundEvent, emoji_type: str) -> str | None:
         if not event.message_id:
             return None

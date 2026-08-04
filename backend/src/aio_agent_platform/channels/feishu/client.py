@@ -15,6 +15,10 @@ _TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/inter
 _SEND_MSG_URL = "https://open.feishu.cn/open-apis/im/v1/messages"
 _UPDATE_MSG_URL = "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}"
 _REACTIONS_URL = "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions"
+_RESOURCE_URL = (
+    "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{resource_key}"
+)
+# 下载消息资源所需权限：im:resource
 # Minimum refresh buffer — refresh 60s before expiry.
 _TOKEN_REFRESH_BUFFER_SECONDS = 60
 
@@ -128,6 +132,43 @@ class FeishuClient:
             content=_json.dumps(card, ensure_ascii=False),
             reply_to=reply_to,
         )
+
+    async def download_resource(
+        self, message_id: str, resource_key: str, resource_type: str
+    ) -> bytes | None:
+        """Download a message resource (file or image) from Feishu.
+
+        Returns the raw bytes, or None on failure. Requires the ``im:resource``
+        permission on the app.
+        """
+        token = await self.tenant_access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        url = _RESOURCE_URL.format(message_id=message_id, resource_key=resource_key)
+        try:
+            resp = await self._http.get(
+                url, headers=headers, params={"type": resource_type}
+            )
+        except httpx.HTTPError:
+            logger.warning(
+                "feishu_download_resource_http_error",
+                resource_type=resource_type,
+            )
+            return None
+        if resp.status_code != 200:
+            # 错误响应是 JSON 封装的 {"code":..,"msg":..}；成功响应是文件二进制流。
+            try:
+                err = resp.json()
+            except Exception:
+                err = {}
+            logger.warning(
+                "feishu_download_resource_failed",
+                resource_type=resource_type,
+                status=resp.status_code,
+                code=err.get("code"),
+                msg=err.get("msg"),
+            )
+            return None
+        return resp.content
 
     async def update_message(self, message_id: str, text: str) -> bool:
         """Update an existing message's content.
