@@ -52,13 +52,13 @@ from aio_agent_platform.channels.feishu.webhook_transport import (
 )
 from aio_agent_platform.channels.feishu.ws_transport import FeishuWebSocketTransport
 from aio_agent_platform.channels.pipeline import (
-    _PendingAttachment,
     _build_image_data_uri,
     _collect_image_attachments,
     _dedup,
     _event_seen,
     _pending_attachments,
     _pending_key,
+    _PendingAttachment,
     _pop_pending,
     _split_text,
     _strip_internal_keys,
@@ -372,8 +372,12 @@ class _FeishuAPIStub:
         self.update_code = 0
         self.reaction_code = 0
         self.download_code = 0
+        self.upload_code = 0
         self.last_send_url: str | None = None
         self.last_resource_url: str | None = None
+        self.last_send_body = ""
+        self.last_upload_url: str | None = None
+        self.last_upload_body = ""
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -395,10 +399,17 @@ class _FeishuAPIStub:
             return httpx.Response(200, json={"code": self.reaction_code, "data": {"reaction_id": "r_1"}})
         if "/reactions/" in path and request.method == "DELETE":
             return httpx.Response(200, json={"code": self.reaction_code, "data": {}})
+        if path.endswith("/files") and request.method == "POST":
+            self.last_upload_url = str(request.url)
+            self.last_upload_body = request.content.decode("utf-8", errors="replace")
+            if self.upload_code != 0:
+                return httpx.Response(200, json={"code": self.upload_code, "msg": "upload failed"})
+            return httpx.Response(200, json={"code": 0, "data": {"file_key": "file_v2_test"}})
         if request.method == "PUT":
             return httpx.Response(200, json={"code": self.update_code, "data": {}})
         if request.method == "POST" and "/messages" in path:
             self.last_send_url = str(request.url)
+            self.last_send_body = request.content.decode("utf-8", errors="replace")
             return httpx.Response(200, json={"code": self.send_code, "data": {"message_id": "om_123"}})
         return httpx.Response(404, json={"code": 404})
 
@@ -488,6 +499,44 @@ async def test_download_image_resource(feishu_stub) -> None:
     assert "type=image" in stub.last_resource_url
 
 
+async def test_upload_file_returns_file_key(feishu_stub) -> None:
+    client, stub = feishu_stub
+    key = await client.upload_file(b"hello", "data.txt")
+    assert key == "file_v2_test"
+    assert stub.last_upload_url is not None
+    assert stub.last_upload_url.endswith("/im/v1/files")
+    assert "data.txt" in stub.last_upload_body
+
+
+async def test_upload_file_infers_pdf_file_type(feishu_stub) -> None:
+    client, stub = feishu_stub
+    await client.upload_file(b"%PDF", "report.pdf")
+    # multipart 表单应携带 file_type=pdf
+    assert 'name="file_type"' in stub.last_upload_body
+    assert "pdf" in stub.last_upload_body
+
+
+async def test_upload_file_failure_returns_none(feishu_stub) -> None:
+    client, stub = feishu_stub
+    stub.upload_code = 12345
+    assert await client.upload_file(b"x", "a.txt") is None
+
+
+async def test_send_file_uses_file_msg_type(feishu_stub) -> None:
+    client, stub = feishu_stub
+    await client.send_file("oc_1", "file_v2_abc")
+    body = json.loads(stub.last_send_body)
+    assert body["msg_type"] == "file"
+    assert json.loads(body["content"])["file_key"] == "file_v2_abc"
+    assert "receive_id_type=chat_id" in stub.last_send_url
+
+
+async def test_send_file_reply_endpoint(feishu_stub) -> None:
+    client, stub = feishu_stub
+    await client.send_file("oc_1", "file_v2_abc", reply_to="om_parent")
+    assert "/messages/om_parent/reply" in stub.last_send_url
+
+
 # ---------------------------------------------------------------------------
 # FeishuAdapter — 出站语义
 # ---------------------------------------------------------------------------
@@ -566,6 +615,36 @@ async def test_adapter_reaction_delegates_to_client() -> None:
     client.add_reaction.assert_awaited_once_with("om_in", "Typing")
     await adapter.delete_reaction(event, "r_1")
     client.delete_reaction.assert_awaited_once_with("om_in", "r_1")
+
+
+async def test_adapter_send_file_delegates() -> None:
+    adapter, client = _make_adapter()
+    client.upload_file.return_value = "file_v2_up"
+    client.send_file.return_value = "om_file"
+    event = _make_event_obj(mentions_bot=True)
+    result = await adapter.send_file(event, "data.csv", b"csv")
+    assert result == "om_file"
+    client.upload_file.assert_awaited_once_with(b"csv", "data.csv")
+    client.send_file.assert_awaited_once_with(
+        receive_id="oc_chat", file_key="file_v2_up", reply_to="om_in"
+    )
+
+
+async def test_adapter_send_file_direct_chat_no_reply() -> None:
+    adapter, client = _make_adapter()
+    client.upload_file.return_value = "file_v2_up"
+    event = _make_event_obj(mentions_bot=False)
+    await adapter.send_file(event, "a.txt", b"x")
+    client.send_file.assert_awaited_once_with(
+        receive_id="oc_chat", file_key="file_v2_up", reply_to=None
+    )
+
+
+async def test_adapter_send_file_upload_failure() -> None:
+    adapter, client = _make_adapter()
+    client.upload_file.return_value = None
+    assert await adapter.send_file(_make_event_obj(), "a.txt", b"x") is None
+    client.send_file.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

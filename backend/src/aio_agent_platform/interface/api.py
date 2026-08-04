@@ -126,6 +126,14 @@ async def lifespan(app: FastAPI):
 
     ensure_pet_tools_registered(tool_executor)
 
+    # 9.9 Register channel file-send tool handler (飞书渠道向用户发送文件)
+    from aio_agent_platform.channels.file_send import (
+        SEND_FILE_TOOL_NAME,
+        handle_send_file,
+    )
+
+    tool_executor.register_direct_handler(SEND_FILE_TOOL_NAME, handle_send_file)
+
     # 10. MCP Manager — connect to configured MCP Servers
     from aio_agent_platform.tools.mcp.manager import MCPManager
 

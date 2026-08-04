@@ -33,6 +33,11 @@ from aio_agent_platform.channels.binding import (
     issue_bind_code,
     resolve_external_user,
 )
+from aio_agent_platform.channels.file_send import (
+    SEND_FILE_TOOL_SCHEMA,
+    ChannelSendContext,
+    current_channel_send_ctx,
+)
 from aio_agent_platform.core.agent import AgentStep
 from aio_agent_platform.core.chat import (
     background_tasks,
@@ -62,6 +67,7 @@ from aio_agent_platform.interface.routes.chat import _compress_image
 from aio_agent_platform.llm.client import build_user_content
 from aio_agent_platform.storage.client import ObjectStorage
 from aio_agent_platform.storage.workspace import WorkspaceStorage
+from aio_agent_platform.tools.registry import Tool
 
 logger = structlog.get_logger()
 
@@ -501,6 +507,20 @@ class ChannelInboundPipeline:
             self.tool_executor, agent, extra_blacklist=blacklist
         )
 
+        # 飞书渠道注入文件发送工具：schema 供 LLM 调用，Tool 供 system prompt 提及。
+        if self.channel.channel_type == "feishu":
+            fn = SEND_FILE_TOOL_SCHEMA["function"]
+            tools_list = [
+                *tools_list,
+                Tool(
+                    name=fn["name"],
+                    description=fn["description"],
+                    parameters=fn["parameters"],
+                    requires_sandbox=False,
+                ),
+            ]
+            tools_schema = [*tools_schema, SEND_FILE_TOOL_SCHEMA]
+
         system_prompt = await build_system_prompt_with_memories(
             db, ctx.user_id, user_message_for_llm, tools_list, agent=agent,
             workspace_files=pending_refs or None,
@@ -567,6 +587,10 @@ class ChannelInboundPipeline:
         tool_calls_list: list[dict] = []
         tool_results_map: dict[str, dict] = {}
 
+        # 渠道上下文注入：让 send_file_to_user 工具知道发给哪个会话。
+        channel_ctx_token = current_channel_send_ctx.set(
+            ChannelSendContext(adapter=self.adapter, event=event)
+        )
         try:
             async for step in agent_loop.run(
                 user_input=user_content,
@@ -649,6 +673,7 @@ class ChannelInboundPipeline:
             await log_event(ctx.user_id, ctx.session_id, {"type": "error", "message": str(e)})
             return
         finally:
+            current_channel_send_ctx.reset(channel_ctx_token)
             await task_finished(ctx.user_id, ctx.session_id)
             if reaction_id:
                 try:

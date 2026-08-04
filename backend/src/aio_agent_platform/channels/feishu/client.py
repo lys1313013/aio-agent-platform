@@ -18,9 +18,24 @@ _REACTIONS_URL = "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/r
 _RESOURCE_URL = (
     "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{resource_key}"
 )
+_UPLOAD_FILE_URL = "https://open.feishu.cn/open-apis/im/v1/files"
 # 下载消息资源所需权限：im:resource
+# 上传文件所需权限：im:resource
 # Minimum refresh buffer — refresh 60s before expiry.
 _TOKEN_REFRESH_BUFFER_SECONDS = 60
+
+# 飞书 im/v1/files 的 file_type 取值有限（opus/mp4/doc/xls 等），普通文件用 stream。
+_FILE_TYPE_BY_EXTENSION = {
+    ".opus": "opus",
+    ".mp4": "mp4",
+    ".doc": "doc",
+    ".docx": "doc",
+    ".xls": "xls",
+    ".xlsx": "xls",
+    ".ppt": "ppt",
+    ".pptx": "ppt",
+    ".pdf": "pdf",
+}
 
 
 class FeishuClient:
@@ -32,7 +47,7 @@ class FeishuClient:
         self._token: str | None = None
         self._token_expires_at: float = 0.0
         self._lock = asyncio.Lock()
-        self._http = httpx.AsyncClient(timeout=10.0)
+        self._http = httpx.AsyncClient(timeout=60.0)
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -130,6 +145,61 @@ class FeishuClient:
             receive_id_type=receive_id_type,
             msg_type="interactive",
             content=_json.dumps(card, ensure_ascii=False),
+            reply_to=reply_to,
+        )
+
+    async def upload_file(
+        self, file_bytes: bytes, file_name: str, file_type: str | None = None
+    ) -> str | None:
+        """Upload a file to Feishu, returning the file_key for later sending.
+
+        The file_key is bound to the app; use it with ``send_file`` to deliver
+        a ``msg_type="file"`` message. Requires the ``im:resource`` permission.
+        """
+        import os
+
+        if file_type is None:
+            ext = os.path.splitext(file_name)[1].lower()
+            file_type = _FILE_TYPE_BY_EXTENSION.get(ext, "stream")
+        token = await self.tenant_access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            resp = await self._http.post(
+                _UPLOAD_FILE_URL,
+                headers=headers,
+                data={"file_type": file_type, "file_name": file_name},
+                files={"file": (file_name, file_bytes)},
+            )
+        except httpx.HTTPError:
+            logger.warning("feishu_upload_file_http_error", file_name=file_name)
+            return None
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.warning(
+                "feishu_upload_file_failed",
+                file_name=file_name,
+                code=data.get("code"),
+                msg=data.get("msg"),
+            )
+            return None
+        return data.get("data", {}).get("file_key")
+
+    async def send_file(
+        self,
+        receive_id: str,
+        file_key: str,
+        reply_to: str | None = None,
+        receive_id_type: str = "chat_id",
+    ) -> str | None:
+        """Send a file message using a previously uploaded file_key."""
+        import json as _json
+
+        content = _json.dumps({"file_key": file_key}, ensure_ascii=False)
+        return await self.send_message(
+            receive_id=receive_id,
+            receive_id_type=receive_id_type,
+            msg_type="file",
+            content=content,
             reply_to=reply_to,
         )
 

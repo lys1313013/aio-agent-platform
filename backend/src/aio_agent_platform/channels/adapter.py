@@ -119,6 +119,11 @@ class ChannelAdapter:
         """Update an already-sent message (used for streaming simulation)."""
         raise NotImplementedError
 
+    async def send_file(self, event: InboundEvent, filename: str, data: bytes) -> str | None:
+        """Send a file to the originating chat. Returns the message_id, or None
+        if the channel does not support file delivery."""
+        return None
+
     async def add_reaction(self, event: InboundEvent, emoji_type: str) -> str | None:
         """Add an emoji reaction to the inbound message (e.g. typing indicator).
 

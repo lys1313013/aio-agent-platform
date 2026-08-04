@@ -66,6 +66,18 @@ class FeishuAdapter(ChannelAdapter):
     async def update(self, message_id: str, text: str) -> None:
         await self.client.update_message(message_id, text)
 
+    async def send_file(self, event: InboundEvent, filename: str, data: bytes) -> str | None:
+        """Upload and send a file message to the originating chat."""
+        reply_to = event.message_id if event.mentions_bot else None
+        file_key = await self.client.upload_file(data, filename)
+        if not file_key:
+            return None
+        return await self.client.send_file(
+            receive_id=event.chat_id,
+            file_key=file_key,
+            reply_to=reply_to,
+        )
+
     async def download_attachment(self, event: InboundEvent) -> bytes | None:
         """Download the file/image resource attached to an inbound message."""
         if not event.message_id or not event.attachment:
