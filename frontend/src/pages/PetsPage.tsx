@@ -3,6 +3,7 @@ import {
   App,
   Button,
   Card,
+  Dropdown,
   Empty,
   Input,
   Modal,
@@ -15,7 +16,15 @@ import {
   Tooltip,
   Typography,
 } from 'antd';
-import { DeleteOutlined, DownloadOutlined, PlusOutlined, PoweroffOutlined } from '@ant-design/icons';
+import {
+  DeleteOutlined,
+  DownloadOutlined,
+  FolderOpenOutlined,
+  PlusOutlined,
+  PoweroffOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
+import JSZip from 'jszip';
 import { agentsApi, petsApi } from '@/lib/api';
 import type { Agent, PetPackage, PetVisibility, UserPet } from '@/lib/types';
 import PetCanvas from '@/components/pet/PetCanvas';
@@ -400,7 +409,9 @@ export default function PetsPage() {
     pet?: UserPet;
   } | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     agentsApi.list().then(setAgents).catch(() => {});
@@ -435,6 +446,7 @@ export default function PetsPage() {
   }, [activePet]);
 
   const handleUpload = async (file: File) => {
+    setUploading(true);
     try {
       const pkg = await petsApi.upload(file, { idle: 0 });
       message.success(`「${pkg.display_name}」上传成功，请为它分配动画状态`);
@@ -443,6 +455,38 @@ export default function PetsPage() {
       void reload();
     } catch (e) {
       message.error(e instanceof Error ? e.message : '上传失败');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  /** 选择整个文件夹，打包成 zip 后走同一上传接口 */
+  const handleFolderChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length === 0) return;
+    setUploading(true);
+    try {
+      const rel = (files[0] as File & { webkitRelativePath?: string }).webkitRelativePath;
+      const folderName = rel?.split('/')[0] || 'pet';
+      const zip = new JSZip();
+      const added = new Set<string>();
+      for (const f of files) {
+        const p = (f as File & { webkitRelativePath?: string }).webkitRelativePath;
+        if (!p || added.has(p)) continue;
+        added.add(p);
+        zip.file(p, f);
+      }
+      if (added.size === 0) {
+        message.warning('所选文件夹没有可上传的文件');
+        return;
+      }
+      const blob = await zip.generateAsync({ type: 'blob' });
+      await handleUpload(new File([blob], `${folderName}.zip`, { type: 'application/zip' }));
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '打包失败');
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -549,9 +593,22 @@ export default function PetsPage() {
           <span className="text-sm text-muted-foreground">
             显示悬浮宠物 <Switch checked={enabled} onChange={setEnabled} size="small" />
           </span>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => fileRef.current?.click()}>
-            上传宠物包
-          </Button>
+          <Dropdown
+            menu={{
+              items: [
+                { key: 'zip', icon: <UploadOutlined />, label: '上传 zip 文件' },
+                { key: 'folder', icon: <FolderOpenOutlined />, label: '选择文件夹上传' },
+              ],
+              onClick: ({ key }) => {
+                if (key === 'zip') fileRef.current?.click();
+                else folderRef.current?.click();
+              },
+            }}
+          >
+            <Button type="primary" icon={<PlusOutlined />} loading={uploading}>
+              上传宠物包
+            </Button>
+          </Dropdown>
           <input
             ref={fileRef}
             type="file"
@@ -562,6 +619,13 @@ export default function PetsPage() {
               if (f) void handleUpload(f);
               e.target.value = '';
             }}
+          />
+          <input
+            ref={folderRef}
+            type="file"
+            {...({ webkitdirectory: '' } as React.InputHTMLAttributes<HTMLInputElement>)}
+            hidden
+            onChange={handleFolderChange}
           />
         </div>
       </div>

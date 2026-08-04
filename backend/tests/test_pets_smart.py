@@ -43,11 +43,13 @@ async def _cleanup_records(db_session: AsyncSession):
     from aio_agent_platform.db.models import (
         PetExpLog,
         PetPackage,
+        Session,
         User,
         UserPet,
     )
 
     await db_session.execute(PetExpLog.__table__.delete().where(PetExpLog.user_id.in_(_CLEANUP_USER_IDS)))
+    await db_session.execute(Session.__table__.delete().where(Session.user_id.in_(_CLEANUP_USER_IDS)))
     await db_session.execute(UserPet.__table__.delete().where(UserPet.user_id.in_(_CLEANUP_USER_IDS)))
     await db_session.execute(PetPackage.__table__.delete().where(PetPackage.owner_id.in_(_CLEANUP_USER_IDS)))
     await db_session.execute(Agent.__table__.delete().where(Agent.id == AGENT_ID))
@@ -258,3 +260,41 @@ async def test_bubble_rejects_other_user_pet(client: AsyncClient, db_session: As
     await _login_as(client, db_session, other)
     resp = await client.post(f"/api/pets/{pkg['id']}/bubble")
     assert resp.status_code == 404  # 非本人宠物
+
+
+# ---- 接口：右键「对话」依赖的 pet_chat 会话 ----
+
+@pytest.mark.asyncio
+async def test_pet_chat_unbound_returns_400(client: AsyncClient, db_session: AsyncSession):
+    owner = _make_user(OWNER_ID, TENANT_A)
+    await _login_as(client, db_session, owner)
+    _ = await _upload(client)
+    mine = (await client.get("/api/pets/mine")).json()
+    pet_id = mine[0]["id"]
+
+    resp = await client.post(f"/api/pets/{pet_id}/chat")
+    assert resp.status_code == 400
+    assert "绑定" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_pet_chat_bound_creates_and_reuses_session(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner = _make_user(OWNER_ID, TENANT_A)
+    await _login_as(client, db_session, owner)
+    _ = await _upload(client)
+    mine = (await client.get("/api/pets/mine")).json()
+    pet_id = mine[0]["id"]
+    await _make_agent(db_session)
+    await client.put(f"/api/pets/{pet_id}/agent", json={"agent_id": str(AGENT_ID)})
+
+    r1 = await client.post(f"/api/pets/{pet_id}/chat")
+    assert r1.status_code == 200, r1.text
+    body = r1.json()
+    assert body["agent_id"] == str(AGENT_ID)
+    assert body["conversation_id"]
+
+    r2 = await client.post(f"/api/pets/{pet_id}/chat")
+    assert r2.status_code == 200
+    assert r2.json()["conversation_id"] == body["conversation_id"]  # 复用同一会话

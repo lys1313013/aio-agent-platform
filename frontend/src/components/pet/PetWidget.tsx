@@ -1,7 +1,8 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Dropdown, Slider } from 'antd';
+import { Dropdown, Slider, message } from 'antd';
+import { CommentOutlined } from '@ant-design/icons';
 import { petsApi } from '@/lib/api';
 import type { UserPet } from '@/lib/types';
 import { PET_SIZE_MAX, PET_SIZE_MIN, PET_SIZE_STEP, rowName, usePetStore } from '@/stores/petStore';
@@ -522,6 +523,11 @@ function PetWidgetInner() {
 
   const menuItems = [
     {
+      key: 'chat',
+      label: '对话',
+      icon: <CommentOutlined />,
+    },
+    {
       key: 'play',
       label: '播放动画',
       children: Array.from({ length: activePet.package.row_count }, (_, row) => ({
@@ -570,6 +576,18 @@ function PetWidgetInner() {
   ];
 
   const onMenuClick = ({ key }: { key: string }) => {
+    if (key === 'chat') {
+      // 开启/复用宠物闲聊会话并跳转；未绑定智能体时后端返回 400 提示
+      void (async () => {
+        try {
+          const r = await petsApi.petChat(activePet.id);
+          openSession(r.conversation_id, r.agent_id ?? undefined);
+        } catch (err) {
+          message.warning(err instanceof Error ? err.message : '请先为该宠物绑定智能体');
+        }
+      })();
+      return;
+    }
     if (key.startsWith('play-')) {
       const row = Number(key.slice('play-'.length));
       // 菜单手动点播：播久一点（5s）、慢一点（4 FPS），看得清动作
