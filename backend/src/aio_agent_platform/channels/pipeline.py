@@ -131,6 +131,11 @@ class ChannelInboundPipeline:
         # 3. Resolve user + session.
         factory = get_session_factory()
         async with factory() as db:
+            # 渠道配置实时从 DB 读取，不缓存进程内存：管理后台更换 agent 等
+            # 变更会立即生效，避免使用启动时缓存的过期配置。
+            fresh_channel = await db.get(ChannelConfig, self.channel.id)
+            if fresh_channel is not None:
+                self.channel = fresh_channel
             ctx = await self._resolve_context(db, event)
             text = event.text.strip()
 
