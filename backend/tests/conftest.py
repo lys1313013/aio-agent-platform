@@ -1,9 +1,9 @@
 """Test fixtures for agent tests."""
 
 import asyncio
+import configparser
 import os
 from collections.abc import AsyncGenerator
-import configparser
 
 import pytest
 import pytest_asyncio
@@ -19,6 +19,10 @@ os.environ.setdefault(
 os.environ.setdefault("JWT_SECRET", "ci-test-secret-key-0123456789abcdef")
 os.environ.setdefault("STORAGE_ACCESS_KEY", "ci-test-access-key")
 os.environ.setdefault("STORAGE_SECRET_KEY", "ci-test-secret-key")
+
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.pool import NullPool
 
 from aio_agent_platform.db.models import Base
 from aio_agent_platform.interface.api import app
@@ -40,30 +44,26 @@ def get_test_database_url():
     return None
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an event loop for the test session."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+def _guard_test_db(database_url: str) -> None:
+    """拒绝在非回环地址上执行 TRUNCATE，防止误伤远程生产库。"""
+    host = (make_url(database_url).host or "").lower()
+    if host not in ("localhost", "127.0.0.1"):
+        raise RuntimeError(
+            f"refusing to truncate non-loopback test database host: {host}"
+        )
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def engine():
-    """Create a test database engine for each test.
+    """Create the test database engine and schema once per session.
 
-    Skips the test when no database URL is configured or the database
-    is unreachable (e.g. CI without a PostgreSQL service).
+    Skips DB-dependent tests when no database URL is configured or the
+    database is unreachable (e.g. CI without a PostgreSQL service).
     """
     database_url = get_test_database_url()
     if not database_url:
         pytest.skip("DATABASE_URL not configured")
-    engine = create_async_engine(
-        database_url,
-        echo=False,
-        pool_size=1,
-        max_overflow=0,
-    )
+    engine = create_async_engine(database_url, echo=False, poolclass=NullPool)
     try:
         async with asyncio.timeout(5):
             async with engine.connect():
@@ -71,13 +71,21 @@ async def engine():
     except Exception:
         await engine.dispose()
         pytest.skip(f"test database not reachable: {database_url}")
+    async with engine.begin() as conn:
+        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
+        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pg_trgm"'))
+        await conn.run_sync(Base.metadata.create_all)
     yield engine
     await engine.dispose()
 
 
 @pytest_asyncio.fixture
 async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
-    """Create a database session for each test."""
+    """Create a database session for each test, with all tables truncated first."""
+    _guard_test_db(engine.url.render_as_string(hide_password=True))
+    tables = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
+    async with engine.begin() as conn:
+        await conn.execute(text(f"TRUNCATE TABLE {tables}"))
     async_session = sessionmaker(
         engine, class_=AsyncSession, expire_on_commit=False
     )
