@@ -181,7 +181,7 @@ class AgentLoop:
         provider: LLMProvider,
         tool_executor: ToolExecutor,
         system_prompt: str = "",
-        max_iterations: int = 20,
+        max_iterations: int = 100,
         trust_level: str = "ask_dangerous",
         delegation: DelegationContext | None = None,
         event_queue: asyncio.Queue | None = None,

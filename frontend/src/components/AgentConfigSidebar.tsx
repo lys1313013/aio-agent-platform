@@ -822,11 +822,11 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
               {/* Max iterations control */}
               <div className="mt-3">
                 <Text type="secondary" className="text-xs block mb-2">
-                  最大迭代次数（单轮对话内工具调用循环上限，留空使用全局默认 20，上限 100）
+                  最大迭代次数（单轮对话内工具调用循环上限，留空使用全局默认 100，上限 500）
                 </Text>
                 <InputNumber
                   min={1}
-                  max={100}
+                  max={500}
                   step={1}
                   precision={0}
                   value={agentMaxIterations ?? undefined}
@@ -2112,7 +2112,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                             <Text className="text-[11px] text-muted-foreground flex-shrink-0">最大轮次</Text>
                             <InputNumber
                               min={1}
-                              max={100}
+                              max={500}
                               step={1}
                               precision={0}
                               size="small"

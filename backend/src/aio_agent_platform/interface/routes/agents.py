@@ -81,7 +81,7 @@ class AgentCreate(BaseModel):
     enabled_tools: list[str] = Field(default_factory=list)
     mcp_server_ids: list[str] = Field(default_factory=list)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    max_iterations: int | None = Field(default=None, ge=1, le=100)
+    max_iterations: int | None = Field(default=None, ge=1, le=500)
     welcome_message: str | None = None
     starter_prompts: list[dict] | None = None
     enable_memory_extraction: bool = True
@@ -102,7 +102,7 @@ class AgentUpdate(BaseModel):
     enabled_tools: list[str] | None = None
     mcp_server_ids: list[str] | None = None
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    max_iterations: int | None = Field(default=None, ge=1, le=100)
+    max_iterations: int | None = Field(default=None, ge=1, le=500)
     welcome_message: str | None = None
     starter_prompts: list[dict] | None = None
     enable_memory_extraction: bool | None = None
