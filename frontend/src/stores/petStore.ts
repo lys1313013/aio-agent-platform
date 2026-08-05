@@ -18,6 +18,8 @@ export const PET_STATE_LABELS: Record<PetMood, string> = {
   sad: '沮丧',
   sleep: '睡觉',
   happy: '开心',
+  run_right: '向右跑',
+  run_left: '向左跑',
 };
 
 // Codex 标准 9 行动画的默认名（行语义，2026-08-02 校准）

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.cron_jobs.service import CronJobService
 from aio_agent_platform.db.connection import get_db
-from aio_agent_platform.db.models import ChannelConfig, CronJob
+from aio_agent_platform.db.models import ChannelConfig, CronJob, CronJobRun
 
 router = APIRouter(prefix="/api/cron-jobs", tags=["cron-jobs"])
 
@@ -91,6 +91,26 @@ class CronJobListResponse(BaseModel):
     total: int
 
 
+class CronJobRunOut(BaseModel):
+    id: UUID
+    job_id: UUID
+    user_id: UUID
+    status: str
+    session_id: UUID | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    output: str | None = None
+    error: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class CronJobRunListResponse(BaseModel):
+    items: list[CronJobRunOut]
+    total: int
+
+
 # ---- Endpoints ----
 
 
@@ -121,6 +141,7 @@ async def create_cron_job(
     req: CronJobCreate,
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
+    request: Request,
 ) -> dict:
     """Create a new cron job."""
     if not req.cron_expr and not req.run_at:
@@ -144,6 +165,11 @@ async def create_cron_job(
         is_active=req.is_active,
     )
     await db.commit()
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is not None:
+        scheduler.add_job(job)
+
     return CronJobOut.from_model(job).model_dump(mode="json")
 
 
@@ -166,6 +192,7 @@ async def update_cron_job(
     req: CronJobUpdate,
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
+    request: Request,
 ) -> dict:
     """Update a cron job."""
     if req.channel_id is not None:
@@ -187,6 +214,11 @@ async def update_cron_job(
     if not job:
         raise HTTPException(status_code=404, detail="Cron job not found")
     await db.commit()
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is not None:
+        scheduler.update_job(job)
+
     return CronJobOut.from_model(job).model_dump(mode="json")
 
 
@@ -195,9 +227,50 @@ async def delete_cron_job(
     job_id: UUID,
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
+    request: Request,
 ) -> None:
     """Delete a cron job."""
     deleted = await CronJobService.delete_job(db, job_id, user.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Cron job not found")
     await db.commit()
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is not None:
+        scheduler.remove_job(job_id)
+
+
+@router.get("/{job_id}/runs", response_model=CronJobRunListResponse)
+async def list_cron_job_runs(
+    job_id: UUID,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """List execution logs for a cron job."""
+    job = await CronJobService.get_job(db, job_id, user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Cron job not found")
+
+    runs_stmt = (
+        select(CronJobRun)
+        .where(CronJobRun.job_id == job_id)
+        .order_by(CronJobRun.started_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    runs_result = await db.execute(runs_stmt)
+    runs = list(runs_result.scalars().all())
+
+    count_stmt = (
+        select(func.count())
+        .select_from(CronJobRun)
+        .where(CronJobRun.job_id == job_id)
+    )
+    total = (await db.execute(count_stmt)).scalar()
+
+    return CronJobRunListResponse(
+        items=[CronJobRunOut.model_validate(r) for r in runs],
+        total=total or 0,
+    ).model_dump(mode="json")

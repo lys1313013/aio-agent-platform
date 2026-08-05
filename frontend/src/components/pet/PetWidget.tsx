@@ -121,6 +121,9 @@ function PetWidgetInner() {
   const [anchor, setAnchor] = useState<AnchorPos | null>(loadPos);
   const [collapsed, setCollapsed] = useState(false);
   const [bubble, setBubble] = useState<string | null>(null);
+  const [bubbleLoading, setBubbleLoading] = useState(false);
+  /** 拖拽中的奔跑动画行（1 向右 / 2 向左），只在方向翻转时更新 */
+  const [dragRow, setDragRow] = useState<number | null>(null);
   const [tasksExpanded, setTasksExpanded] = useState(false);
   const [myPets, setMyPets] = useState<UserPet[]>([]);
   const [chatDlg, setChatDlg] = useState<{ open: boolean; sessionId: string | null; agentId: string | null }>({
@@ -148,6 +151,11 @@ function PetWidgetInner() {
     moved: boolean;
     lastX?: number;
     lastY?: number;
+    /** 当前奔跑方向：1 向右 / -1 向左 / null 未判定 */
+    lastDir: 1 | -1 | null;
+    /** 方向判定用极值点（距极值回落 5px 才翻转，防抖） */
+    maxX?: number;
+    minX?: number;
   } | null>(null);
   const sleepTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -253,6 +261,8 @@ function PetWidgetInner() {
       bubbleTimeout.current = null;
     }
     bubbleHasText.current = false;
+    // 立即显示「思考中」气泡，LLM 首 token 到达前不给空白
+    setBubbleLoading(true);
     setBubble('');
     bubbleStreamRef.current = petsApi.bubble(pet.id, (ev) => {
       // 收到任何事件说明接口有响应，取消超时兜底
@@ -260,11 +270,17 @@ function PetWidgetInner() {
         clearTimeout(bubbleTimeout.current);
         bubbleTimeout.current = null;
       }
+      setBubbleLoading(false);
       if (ev.type === 'pet_action') {
         usePetStore.getState().playAction(ev.name ?? '');
       } else if (ev.type === 'text_delta') {
-        bubbleHasText.current = true;
-        setBubble((prev) => (prev ?? '') + (ev.text ?? ''));
+        // 首段文本替换占位符，后续增量追加
+        if (!bubbleHasText.current) {
+          bubbleHasText.current = true;
+          setBubble(ev.text ?? '');
+        } else {
+          setBubble((prev) => (prev ?? '') + (ev.text ?? ''));
+        }
       } else if (ev.type === 'bubble_done') {
         bubbleTimer.current = setTimeout(() => setBubble(null), BUBBLE_MS + 1200);
       } else if (ev.type === 'fallback') {
@@ -287,6 +303,7 @@ function PetWidgetInner() {
       if (bubbleHasText.current) return;
       bubbleStreamRef.current?.();
       bubbleStreamRef.current = null;
+      setBubbleLoading(false);
       setBubble(pickBubble());
       bubbleTimer.current = setTimeout(() => setBubble(null), BUBBLE_MS);
     }, BUBBLE_TIMEOUT_MS);
@@ -341,6 +358,7 @@ function PetWidgetInner() {
       baseX: rect.left,
       baseY: rect.top,
       moved: false,
+      lastDir: null,
     };
     el.setPointerCapture(e.pointerId);
   }, []);
@@ -354,18 +372,50 @@ function PetWidgetInner() {
     drag.moved = true;
     const x = Math.min(Math.max(drag.baseX + dx, 0), window.innerWidth - dim);
     const y = Math.min(Math.max(drag.baseY + dy, 0), window.innerHeight - dim);
+    // 拖拽奔跑动画：按 row_mapping 的 run_right/run_left 解析行号（未配置回退 Codex 行1/行2）。
+    // 用「距最近极值点回落 5px」判方向翻转，兼容慢速拖拽且防抖；
+    // 只在翻转时 setDragRow，避免高频 setState 挤掉 canvas 的 rAF 帧
+    const rowCount = activePet?.package.row_count ?? 0;
+    const runRightRow = activePet?.package.row_mapping.run_right ?? 1;
+    const runLeftRow = activePet?.package.row_mapping.run_left ?? 2;
+    if (drag.lastDir === null) {
+      if (x > drag.baseX + 3) {
+        drag.lastDir = 1;
+        drag.maxX = x;
+        if (rowCount > runRightRow) setDragRow(runRightRow);
+      } else if (x < drag.baseX - 3) {
+        drag.lastDir = -1;
+        drag.minX = x;
+        if (rowCount > runLeftRow) setDragRow(runLeftRow);
+      }
+    } else if (drag.lastDir === 1) {
+      drag.maxX = Math.max(drag.maxX ?? x, x);
+      if (x < (drag.maxX ?? x) - 5) {
+        drag.lastDir = -1;
+        drag.minX = x;
+        if (rowCount > runLeftRow) setDragRow(runLeftRow);
+      }
+    } else {
+      drag.minX = Math.min(drag.minX ?? x, x);
+      if (x > (drag.minX ?? x) + 5) {
+        drag.lastDir = 1;
+        drag.maxX = x;
+        if (rowCount > runRightRow) setDragRow(runRightRow);
+      }
+    }
     drag.lastX = x;
     drag.lastY = y;
     // 拖拽中直接改 DOM，不走 React 状态：pointermove 频率高，
     // 每次 setState 重渲染整棵 Dropdown 树会挤掉 canvas 的 rAF 帧，表现为闪烁
     const el = containerRef.current;
     if (el) el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
-  }, [dim]);
+  }, [dim, activePet]);
 
   const onPointerUp = useCallback(() => {
     const drag = dragRef.current;
     dragRef.current = null;
     if (!drag) return;
+    setDragRow(null);
     if (drag.moved) {
       // 松手才提交状态（触发持久化）；React 重渲染后的 style 与拖拽中的 DOM 值一致，无跳变
       setAnchor(fromAbsolute(drag.lastX ?? drag.baseX, drag.lastY ?? drag.baseY, dim));
@@ -379,6 +429,12 @@ function PetWidgetInner() {
       }
     }
   }, [playRowX, playSmartBubble, activePet, dim]);
+
+  // 拖拽中断（浏览器取消指针事件）：清掉奔跑动画与拖拽状态，不触发点击逻辑
+  const onPointerCancel = useCallback(() => {
+    dragRef.current = null;
+    setDragRow(null);
+  }, []);
 
   // 记录右键时的光标位置 + 角色可见内容的包围盒：contextMenu 触发下 antd 强制
   // alignPoint（菜单锚定光标而非宠物），且画布四周有透明边——按内容边缘算 offset 菜单才贴得近
@@ -510,7 +566,7 @@ function PetWidgetInner() {
   const taskPills = taskList.length > 0 ? (
     <div
       className="absolute left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1"
-      style={taskPillBelow ? { top: dim + 6 } : { bottom: dim + (bubble ? 40 : 6) }}
+      style={taskPillBelow ? { top: dim + 6 } : { bottom: dim + ((bubble || bubbleLoading) ? 40 : 6) }}
     >
       <div
         className={`flex flex-col items-center gap-1 ${tasksExpanded ? 'overflow-y-auto' : ''}`}
@@ -663,16 +719,24 @@ function PetWidgetInner() {
     </div>
   ) : (
     <div className="relative cursor-grab active:cursor-grabbing">
-      {bubble && (
+      {(bubbleLoading || bubble) && (
         <div
-          className="pet-bubble absolute left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-full bg-card px-3 py-1 text-xs shadow-lg border border-border text-foreground"
+          className={`pet-bubble absolute left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-full bg-card px-3 py-1 text-xs shadow-lg border border-border text-foreground ${bubbleLoading ? 'pet-bubble-loading' : ''}`}
           style={{ top: -34 }}
         >
-          {bubble}
+          {bubbleLoading ? (
+            <span className="pet-bubble-dots">
+              <span>.</span>
+              <span>.</span>
+              <span>.</span>
+            </span>
+          ) : (
+            bubble
+          )}
         </div>
       )}
       <div ref={bounceRef}>
-        <PetCanvas pkg={activePet.package} mood={effectiveMood} size={size} fixedRow={actionRow ?? undefined} fps={actionFps ?? undefined} />
+        <PetCanvas pkg={activePet.package} mood={effectiveMood} size={size} fixedRow={dragRow ?? actionRow ?? undefined} fps={actionFps ?? undefined} />
       </div>
     </div>
   );
@@ -685,6 +749,7 @@ function PetWidgetInner() {
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
       onContextMenu={onContextMenu}
     >
       <Dropdown

@@ -28,6 +28,7 @@ import type {
   RemoteToolTestResult,
   CronJob,
   CronJobListResponse,
+  CronJobRunListResponse,
   Channel,
   ChannelCreate,
   ChannelUpdate,
@@ -1601,6 +1602,14 @@ export const cronJobsApi = {
 
   delete(id: string) {
     return request<void>(`/cron-jobs/${id}`, { method: 'DELETE' });
+  },
+
+  runs(jobId: string, params?: { limit?: number; offset?: number }) {
+    const searchParams = new URLSearchParams();
+    if (params?.limit) searchParams.set('limit', String(params.limit));
+    if (params?.offset) searchParams.set('offset', String(params.offset));
+    const qs = searchParams.toString();
+    return request<CronJobRunListResponse>(`/cron-jobs/${jobId}/runs${qs ? `?${qs}` : ''}`);
   },
 };
 

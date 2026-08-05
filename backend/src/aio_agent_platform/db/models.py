@@ -838,6 +838,27 @@ class CronJob(Base):
     __table_args__ = ({"comment": "定时任务表"},)
 
 
+class CronJobRun(Base):
+    """Single execution record of a cron job (running/success/failed)."""
+    __tablename__ = "cron_job_runs"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    job_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="关联定时任务ID")
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="任务所属用户ID")
+    status: Mapped[str] = mapped_column(String(32), default="running", comment="运行状态: running/success/failed")
+    session_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="本次执行创建的会话ID")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="开始执行时间")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="结束时间")
+    duration_ms: Mapped[int | None] = mapped_column(Integer, comment="执行耗时(毫秒)")
+    output: Mapped[str | None] = mapped_column(Text, comment="执行输出")
+    error: Mapped[str | None] = mapped_column(Text, comment="错误信息")
+
+    __table_args__ = (
+        Index("idx_cron_job_runs_job", "job_id", "started_at"),
+        {"comment": "定时任务运行日志表"},
+    )
+
+
 # ---- Workspaces ----
 
 

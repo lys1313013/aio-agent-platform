@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -58,7 +59,12 @@ async def lifespan(app: FastAPI):
 
     # 1. Database bootstrap (create tables if not exist — for dev convenience)
     try:
-        await init_db()
+        # 外部 DB 不可达时 30s 内放弃（连接本身另有 8s connect 超时），避免启动无限卡住
+        await asyncio.wait_for(init_db(), timeout=30)
+    except TimeoutError:
+        import structlog
+
+        structlog.get_logger().warning("init_db timeout (database unreachable?)")
     except Exception as e:
         import structlog
 
@@ -134,6 +140,14 @@ async def lifespan(app: FastAPI):
 
     tool_executor.register_direct_handler(SEND_FILE_TOOL_NAME, handle_send_file)
 
+    # 9.10 Register cron channel-notify tool handler (定时任务主动通知渠道)
+    from aio_agent_platform.channels.cron_notify import (
+        NOTIFY_CHANNEL_TOOL_NAME,
+        handle_notify_channel,
+    )
+
+    tool_executor.register_direct_handler(NOTIFY_CHANNEL_TOOL_NAME, handle_notify_channel)
+
     # 10. MCP Manager — connect to configured MCP Servers
     from aio_agent_platform.tools.mcp.manager import MCPManager
 
@@ -161,7 +175,17 @@ async def lifespan(app: FastAPI):
                 "timeout": server.timeout,
             }
             try:
-                await mcp_manager.add_server(server.id, config)
+                # 单个 MCP 服务器连接限时 15s：不可达时跳过该服务器而非卡死启动
+                await asyncio.wait_for(
+                    mcp_manager.add_server(server.id, config), timeout=15
+                )
+            except TimeoutError:
+                import structlog
+                structlog.get_logger().warning(
+                    "mcp_server_startup_timeout",
+                    server_id=str(server.id),
+                    name=server.name,
+                )
             except Exception as e:
                 import structlog
                 structlog.get_logger().warning(
@@ -213,8 +237,11 @@ async def lifespan(app: FastAPI):
     # 12. Cron Job Scheduler — load and schedule all active jobs
     from aio_agent_platform.cron_jobs.scheduler import Scheduler
 
-    async def _push_cron_result_to_channel(db, job, text: str) -> None:
-        """Push the cron job result to the job owner's bound IM account."""
+    async def _push_cron_result_to_channel(db, job, text: str) -> bool:
+        """Push the cron job result to the job owner's bound IM account.
+
+        Returns True only if a message was actually sent.
+        """
         import structlog
         from sqlalchemy import select
 
@@ -224,7 +251,7 @@ async def lifespan(app: FastAPI):
         conn_manager = getattr(app.state, "channel_connection_manager", None)
         if conn_manager is None:
             log.warning("cron_job_channel_manager_unavailable", job_id=str(job.id))
-            return
+            return False
         adapter = conn_manager.get_adapter(job.channel_id)
         client = getattr(adapter, "client", None)
         if client is None:
@@ -233,14 +260,14 @@ async def lifespan(app: FastAPI):
                 job_id=str(job.id),
                 channel_id=str(job.channel_id),
             )
-            return
+            return False
 
         ch_result = await db.execute(
             select(ChannelConfig).where(ChannelConfig.id == job.channel_id)
         )
         channel = ch_result.scalar_one_or_none()
         if channel is None:
-            return
+            return False
         binding_result = await db.execute(
             select(ChannelBinding).where(
                 ChannelBinding.tenant_id == channel.tenant_id,
@@ -256,7 +283,7 @@ async def lifespan(app: FastAPI):
                 user_id=str(job.user_id),
                 channel_id=str(job.channel_id),
             )
-            return
+            return False
 
         message_id = await client.send_card_markdown(
             receive_id=binding.external_id,
@@ -281,9 +308,12 @@ async def lifespan(app: FastAPI):
                 job_id=str(job.id),
                 channel_id=str(job.channel_id),
             )
+        return bool(message_id)
 
-    async def _cron_job_executor(job, db):
+    async def _cron_job_executor(job, db, run_id):
         """Execute a cron job by running its agent with the configured message."""
+        from datetime import UTC, datetime
+
         from sqlalchemy import select
 
         from aio_agent_platform.core.chat import (
@@ -292,10 +322,36 @@ async def lifespan(app: FastAPI):
             filter_tools_by_agent,
             load_agent,
         )
+        from aio_agent_platform.db.models import CronJobRun, User
         from aio_agent_platform.db.models import Session as ChatSession
-        from aio_agent_platform.db.models import User
+
+        started_at = datetime.now(UTC)
+
+        async def _finalize(
+            status: str,
+            *,
+            output: str | None = None,
+            error: str | None = None,
+            session_id=None,
+        ) -> None:
+            """Write the final status/result into the run record (always called)."""
+            run = await db.get(CronJobRun, run_id)
+            if run:
+                run.finished_at = datetime.now(UTC)
+                run.duration_ms = int(
+                    (run.finished_at - started_at).total_seconds() * 1000
+                )
+                if session_id:
+                    run.session_id = session_id
+                run.status = status
+                if output:
+                    run.output = output
+                if error:
+                    run.error = error
+            await db.commit()
 
         if not job.agent_id or not job.message:
+            await _finalize("failed", error="任务未配置 agent 或 message，无法执行")
             return
 
         user_result = await db.execute(select(User).where(User.id == job.user_id))
@@ -307,6 +363,7 @@ async def lifespan(app: FastAPI):
                 job_id=str(job.id),
                 user_id=str(job.user_id),
             )
+            await _finalize("failed", error="任务所属用户不存在")
             return
 
         agent = await load_agent(db, job.agent_id, user=job_user)
@@ -317,12 +374,29 @@ async def lifespan(app: FastAPI):
                 job_id=str(job.id),
                 agent_id=str(job.agent_id),
             )
+            await _finalize("failed", error="任务关联的智能体不存在")
             return
 
         tools_list, tools_schema = filter_tools_by_agent(tool_executor, agent)
+
+        # 配置了渠道时，注入 notify_channel 工具让 agent 决定是否主动通知（默认静默）
+        if job.channel_id:
+            from aio_agent_platform.channels.cron_notify import (
+                NOTIFY_CHANNEL_TOOL_NAME,
+                NOTIFY_CHANNEL_TOOL_SCHEMA,
+            )
+            tools_list = [*tools_list, NOTIFY_CHANNEL_TOOL_NAME]
+            tools_schema = [*tools_schema, NOTIFY_CHANNEL_TOOL_SCHEMA]
+
         system_prompt = await build_system_prompt_with_memories(
             db, job.user_id, job.message, tools_list, agent=agent,
         )
+        if job.channel_id:
+            system_prompt += (
+                "\n\n[通知规则] 你可以调用 notify_channel 工具主动把消息推送到用户的 IM 渠道。"
+                "默认保持静默：只有当发现需要用户关注的问题、或任务要求必须报告结果时才调用；"
+                "一切正常、无需打扰用户时不要调用。"
+            )
         loop = await build_agent_loop(
             tool_executor, system_prompt, db,
             agent_model_id=agent.model_id,
@@ -357,7 +431,21 @@ async def lifespan(app: FastAPI):
         import structlog
         log = structlog.get_logger()
 
+        error_msg = ""
         final_output = ""
+        notify_token = None
+        if job.channel_id:
+            from aio_agent_platform.channels.cron_notify import (
+                CronNotifyContext,
+                current_cron_notify_ctx,
+            )
+            notify_ctx = CronNotifyContext(
+                push_fn=lambda text: _push_cron_result_to_channel(db, job, text),
+                job_id=str(job.id),
+                channel_id=str(job.channel_id),
+            )
+            notify_token = current_cron_notify_ctx.set(notify_ctx)
+
         try:
             async for event in loop.run(
                 user_input=job.message,
@@ -370,13 +458,17 @@ async def lifespan(app: FastAPI):
                     continue
                 elif getattr(event, 'done', False):
                     final_output = getattr(event, 'final_output', '') or ''
-        except Exception:
+        except Exception as exc:
+            error_msg = str(exc) or "agent loop failed"
             log.exception(
                 "cron_job_agent_loop_failed",
                 job_id=str(job.id),
             )
+        finally:
+            if notify_token is not None:
+                current_cron_notify_ctx.reset(notify_token)
 
-        # Save assistant message
+        # Save assistant message + finalize run log record
         if final_output:
             from aio_agent_platform.db.models import Message
             msg = Message(
@@ -386,27 +478,27 @@ async def lifespan(app: FastAPI):
                 content=final_output,
             )
             db.add(msg)
-            await db.commit()
+
+        await _finalize(
+            "success" if final_output else "failed",
+            output=final_output or None,
+            error=None if final_output else (error_msg or "agent loop failed"),
+            session_id=new_session.id,
+        )
+
+        if final_output:
             log.info(
                 "cron_job_executed",
                 job_id=str(job.id),
                 session_id=str(new_session.id),
             )
 
-            if job.channel_id:
-                try:
-                    await _push_cron_result_to_channel(db, job, final_output)
-                except Exception:
-                    log.exception(
-                        "cron_job_channel_push_error",
-                        job_id=str(job.id),
-                        channel_id=str(job.channel_id),
-                    )
-
     scheduler = Scheduler(factory, executor=_cron_job_executor)
     try:
         await scheduler.start()
         app.state.scheduler = scheduler
+        from aio_agent_platform.cron_jobs.scheduler import set_global_scheduler
+        set_global_scheduler(scheduler)
     except Exception as e:
         import structlog
         structlog.get_logger().warning(

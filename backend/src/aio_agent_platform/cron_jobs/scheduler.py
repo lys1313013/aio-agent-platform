@@ -3,20 +3,36 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from aio_agent_platform.cron_jobs.service import CronJobService
-from aio_agent_platform.db.models import CronJob
+from aio_agent_platform.db.models import CronJob, CronJobRun
 
 logger = structlog.get_logger()
 
-JobExecutor = Callable[[CronJob, AsyncSession], Awaitable[None]]
+JobExecutor = Callable[[CronJob, AsyncSession, UUID], Awaitable[None]]
+
+# Module-level singleton so tool handlers / routes can notify the running
+# scheduler when jobs are created/updated/deleted (otherwise changes only
+# take effect after a full restart).
+_global_scheduler: Scheduler | None = None
+
+
+def set_global_scheduler(scheduler: Scheduler) -> None:
+    global _global_scheduler
+    _global_scheduler = scheduler
+
+
+def get_global_scheduler() -> Scheduler | None:
+    return _global_scheduler
 
 
 class Scheduler:
@@ -110,8 +126,6 @@ class Scheduler:
     async def _execute(self, job_id: UUID) -> None:
         """Execute a cron job — called by APScheduler when triggered."""
         async with self._session_factory() as db:
-            from sqlalchemy import select
-
             result = await db.execute(
                 select(CronJob).where(CronJob.id == job_id)
             )
@@ -123,26 +137,64 @@ class Scheduler:
             if not job.is_active:
                 return
 
+            # Set RLS context so future-enforced row policies see this job's owner
+            await db.execute(
+                select(func.set_config("app.current_user_id", str(job.user_id), True))
+            )
+
             # Mark last_run_at
             await CronJobService.mark_run(db, job_id)
-            await db.commit()
+
+            # Create execution log record
+            run = CronJobRun(
+                job_id=job.id,
+                user_id=job.user_id,
+                status="running",
+                started_at=datetime.now(UTC),
+            )
+            db.add(run)
+            await db.flush()
+            run_id = run.id
 
             # For one-shot jobs, deactivate after execution
             if job.run_at and not job.cron_expr:
                 job.is_active = False
-                await db.commit()
                 self.remove_job(job_id)
+
+            await db.commit()
 
             # Execute via registered executor
             if self._executor:
                 try:
-                    await self._executor(job, db)
-                except Exception:
+                    await self._executor(job, db, run_id)
+                except Exception as exc:
                     logger.exception(
                         "cron_job_execution_failed",
                         job_id=str(job_id),
                         name=job.name,
+                        error=str(exc),
                     )
+                    # Fallback: executor raised before it could finalize the run record
+                    run.status = "failed"
+                    run.error = str(exc) or "scheduler execution raised unexpectedly"
+                    run.finished_at = datetime.now(UTC)
+                    if run.started_at:
+                        run.duration_ms = int(
+                            (run.finished_at - run.started_at).total_seconds() * 1000
+                        )
+                    await db.commit()
+                else:
+                    # Safety net: executor returned without finalizing the run —
+                    # never leave a run stuck in "running" forever.
+                    if run.status == "running":
+                        run.status = "failed"
+                        run.error = "executor returned without finalizing the run"
+                        run.finished_at = datetime.now(UTC)
+                        if run.started_at:
+                            run.duration_ms = int(
+                                (run.finished_at - run.started_at).total_seconds() * 1000
+                            )
+                        await db.commit()
             else:
                 logger.info(
                     "cron_job_fired_no_executor",

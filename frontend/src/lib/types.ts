@@ -583,6 +583,24 @@ export interface CronJobListResponse {
   total: number;
 }
 
+export interface CronJobRun {
+  id: string;
+  job_id: string;
+  user_id: string;
+  status: 'running' | 'success' | 'failed';
+  session_id: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  output: string | null;
+  error: string | null;
+}
+
+export interface CronJobRunListResponse {
+  items: CronJobRun[];
+  total: number;
+}
+
 // ---- Pets (Codex-compatible) ----
 
 export type PetVisibility = 'private' | 'tenant' | 'public' | 'official';
@@ -597,6 +615,9 @@ export interface PetRowMapping {
   sad?: number;
   sleep?: number;
   happy?: number;
+  /** 拖拽奔跑动画：向右 / 向左（未配置时前端回退 Codex 行 1/2） */
+  run_right?: number;
+  run_left?: number;
   _row_frames?: number[];
 }
 
@@ -659,7 +680,9 @@ export type PetMood =
   | 'celebrate'
   | 'sad'
   | 'sleep'
-  | 'happy';
+  | 'happy'
+  | 'run_right'
+  | 'run_left';
 
 /** 会话当前处理状态（GET /api/sessions/{id}/status） */
 export interface SessionStatus {

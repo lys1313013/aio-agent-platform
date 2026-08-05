@@ -17,8 +17,8 @@ MAX_LEVEL = 50
 ADMIN_ROLES = {"admin", "superadmin"}
 
 # 平台状态名（row_mapping 的合法 key），idle 必选。
-# 互动菜单/点击播放直接按精灵图行操作，不走 row_mapping，故无额外状态。
-VALID_ROW_STATES = {"idle", "think", "work", "wait", "celebrate", "sad", "sleep", "happy"}
+# run_right/run_left 供拖拽奔跑动画按映射解析行号（未配置时回退 Codex 行1/行2）。
+VALID_ROW_STATES = {"idle", "think", "work", "wait", "celebrate", "sad", "sleep", "happy", "run_right", "run_left"}
 
 # Codex 标准 9 行精灵图布局的默认 行→状态 映射（2026-08-02 用 ~/.codex/pets 下 4 个官方包 + spec 校准）。
 # 行序：0 idle / 1 running-right / 2 running-left / 3 waving / 4 jumping /
@@ -26,6 +26,8 @@ VALID_ROW_STATES = {"idle", "think", "work", "wait", "celebrate", "sad", "sleep"
 # sleep 无对应行 → 不映射，运行期降级 idle。
 DEFAULT_ROW_MAPPING = {
     "idle": 0,
+    "run_right": 1,   # running-right（拖拽向右）
+    "run_left": 2,    # running-left（拖拽向左）
     "think": 8,  # review
     "work": 7,   # running = 活跃工作循环
     "wait": 6,   # waiting
@@ -44,6 +46,8 @@ STATE_LABELS = {
     "sad": "沮丧",
     "sleep": "睡觉",
     "happy": "开心",
+    "run_right": "向右跑",
+    "run_left": "向左跑",
 }
 
 # Codex 标准 9 行精灵图的行名（2026-08-02 校准），缺省动作名占位「动画 N」

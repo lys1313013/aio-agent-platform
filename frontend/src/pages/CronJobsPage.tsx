@@ -7,6 +7,7 @@ import {
   PauseCircleOutlined,
   PlayCircleOutlined,
   RobotOutlined,
+  HistoryOutlined,
 } from '@ant-design/icons';
 import {
   Form,
@@ -23,9 +24,10 @@ import {
   Tooltip,
   Typography,
   Select,
+  Table,
 } from 'antd';
 import { cronJobsApi, agentsApi, channelsApi } from '@/lib/api';
-import type { CronJob, Agent, Channel } from '@/lib/types';
+import type { CronJob, Agent, Channel, CronJobRun } from '@/lib/types';
 import { useAuthStore } from '@/stores/authStore';
 import { Navigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
@@ -46,6 +48,11 @@ export default function CronJobsPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<CronJob | null>(null);
   const [form] = Form.useForm();
+
+  const [runsOpen, setRunsOpen] = useState(false);
+  const [runsJob, setRunsJob] = useState<CronJob | null>(null);
+  const [runs, setRuns] = useState<CronJobRun[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
 
   if (!isAdmin) {
     return <Navigate to="/" replace />;
@@ -155,6 +162,20 @@ export default function CronJobsPage() {
     }
   };
 
+  const openRuns = async (job: CronJob) => {
+    setRunsJob(job);
+    setRunsOpen(true);
+    setRunsLoading(true);
+    try {
+      const result = await cronJobsApi.runs(job.id);
+      setRuns(result.items);
+    } catch (err: any) {
+      message.error(err.message || '加载运行记录失败');
+    } finally {
+      setRunsLoading(false);
+    }
+  };
+
   const getAgentName = (agentId: string | null): string => {
     if (!agentId) return '';
     const agent = agents.find((a) => a.id === agentId);
@@ -196,6 +217,58 @@ export default function CronJobsPage() {
     if (!t) return '从未执行';
     return new Date(t).toLocaleString('zh-CN');
   };
+
+  const formatDuration = (ms: number | null): string => {
+    if (ms == null) return '-';
+    if (ms < 1000) return `${ms} ms`;
+    return `${(ms / 1000).toFixed(1)} s`;
+  };
+
+  const runStatusTag = (status: string) => {
+    if (status === 'success') return <Tag color="green">成功</Tag>;
+    if (status === 'failed') return <Tag color="red">失败</Tag>;
+    return <Tag color="processing">运行中</Tag>;
+  };
+
+  const runsColumns = [
+    {
+      title: '开始时间',
+      dataIndex: 'started_at',
+      key: 'started_at',
+      width: 170,
+      render: (t: string | null) => (t ? new Date(t).toLocaleString('zh-CN') : '-'),
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 90,
+      render: runStatusTag,
+    },
+    {
+      title: '耗时',
+      dataIndex: 'duration_ms',
+      key: 'duration_ms',
+      width: 90,
+      render: formatDuration,
+    },
+    {
+      title: '结果',
+      dataIndex: 'output',
+      key: 'result',
+      render: (_: string, record: CronJobRun) => {
+        if (record.status === 'success') {
+          return (
+            <span className="line-clamp-2 text-xs">{record.output || '(空输出)'}</span>
+          );
+        }
+        if (record.status === 'failed') {
+          return <span className="line-clamp-2 text-xs text-red-500">{record.error || '未知错误'}</span>;
+        }
+        return <span className="text-xs text-muted-foreground">执行中…</span>;
+      },
+    },
+  ];
 
   if (loading) {
     return (
@@ -251,6 +324,14 @@ export default function CronJobsPage() {
                 }
                 extra={
                   <div className="flex items-center gap-1">
+                    <Tooltip title="运行记录">
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<HistoryOutlined />}
+                        onClick={() => openRuns(job)}
+                      />
+                    </Tooltip>
                     <Tooltip title={job.is_active ? '暂停' : '启用'}>
                       <Button
                         size="small"
@@ -397,7 +478,7 @@ export default function CronJobsPage() {
           <Form.Item
             name="channel_id"
             label="推送渠道"
-            tooltip="任务执行完成后，将结果推送到你在该渠道绑定的账号（需先在渠道中完成账号绑定）"
+            tooltip="任务执行时智能体可通过 notify_channel 工具主动推送结果到你在该渠道绑定的账号（默认静默，仅在需要通知用户时才推送；需先在渠道管理中启用渠道并完成账号绑定）"
           >
             <Select
               placeholder="不推送（可选）"
@@ -425,6 +506,25 @@ export default function CronJobsPage() {
             <Switch />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* Run logs Modal */}
+      <Modal
+        title={`运行记录${runsJob ? ` — ${runsJob.name}` : ''}`}
+        open={runsOpen}
+        onCancel={() => setRunsOpen(false)}
+        footer={null}
+        width={720}
+      >
+        <Table<CronJobRun>
+          rowKey="id"
+          loading={runsLoading}
+          columns={runsColumns}
+          dataSource={runs}
+          size="small"
+          pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 条` }}
+          locale={{ emptyText: '暂无运行记录' }}
+        />
       </Modal>
     </div>
   );

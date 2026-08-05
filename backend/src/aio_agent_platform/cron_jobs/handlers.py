@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
+from aio_agent_platform.cron_jobs.scheduler import get_global_scheduler
 from aio_agent_platform.cron_jobs.service import CronJobService
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
 from aio_agent_platform.db.models import Session
@@ -69,6 +70,10 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
         )
         await db.commit()
 
+    scheduler = get_global_scheduler()
+    if scheduler is not None:
+        scheduler.add_job(job)
+
     return (
         f"Cron job created successfully.\n"
         f"  ID: {job.id}\n"
@@ -128,6 +133,9 @@ async def handle_delete_cron_job(arguments: dict, user_id: str, session_id: str,
         await db.commit()
 
     if deleted:
+        scheduler = get_global_scheduler()
+        if scheduler is not None:
+            scheduler.remove_job(job_id)
         return f"Cron job {job_id_str} deleted successfully."
     return f"Error: cron job {job_id_str} not found."
 

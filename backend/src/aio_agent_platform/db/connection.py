@@ -31,6 +31,9 @@ def get_engine() -> AsyncEngine:
             pool_size=20,
             max_overflow=10,
             pool_pre_ping=True,
+            # 外部 DB 不可达时快速失败而非无限挂起：连接 + 连接池 checkout 各 8s 上限
+            connect_args={"timeout": 8},
+            pool_timeout=8,
         )
     return _engine
 
@@ -92,6 +95,9 @@ async def init_db() -> None:
 
 async def _run_manual_migrations(conn) -> None:
     """Idempotent column additions for existing tables."""
+    # DDL 需要 ACCESS EXCLUSIVE 锁，若被其他长事务/残留连接阻塞会无限等锁。
+    # 限定锁等待 10s，超时即放弃让启动继续（迁移幂等，下次启动可重试）。
+    await conn.execute(text("SET LOCAL lock_timeout = '10s'"))
     migrations = [
         # Tenant isolation. Existing installations are moved into one default tenant
         # so their current sharing behaviour is preserved after upgrading.

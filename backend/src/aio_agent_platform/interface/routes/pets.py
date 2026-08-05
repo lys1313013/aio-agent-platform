@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import io
 import json
 import logging
@@ -18,14 +17,13 @@ from sqlalchemy import select
 from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser, DbSession
 from aio_agent_platform.core import task_registry
 from aio_agent_platform.core.task_events import broker
-from aio_agent_platform.core.usage import record_llm_usage
 from aio_agent_platform.db.models import PetPackage, Session, UserPet
 from aio_agent_platform.pets.package import PetPackageError, parse_pet_package
 from aio_agent_platform.pets.service import (
     PetNotFoundError,
     PetService,
 )
-from aio_agent_platform.pets.smart import generate_bubble
+from aio_agent_platform.pets.smart import resolve_bubble_provider, stream_bubble
 
 logger = logging.getLogger("aio_agent_platform.routes.pets")
 
@@ -454,30 +452,14 @@ async def pet_bubble(user_pet_id: UUID, user: CurrentUser, db: DbSession):
         logger.warning("pet_bubble_fallback reason=quota_exceeded user_id=%s pet_id=%s", user.id, user_pet_id)
         return fallback
 
-    try:
-        result = await generate_bubble(db, agent, pet, pkg, mood="happy")
-    except Exception as e:
-        logger.warning("pet_bubble_generation_failed error=%s", e, exc_info=True)
+    provider, model_name = await resolve_bubble_provider(db, agent)
+    if provider is None:
+        logger.warning("pet_bubble_fallback reason=provider_unavailable user_id=%s pet_id=%s", user.id, user_pet_id)
         return fallback
-    if result is None:
-        logger.warning("pet_bubble_fallback reason=generate_failed user_id=%s pet_id=%s", user.id, user_pet_id)
-        return fallback
-    text, action, model_name, usage = result
-    await svc.record_bubble(user.id, user_pet_id)
-    if model_name:
-        record_llm_usage(user.id, model_name, usage)
-
-    actions_list, _ = svc.resolve_actions(pet, pkg)
-    actions_map = {a["name"]: a["row"] for a in actions_list}
-    action_row = actions_map.get(action) if action else None
 
     async def event_stream():
-        if action_row is not None:
-            yield _sse_event({"type": "pet_action", "name": action, "row": action_row})
-        for i in range(0, len(text), 8):
-            yield _sse_event({"type": "text_delta", "text": text[i : i + 8]})
-            await asyncio.sleep(0.02)
-        yield _sse_event({"type": "bubble_done", "text": text})
+        async for ev in stream_bubble(db, user.id, agent, pet, pkg, provider, model_name, mood="happy"):
+            yield _sse_event(ev)
 
     return StreamingResponse(
         event_stream(),

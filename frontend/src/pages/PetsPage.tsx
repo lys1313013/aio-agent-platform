@@ -30,7 +30,7 @@ import type { Agent, PetPackage, PetVisibility, UserPet } from '@/lib/types';
 import PetCanvas from '@/components/pet/PetCanvas';
 import { PET_STATE_LABELS, rowName, usePetStore } from '@/stores/petStore';
 
-const PET_STATES = ['idle', 'think', 'work', 'wait', 'celebrate', 'sad', 'sleep', 'happy'] as const;
+const PET_STATES = ['idle', 'think', 'work', 'wait', 'celebrate', 'sad', 'sleep', 'happy', 'run_right', 'run_left'] as const;
 
 const STATE_LABELS = PET_STATE_LABELS;
 

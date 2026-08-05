@@ -123,8 +123,12 @@ class MCPServerConnection:
 
         url = self.config["url"]
         headers = self.config.get("headers") or None
+        timeout = self.config.get("timeout", 60)
 
-        self._transport_cm = sse_client(url=url, headers=headers)
+        # timeout 同时约束 SSE 建连与 endpoint 事件等待，避免服务器不可达时无限挂起
+        self._transport_cm = sse_client(
+            url=url, headers=headers, timeout=float(timeout), sse_read_timeout=float(timeout)
+        )
         read_stream, write_stream = await self._transport_cm.__aenter__()
 
         self._session_cm = ClientSession(read_stream, write_stream)

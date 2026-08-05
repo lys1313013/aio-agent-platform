@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from aio_agent_platform.core.usage import record_llm_usage
 from aio_agent_platform.db.connection import get_session_factory
 from aio_agent_platform.db.models import LLMModel, PetPackage, Session, UserPet
 from aio_agent_platform.llm import LLMMessage, create_provider
@@ -158,33 +159,124 @@ def parse_bubble_output(raw: str) -> tuple[str, str | None]:
     return text, None
 
 
-async def generate_bubble(
-    db: AsyncSession, agent, pet: UserPet, pkg: PetPackage, mood: str = "happy"
-) -> tuple[str, str | None, str | None, dict | None] | None:
-    """生成一次智能气泡。返回 (text, action_name, model_name, usage)；失败返回 None。"""
+async def stream_bubble(
+    db: AsyncSession,
+    user_id: UUID,
+    agent,
+    pet: UserPet,
+    pkg: PetPackage,
+    provider,
+    model_name: str | None,
+    mood: str = "happy",
+):
+    """流式生成智能气泡事件。yield 事件 dict，正常结束时记录配额/用量，失败时回退 error。
+
+    与旧的 generate_bubble 区别：直接消费 provider.stream()，首 token 一到即吐字，
+    前端不再等整段生成完。气泡输入始终是固定 prompt，无需历史。
+    """
     svc = PetService(db)
     actions, vocab = svc.resolve_actions(pet, pkg)
     actions_map = {a["name"]: a["row"] for a in actions}
-    provider, model_name = await resolve_bubble_provider(db, agent)
-    if provider is None:
-        logger.warning("pet_bubble_generate reason=provider_unavailable")
-        return None
     prompt = build_bubble_prompt(agent, pet, pkg, mood, vocab)
-    response = await provider.complete(
-        messages=[
-            LLMMessage(role="system", content=prompt),
-            LLMMessage(role="user", content="主人戳了你一下，回应一句话并挑个动作"),
-        ],
-        temperature=0.8,
-        max_tokens=80,
-    )
-    text, action = parse_bubble_output(response.content or "")
+
+    raw = ""
+    shown = ""
+    usage = None
+    text_complete = False
+    try:
+        async for chunk in provider.stream(
+            messages=[
+                LLMMessage(role="system", content=prompt),
+                LLMMessage(role="user", content="主人戳了你一下，回应一句话并挑个动作"),
+            ],
+            temperature=0.8,
+            max_tokens=80,
+        ):
+            if chunk.type == "text_delta" and chunk.content:
+                raw += chunk.content
+                if not text_complete:
+                    cur, complete = _extract_text_field(raw)
+                    if cur is not None and len(cur) > len(shown):
+                        delta = cur[len(shown) :]
+                        shown = cur
+                        for i in range(0, len(delta), 8):
+                            yield {"type": "text_delta", "text": delta[i : i + 8]}
+                    if complete:
+                        text_complete = True
+            elif chunk.type == "done":
+                usage = chunk.usage
+    except Exception as e:
+        logger.warning("pet_bubble_stream_failed error=%s", e, exc_info=True)
+        if shown:
+            yield {"type": "bubble_done", "text": shown}
+        else:
+            yield {"type": "error"}
+        return
+
+    text, action = parse_bubble_output(raw)
     if not text:
-        logger.warning("pet_bubble_generate reason=empty_text raw=%s", (response.content or "")[:200])
-        return None
+        logger.warning("pet_bubble_generate reason=empty_text raw=%s", (raw or "")[:200])
+        if shown:
+            yield {"type": "bubble_done", "text": shown}
+        else:
+            yield {"type": "error"}
+        return
     if action and action not in actions_map:
         action = None
-    return text[:MAX_BUBBLE_TEXT], action, model_name, response.usage
+    text = text[:MAX_BUBBLE_TEXT]
+    # 增量提取失败但解析成功时，把最终文本补吐一遍，保证气泡可见
+    if not shown:
+        for i in range(0, len(text), 8):
+            yield {"type": "text_delta", "text": text[i : i + 8]}
+    await svc.record_bubble(user_id, pet.id)
+    if model_name and usage:
+        record_llm_usage(user_id, model_name, usage)
+    if action is not None:
+        yield {"type": "pet_action", "name": action, "row": actions_map[action]}
+    yield {"type": "bubble_done", "text": text}
+
+
+def _extract_text_field(buf: str) -> tuple[str | None, bool]:
+    """从可能未写完的 JSON 前缀中提取 "text" 字段值。
+
+    返回 (value, complete)。value 是当前已见的部分值；complete 表示值已闭合、后续不再变化。
+    找不到 "text" 键时 value 为 None。
+    """
+    idx = buf.find('"text"')
+    while idx != -1:
+        rest = buf[idx + 6 :].lstrip()
+        if not rest.startswith(":"):
+            idx = buf.find('"text"', idx + 6)
+            continue
+        rest = rest[1:].lstrip()
+        if not rest.startswith('"'):
+            return None, False
+        return _parse_json_string_tail(rest[1:])
+    return None, False
+
+
+def _parse_json_string_tail(s: str) -> tuple[str, bool]:
+    """从字符串值内容开头解析 JSON 字符串；返回 (值, 是否已闭合)。未闭合时返回部分值。"""
+    out: list[str] = []
+    escapes = {
+        "n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f",
+        '"': '"', "\\": "\\", "/": "/",
+    }
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "\\":
+            if i + 1 >= n:
+                return "".join(out), False  # 反斜杠悬空，等下一块
+            out.append(escapes.get(s[i + 1], s[i + 1]))
+            i += 2
+            continue
+        if c == '"':
+            return "".join(out), True
+        out.append(c)
+        i += 1
+    return "".join(out), False
 
 
 # ---- pet_action 工具 ----
