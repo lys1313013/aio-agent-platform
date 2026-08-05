@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import structlog
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -39,6 +39,7 @@ from aio_agent_platform.channels.file_send import (
     current_channel_send_ctx,
 )
 from aio_agent_platform.core.agent import AgentStep
+from aio_agent_platform.core.auto_title import generate_session_title
 from aio_agent_platform.core.chat import (
     background_tasks,
     build_agent_loop,
@@ -121,6 +122,11 @@ def _pop_pending(key: str) -> list[dict]:
             _pending_attachments.pop(k, None)
     items = _pending_attachments.pop(key, [])
     return [p.ref for p in items if now - p.ts <= _PENDING_TTL_SECONDS]
+
+
+def _channel_title_prefix(channel_type: str) -> str:
+    """渠道会话标题前缀，便于在会话列表中区分来源渠道。"""
+    return "飞书· " if channel_type == "feishu" else ""
 
 
 def _sniff_mime(data: bytes) -> str | None:
@@ -286,7 +292,7 @@ class ChannelInboundPipeline:
             session = ChatSession(
                 user_id=user_id,
                 agent_id=self.channel.agent_id,
-                title=f"{event.chat_kind.value} · {event.external_id[:8]}",
+                title=f"{_channel_title_prefix(self.channel.channel_type)}{event.chat_kind.value} · {event.external_id[:8]}",
             )
             db.add(session)
             await db.flush()
@@ -358,7 +364,7 @@ class ChannelInboundPipeline:
         session = ChatSession(
             user_id=ctx.user_id,
             agent_id=self.channel.agent_id,
-            title=f"新对话 · {event.external_id[:8]}",
+            title=f"{_channel_title_prefix(self.channel.channel_type)}新对话 · {event.external_id[:8]}",
         )
         db.add(session)
         await db.flush()
@@ -566,6 +572,14 @@ class ChannelInboundPipeline:
         except Exception:
             pass
 
+        # 首条消息并发生成标题（渠道会话与 Web 端一致，覆盖「新对话 · xx」占位标题）
+        title_task: asyncio.Task[str | None] | None = None
+        prior_msg_count = await db.scalar(
+            select(func.count(Message.id)).where(Message.session_id == ctx.session_id)
+        )
+        if not prior_msg_count and (agent.enable_auto_title if agent else True):
+            title_task = asyncio.create_task(generate_session_title(event.text))
+
         # Persist the user message up front so it survives agent failures.
         db.add(Message(
             session_id=ctx.session_id,
@@ -692,6 +706,13 @@ class ChannelInboundPipeline:
         db.add(assistant_msg)
         await db.flush()
         await db.commit()
+
+        # 应用自动生成的标题（与 Agent 循环并发启动的任务）
+        if title_task is not None and session is not None:
+            new_title = await title_task
+            if new_title:
+                session.title = f"{_channel_title_prefix(self.channel.channel_type)}{new_title}"
+                await db.commit()
 
         # 记录最终结果事件，Web 端「重新连接」据此收尾（message_id 供前端定位消息）。
         await log_event(ctx.user_id, ctx.session_id, {"type": "text", "content": final_output})
