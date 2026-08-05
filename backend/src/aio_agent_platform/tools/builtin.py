@@ -860,15 +860,17 @@ CREATE_CRON_JOB = Tool(
                 "type": "string",
                 "description": (
                     "Standard 5-field cron expression (minute hour day month weekday). "
-                    "Example: '0 9 * * *' for daily at 9:00 AM. "
+                    "Times are in Beijing time (UTC+8), write them directly — no UTC conversion needed. "
+                    "Example: '0 16 * * *' for daily at 4:00 PM Beijing time. "
                     "Leave empty if this is a one-time task using run_at."
                 ),
             },
             "run_at": {
                 "type": "string",
                 "description": (
-                    "ISO 8601 datetime string for a one-time execution. "
-                    "Example: '2026-06-15T08:00:00Z'. "
+                    "ISO 8601 datetime string for a one-time execution in Beijing time (UTC+8). "
+                    "Example: '2026-06-15T16:00:00' fires at 4 PM Beijing time. "
+                    "Values without a timezone offset are treated as Beijing time. "
                     "The task will execute once at this time and then auto-deactivate."
                 ),
             },

@@ -35,6 +35,27 @@ import { cn } from '@/lib/utils';
 const { Text } = Typography;
 const { TextArea } = Input;
 
+// datetime-local value is a naive string; treat it as Beijing time (UTC+8)
+const toBeijingIso = (naive: string): string => {
+  const m = naive.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) return new Date(naive).toISOString();
+  const [, y, mo, d, h, mi] = m;
+  const bj = new Date(
+    Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h) - 8, Number(mi)),
+  );
+  return bj.toISOString();
+};
+
+// aware ISO instant -> "YYYY-MM-DDTHH:mm" wall-clock in Beijing time
+const toBeijingLocalInput = (iso: string): string => {
+  const bj = new Date(new Date(iso).getTime() + 8 * 3600 * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${bj.getUTCFullYear()}-${pad(bj.getUTCMonth() + 1)}-${pad(bj.getUTCDate())}` +
+    `T${pad(bj.getUTCHours())}:${pad(bj.getUTCMinutes())}`
+  );
+};
+
 export default function CronJobsPage() {
   const { message } = App.useApp();
   const role = useAuthStore((s) => s.role);
@@ -87,7 +108,7 @@ export default function CronJobsPage() {
         name: job.name,
         agent_id: job.agent_id || undefined,
         cron_expr: job.cron_expr || '',
-        run_at: job.run_at ? job.run_at.slice(0, 16) : '',
+        run_at: job.run_at ? toBeijingLocalInput(job.run_at) : '',
         message: job.message || '',
         task_config_json: job.task_config && Object.keys(job.task_config).length > 0
           ? JSON.stringify(job.task_config, null, 2)
@@ -120,7 +141,7 @@ export default function CronJobsPage() {
         name: values.name,
         agent_id: values.agent_id || null,
         cron_expr: values.cron_expr || null,
-        run_at: values.run_at ? new Date(values.run_at).toISOString() : null,
+        run_at: values.run_at ? toBeijingIso(values.run_at) : null,
         message: values.message || null,
         task_config: taskConfig,
         channel_id: values.channel_id || null,
@@ -462,15 +483,15 @@ export default function CronJobsPage() {
           <Form.Item
             name="cron_expr"
             label="Cron 表达式"
-            tooltip="标准 5 字段 cron: 分 时 日 月 周。留空则使用单次执行时间。"
+            tooltip="标准 5 字段 cron: 分 时 日 月 周。时间为北京时间 (UTC+8)，直接填写，无需换算。留空则使用单次执行时间。"
           >
-            <Input placeholder="0 9 * * * (每天 9:00)" />
+            <Input placeholder="0 16 * * * (每天北京时间 16:00)" />
           </Form.Item>
 
           <Form.Item
             name="run_at"
             label="单次执行时间"
-            tooltip="仅在不填 cron 表达式时生效。到期执行一次后自动停用。"
+            tooltip="仅在不填 cron 表达式时生效。时间为北京时间 (UTC+8)。到期执行一次后自动停用。"
           >
             <Input type="datetime-local" />
           </Form.Item>

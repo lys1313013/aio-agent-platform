@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -19,6 +20,11 @@ from aio_agent_platform.db.models import CronJob, CronJobRun
 logger = structlog.get_logger()
 
 JobExecutor = Callable[[CronJob, AsyncSession, UUID], Awaitable[None]]
+
+# All cron expressions / naive run_at values are interpreted in Beijing time
+# (UTC+8), so users write times directly without UTC conversion. The container
+# may run in UTC, so the timezone is pinned here rather than left to the host.
+CRON_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 # Module-level singleton so tool handlers / routes can notify the running
 # scheduler when jobs are created/updated/deleted (otherwise changes only
@@ -43,7 +49,7 @@ class Scheduler:
         session_factory: async_sessionmaker[AsyncSession],
         executor: JobExecutor | None = None,
     ):
-        self._scheduler = AsyncIOScheduler()
+        self._scheduler = AsyncIOScheduler(timezone=CRON_TIMEZONE)
         self._session_factory = session_factory
         self._executor = executor
 
@@ -118,9 +124,10 @@ class Scheduler:
                     day=parts[2],
                     month=parts[3],
                     day_of_week=parts[4],
+                    timezone=CRON_TIMEZONE,
                 )
         if job.run_at:
-            return DateTrigger(run_date=job.run_at)
+            return DateTrigger(run_date=job.run_at, timezone=CRON_TIMEZONE)
         return None
 
     async def _execute(self, job_id: UUID) -> None:

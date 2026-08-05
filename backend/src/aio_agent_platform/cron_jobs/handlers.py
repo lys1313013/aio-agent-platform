@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import func, select
 
-from aio_agent_platform.cron_jobs.scheduler import get_global_scheduler
+from aio_agent_platform.cron_jobs.scheduler import CRON_TIMEZONE, get_global_scheduler
 from aio_agent_platform.cron_jobs.service import CronJobService
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
 from aio_agent_platform.db.models import Session
@@ -33,6 +34,21 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
         return "Error: name is required"
     if not cron_expr and not run_at:
         return "Error: either cron_expr or run_at must be provided"
+
+    # run_at arrives from the LLM as a string; naive values mean Beijing time.
+    parsed_run_at = None
+    if run_at:
+        if isinstance(run_at, datetime):
+            parsed_run_at = run_at
+        else:
+            try:
+                parsed_run_at = datetime.fromisoformat(
+                    str(run_at).replace("Z", "+00:00")
+                )
+            except ValueError:
+                return f"Error: invalid run_at format: {run_at}"
+        if parsed_run_at.tzinfo is None:
+            parsed_run_at = parsed_run_at.replace(tzinfo=CRON_TIMEZONE)
 
     uid = UUID(user_id)
     agent_id = UUID(agent_id_str) if agent_id_str else None
@@ -64,7 +80,7 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
             agent_id=agent_id,
             message=message,
             cron_expr=cron_expr,
-            run_at=run_at,
+            run_at=parsed_run_at,
             task_config=task_config,
             channel_id=channel_id,
         )
