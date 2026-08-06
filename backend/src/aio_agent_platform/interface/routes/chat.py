@@ -499,12 +499,23 @@ async def chat(
 
     # Build agent loop (using agent's model)
     workspace_id, workspace_slug = await _resolve_workspace(db, session, user.id)
+    delegation = None
+    if agent:
+        delegation = DelegationContext(
+            parent_agent_id=agent.id,
+            delegation_depth=0,
+            max_depth=settings.agent.max_delegation_depth,
+            event_queue=None,
+            workspace_id=workspace_id,
+            workspace_slug=workspace_slug,
+        )
     agent_loop = await _build_agent_loop(
         tool_executor, system_prompt, db,
         agent_model_id=agent_model_id,
         agent_temperature=agent_temperature,
         agent_max_iterations=agent_max_iterations,
         agent_enable_retry=agent_enable_retry,
+        delegation=delegation,
         workspace_id=workspace_id,
         workspace_slug=workspace_slug,
     )
@@ -1015,10 +1026,11 @@ async def chat_stream(
                 # Commit workspace_id so it's persisted
                 await gen_db.commit()
 
-                # Build delegation context if agent has children
+                # Build delegation context when an agent is active (existing child
+                # delegation OR dynamic temp sub-agent spawning).
                 delegation = None
                 event_queue = asyncio.Queue()  # Always create for confirmations + delegation
-                if agent and agent.children:
+                if agent:
                     delegation = DelegationContext(
                         parent_agent_id=agent.id,
                         delegation_depth=0,
@@ -1117,6 +1129,7 @@ async def chat_stream(
                             "child_agent_id": evt.get("child_agent_id", ""),
                             "child_agent_name": evt.get("child_agent_name", ""),
                             "child_agent_icon": evt.get("child_agent_icon", ""),
+                            "is_dynamic": evt.get("is_dynamic", False),
                             "task": evt.get("task", ""),
                             "status": "running",
                             "thinking": "",
@@ -1652,12 +1665,23 @@ async def chat_websocket(
                 agent_temperature = agent.temperature if agent else None
                 agent_max_iterations = agent.max_iterations if agent else None
                 workspace_id, workspace_slug = await _resolve_workspace(db, session, user_id)
+                delegation = None
+                if agent:
+                    delegation = DelegationContext(
+                        parent_agent_id=agent.id,
+                        delegation_depth=0,
+                        max_depth=settings.agent.max_delegation_depth,
+                        event_queue=None,
+                        workspace_id=workspace_id,
+                        workspace_slug=workspace_slug,
+                    )
                 agent_loop = await _build_agent_loop(
                     tool_executor, system_prompt, db,
                     agent_model_id=agent_model_id,
                     agent_temperature=agent_temperature,
                     agent_max_iterations=agent_max_iterations,
                     agent_enable_retry=agent_enable_retry,
+                    delegation=delegation,
                     workspace_id=workspace_id,
                     workspace_slug=workspace_slug,
                 )

@@ -71,6 +71,11 @@ export default function DelegationCard({ delegation }: Props) {
           <span className="text-sm font-medium">
             委派给「{delegation.child_agent_name}」
           </span>
+          {delegation.is_dynamic && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-300 font-medium leading-none">
+              临时
+            </span>
+          )}
           <Tag
             icon={status.icon}
             color={status.color}

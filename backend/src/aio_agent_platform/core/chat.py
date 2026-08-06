@@ -159,19 +159,25 @@ def filter_tools_by_agent(
             kb_count=len(kb_names),
         )
 
-    # Auto-inject delegate_task when agent has children and depth allows.
+    # Auto-inject delegate_task so the agent can delegate to existing children
+    # OR dynamically spawn temp sub-agents, within the depth limit. Available to
+    # every agent (not just ones with pre-associated children).
     max_depth = settings.agent.max_delegation_depth
-    has_children = bool(agent and agent.children)
-    if has_children and delegation_depth < max_depth and "delegate_task" not in blacklist:
+    if (
+        agent is not None
+        and delegation_depth < max_depth
+        and "delegate_task" not in blacklist
+    ):
         dt_tool = next((t for t in all_tools if t.name == "delegate_task"), None)
         if dt_tool and dt_tool not in filtered:
             filtered.append(dt_tool)
-        child_names = [c.name for c in agent.children] if agent else []
+        child_names = [c.name for c in agent.children] if agent and agent.children else []
         logger.info(
             "delegate_task_tool_injected",
             agent_id=str(agent.id) if agent else None,
             children=child_names,
             child_count=len(child_names),
+            dynamic_spawn=True,
         )
 
     # Build OpenAI schema from filtered built-in tools.

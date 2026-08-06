@@ -382,7 +382,11 @@ async def lifespan(app: FastAPI):
             await _finalize("failed", error="任务关联的智能体不存在")
             return
 
-        tools_list, tools_schema = filter_tools_by_agent(tool_executor, agent)
+        # Cron jobs have no delegation context; keep delegate_task out so a
+        # tool that cannot run is never offered.
+        tools_list, tools_schema = filter_tools_by_agent(
+            tool_executor, agent, extra_blacklist={"delegate_task"}
+        )
 
         # 配置了渠道时，注入 notify_channel 工具让 agent 决定是否主动通知（默认静默）
         if job.channel_id:

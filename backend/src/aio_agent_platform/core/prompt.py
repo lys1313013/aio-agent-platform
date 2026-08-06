@@ -94,9 +94,12 @@ def build_system_prompt(
 
         parts.append(f"\nCurrent time: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}")
 
-        # Inject child agents for delegation awareness
+        # Inject delegation guidance: pre-configured child agents, or dynamic spawn
+        has_delegate_tool = _has_delegate_tool(tools)
         if child_agents:
             parts.append(_build_child_agents_section(child_agents))
+        elif has_delegate_tool:
+            parts.append(_build_dynamic_delegation_section())
 
         prompt = "\n".join(parts)
         return _enforce_prompt_budget(prompt)
@@ -122,6 +125,8 @@ def build_system_prompt(
 
     if workspace_files and len(workspace_files) > 0:
         prompt += "\n" + _build_files_section(workspace_files)
+    if _has_delegate_tool(tools) and not child_agents:
+        prompt += "\n" + _build_dynamic_delegation_section()
     return _enforce_prompt_budget(prompt)
 
 
@@ -146,6 +151,25 @@ def _build_child_agents_section(child_agents: list) -> str:
         "- You can delegate multiple tasks in parallel by calling `delegate_task` multiple times"
     )
     return "\n".join(lines)
+
+
+def _has_delegate_tool(tools: list | None) -> bool:
+    """Whether the delegate_task tool is present in the agent's tool list."""
+    return any(getattr(t, "name", None) == "delegate_task" for t in (tools or []))
+
+
+def _build_dynamic_delegation_section() -> str:
+    """Guidance for spawning temporary specialist sub-agents on demand."""
+    return (
+        "\n## 动态子智能体（临时专家）\n"
+        "当某个子任务需要独立专业能力时，你可以通过 `delegate_task` 工具"
+        "**动态创建临时子智能体**来执行，无需预先关联子智能体：\n"
+        "- 调用时提供 `role_name`（角色名）和 `role_description`（职责描述）以及清晰的 `task`，"
+        "系统会自动生成一个该角色的临时专家来完成任务\n"
+        "- 临时专家共享你的沙箱环境，可以读写你创建的文件\n"
+        "- 你可以在同一轮并行创建多个临时专家处理不同子任务\n"
+        "- 临时专家仅在该次任务中存在，不会占用你的智能体列表\n"
+    )
 
 
 def _build_files_section(files: list) -> str:

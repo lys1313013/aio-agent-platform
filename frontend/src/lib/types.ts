@@ -490,6 +490,8 @@ export interface DelegationInfo {
   result?: string;
   error?: string;
   duration_ms?: number;
+  /** Whether this is a dynamically spawned temporary sub-agent (no persistent agent). */
+  is_dynamic?: boolean;
   /** The parent's delegate_task tool_call_id — used for correct actionOrder positioning */
   tool_call_id?: string;
 }

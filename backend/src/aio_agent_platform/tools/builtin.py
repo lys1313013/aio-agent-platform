@@ -427,15 +427,37 @@ DELEGATE_TASK = Tool(
         "Delegate a subtask to a child agent for independent execution. "
         "The child agent runs in the shared sandbox environment and can read/write "
         "files created by the parent. Use this when a task requires specialized "
-        "expertise that a child agent provides. You can delegate multiple tasks "
-        "in parallel by calling this tool multiple times in the same step."
+        "expertise. There are two modes: (1) pass `child_agent_id` to delegate to an "
+        "existing child agent; (2) omit `child_agent_id` and instead provide "
+        "`role_name` + `role_description` to dynamically spawn a temporary specialist "
+        "sub-agent for this task. You can delegate multiple tasks in parallel by "
+        "calling this tool multiple times in the same step."
     ),
     parameters={
         "type": "object",
         "properties": {
             "child_agent_id": {
                 "type": "string",
-                "description": "UUID of the child agent (must be a direct child of the current agent)",
+                "description": (
+                    "UUID of an existing child agent to delegate to. Required for mode (1). "
+                    "Omit this (and provide role_name/role_description instead) to dynamically "
+                    "spawn a temporary sub-agent."
+                ),
+            },
+            "role_name": {
+                "type": "string",
+                "description": (
+                    "Name of the temporary sub-agent to spawn (mode 2). "
+                    "E.g. \"代码审查员\". Required when child_agent_id is omitted."
+                ),
+            },
+            "role_description": {
+                "type": "string",
+                "description": (
+                    "Role and responsibilities of the temporary sub-agent (mode 2). "
+                    "Describe its expertise so the system can build an appropriate system prompt. "
+                    "Required when child_agent_id is omitted."
+                ),
             },
             "task": {
                 "type": "string",
@@ -453,7 +475,7 @@ DELEGATE_TASK = Tool(
                 ),
             },
         },
-        "required": ["child_agent_id", "task"],
+        "required": ["task"],
     },
     requires_sandbox=False,
     permission_level="write",

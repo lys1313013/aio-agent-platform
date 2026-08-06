@@ -289,6 +289,7 @@ export default function ChatPage() {
                 child_agent_id: (event.child_agent_id as string) || '',
                 child_agent_name: (event.child_agent_name as string) || '',
                 child_agent_icon: (event.child_agent_icon as string) || undefined,
+                is_dynamic: Boolean(event.is_dynamic),
                 task: (event.task as string) || '',
                 status: 'running' as const,
                 thinking: '',

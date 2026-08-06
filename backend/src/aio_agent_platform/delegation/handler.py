@@ -6,8 +6,9 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 from sqlalchemy import func, or_, select
@@ -33,6 +34,40 @@ from aio_agent_platform.skills.service import SkillService
 from aio_agent_platform.tools.executor import ToolExecutor
 
 logger = structlog.get_logger()
+
+
+@dataclass
+class DynamicSubAgent:
+    """In-memory stand-in for a temporary sub-agent spawned by the parent agent.
+
+    Mirrors the attributes of the ``Agent`` model that the delegation pipeline
+    reads, so a dynamically created specialist agent can flow through the same
+    tool/prompt/provider build logic without a database row.
+    """
+
+    id: UUID
+    name: str
+    description: str | None = None
+    icon: str = "rocket"
+    system_prompt: str | None = None
+    model_id: None = None
+    enabled_tools: None = None
+    temperature: None = None
+    enable_retry: None = None
+    max_iterations: None = None
+    is_active: bool = True
+    skills: list = field(default_factory=list)
+    knowledge_bases: list = field(default_factory=list)
+    children: list = field(default_factory=list)
+
+
+def _build_dynamic_agent(child_id: UUID, name: str, role_description: str) -> DynamicSubAgent:
+    """Build an in-memory temporary sub-agent from a role description."""
+    return DynamicSubAgent(
+        id=child_id,
+        name=name,
+        description=role_description or None,
+    )
 
 
 async def _set_rls_context(db: AsyncSession, user_id: str) -> None:
@@ -63,16 +98,20 @@ async def handle_delegate_task(
         return "Error: tool executor not available"
 
     child_agent_id = arguments.get("child_agent_id", "")
+    role_name = (arguments.get("role_name", "") or "").strip()
+    role_description = (arguments.get("role_description", "") or "").strip()
     task = arguments.get("task", "")
     context = arguments.get("context", "")
 
-    if not child_agent_id or not task:
-        return "Error: child_agent_id and task are required"
+    if not task:
+        return "Error: task is required"
 
-    try:
-        child_uuid = UUID(child_agent_id)
-    except ValueError:
-        return f"Error: invalid child_agent_id format: {child_agent_id}"
+    # Two modes: delegate to an existing child agent (child_agent_id) OR
+    # dynamically spawn a temporary specialist sub-agent (role_name/role_description).
+    if child_agent_id and (role_name or role_description):
+        return "Error: provide either child_agent_id or role_name/role_description, not both"
+    if not child_agent_id and not role_name and not role_description:
+        return "Error: provide child_agent_id (existing child agent) or role_name/role_description (dynamic spawn)"
 
     parent_agent_id = delegation.parent_agent_id
     new_depth = delegation.delegation_depth + 1
@@ -89,13 +128,23 @@ async def handle_delegate_task(
         current_user_id.set(user_id)
         await _set_rls_context(db, user_id)
 
-        # 1. Load and validate child agent
-        child_agent = await _load_child_agent(db, child_uuid, parent_agent_id, UUID(user_id))
-        if not child_agent:
-            return f"Error: child agent {child_agent_id} not found or not related to parent"
-
-        if not child_agent.is_active:
-            return f"Error: child agent {child_agent.name} is not active"
+        # 1. Resolve child agent: existing associated agent or dynamic temp agent
+        is_dynamic = False
+        if child_agent_id:
+            try:
+                child_uuid = UUID(child_agent_id)
+            except ValueError:
+                return f"Error: invalid child_agent_id format: {child_agent_id}"
+            child_agent = await _load_child_agent(db, child_uuid, parent_agent_id, UUID(user_id))
+            if not child_agent:
+                return f"Error: child agent {child_agent_id} not found or not related to parent"
+            if not child_agent.is_active:
+                return f"Error: child agent {child_agent.name} is not active"
+        else:
+            is_dynamic = True
+            child_uuid = uuid4()
+            child_name = role_name or (role_description[:24] if role_description else "临时子智能体")
+            child_agent = _build_dynamic_agent(child_uuid, child_name, role_description)
 
         # 2. Create delegation record
         delegation_record = Delegation(
@@ -122,6 +171,7 @@ async def handle_delegate_task(
                 "child_agent_id": str(child_uuid),
                 "child_agent_name": child_agent.name,
                 "child_agent_icon": child_agent.icon,
+                "is_dynamic": is_dynamic,
                 "task": task,
                 "depth": new_depth,
                 "tool_call_id": tool_call_id or "",
@@ -316,7 +366,7 @@ async def _load_child_agent(
 
 def _build_child_tools(
     tool_executor: ToolExecutor,
-    child_agent: Agent,
+    child_agent: Agent | DynamicSubAgent,
     current_depth: int,
     max_depth: int,
 ) -> tuple[list, list]:
@@ -348,9 +398,9 @@ def _build_child_tools(
         if kr_tool:
             filtered.append(kr_tool)
 
-    # Auto-inject delegate_task if child has its own children and within depth limit
-    has_children = bool(child_agent.children)
-    if has_children and current_depth < max_depth:
+    # Auto-inject delegate_task so the child can delegate to its own children
+    # OR dynamically spawn temp agents (nested delegation), within the depth limit.
+    if current_depth < max_depth:
         dt_tool = next((t for t in all_tools if t.name == "delegate_task"), None)
         if dt_tool:
             filtered.append(dt_tool)
@@ -375,7 +425,7 @@ async def _build_child_system_prompt(
     user_id: UUID,
     task: str,
     tools_list: list,
-    child_agent: Agent,
+    child_agent: Agent | DynamicSubAgent,
 ) -> str:
     """Build system prompt for child agent with inheritance."""
     # Get memory context
@@ -413,7 +463,7 @@ async def _build_child_system_prompt(
     ) + child_info
 
 
-async def _build_child_provider(db: AsyncSession, child_agent: Agent):
+async def _build_child_provider(db: AsyncSession, child_agent: Agent | DynamicSubAgent):
     """Build LLM provider for child agent with model inheritance."""
     # Try child's model, then default model
     model_to_use = None

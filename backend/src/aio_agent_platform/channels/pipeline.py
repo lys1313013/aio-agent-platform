@@ -579,6 +579,9 @@ class ChannelInboundPipeline:
         # Filter out AskUserQuestion for channel conversations — it would block
         # waiting for a Web UI confirmation that will never come.
         blacklist.add("AskUserQuestion")
+        # Channel conversations have no delegation context (no SSE event loop);
+        # keep delegate_task out so a tool that cannot run is never offered.
+        blacklist.add("delegate_task")
         tools_list, tools_schema = filter_tools_by_agent(
             self.tool_executor, agent, extra_blacklist=blacklist
         )
