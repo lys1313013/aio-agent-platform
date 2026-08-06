@@ -58,6 +58,7 @@ export default function ChatPage() {
 
   const handleSend = useCallback(
     async (content: string) => {
+      gotCommandResultRef.current = false;
       let sessionId = activeSessionId;
 
       // Create a new session if none is active
@@ -116,6 +117,40 @@ export default function ChatPage() {
               const newTitle = event.title as string;
               if (sid && newTitle) {
                 useChatStore.getState().setSessionTitleLocal(sid, newTitle);
+              }
+              break;
+            }
+
+            case 'command_result': {
+              gotCommandResultRef.current = true;
+              const content = (event.content as string) || '';
+              const cmdSessionId = (event.session_id as string) || sessionId;
+              addMessage(cmdSessionId, {
+                id: (event.message_id as string) || `msg-system-${Date.now()}`,
+                role: 'system',
+                content,
+                created_at: new Date().toISOString(),
+              });
+
+              // Apply side effects carried in the command result.
+              const data = (event.data as Record<string, unknown>) || {};
+              if (data.new_session_id) {
+                useChatStore.getState().setActiveSession(data.new_session_id as string);
+              }
+              if (data.deleted_session_id) {
+                useChatStore.getState().deleteSession(data.deleted_session_id as string);
+              }
+              if (data.session_id && data.title) {
+                useChatStore.getState().setSessionTitleLocal(
+                  data.session_id as string,
+                  data.title as string,
+                );
+              }
+              if (data.agent_id || data.workspace_id) {
+                useChatStore.getState().refreshSessions();
+              }
+              if (data.workspace_id) {
+                useChatStore.getState().setSelectedWorkspace(data.workspace_id as string);
               }
               break;
             }
@@ -203,6 +238,15 @@ export default function ChatPage() {
               break;
 
             case 'done': {
+              if (gotCommandResultRef.current) {
+                // Slash-command turn — the system message is already added by
+                // command_result; there is no assistant message to persist.
+                gotCommandResultRef.current = false;
+                setStreaming(IDLE_STREAMING);
+                useChatStore.getState().refreshSessions();
+                flushNext();
+                break;
+              }
               // Message is complete — add to store and clear streaming
               const finalText = (event.content as string) || '';
               const msgId = (event.message_id as string) || `msg-assistant-${Date.now()}`;

@@ -13,6 +13,9 @@ from aio_agent_platform.cron_jobs.handlers import CRON_JOB_HANDLERS
 from aio_agent_platform.db.connection import close_db, init_db
 from aio_agent_platform.delegation import DELEGATION_HANDLERS
 from aio_agent_platform.interaction import INTERACTION_HANDLERS
+
+# Importing the commands package registers all built-in slash commands.
+from aio_agent_platform.interface import commands as _commands  # noqa: F401
 from aio_agent_platform.interface.routes import (
     admin_models_router,
     admin_pets_router,
@@ -22,12 +25,14 @@ from aio_agent_platform.interface.routes import (
     channel_bindings_router,
     channels_router,
     chat_router,
+    commands_router,
     confirmations_router,
     cron_jobs_router,
     delegations_router,
     knowledge_router,
     mcp_servers_router,
     memories_router,
+    models_router,
     pets_router,
     public_router,
     remote_tools_router,
@@ -566,6 +571,8 @@ def create_app() -> FastAPI:
     app.include_router(sessions_router)
     app.include_router(analytics_router)
     app.include_router(chat_router)
+    app.include_router(commands_router)
+    app.include_router(models_router)
     app.include_router(settings_router)
     app.include_router(memories_router)
     app.include_router(pets_router)

@@ -36,6 +36,8 @@ import type {
   PetPackage,
   PetVisibility,
   UserPet,
+  CommandMeta,
+  ModelMeta,
 } from './types';
 
 const API_BASE = '/api';
@@ -1722,6 +1724,22 @@ export const workspacesApi = {
       throw new ApiError(resp.status, errMsg);
     }
     return resp.blob();
+  },
+};
+
+// ---- Slash commands ----
+
+export const commandsApi = {
+  list() {
+    return request<CommandMeta[]>('/commands');
+  },
+};
+
+// ---- Models ----
+
+export const modelsApi = {
+  list() {
+    return request<ModelMeta[]>('/models');
   },
 };
 

@@ -7,12 +7,14 @@ from aio_agent_platform.interface.routes.analytics import router as analytics_ro
 from aio_agent_platform.interface.routes.channels import router as channels_router
 from aio_agent_platform.interface.routes.channels import user_router as channel_bindings_router
 from aio_agent_platform.interface.routes.chat import router as chat_router
+from aio_agent_platform.interface.routes.commands import router as commands_router
 from aio_agent_platform.interface.routes.confirmations import router as confirmations_router
 from aio_agent_platform.interface.routes.cron_jobs import router as cron_jobs_router
 from aio_agent_platform.interface.routes.delegations import router as delegations_router
 from aio_agent_platform.interface.routes.knowledge import router as knowledge_router
 from aio_agent_platform.interface.routes.mcp_servers import router as mcp_servers_router
 from aio_agent_platform.interface.routes.memories import router as memories_router
+from aio_agent_platform.interface.routes.models import router as models_router
 from aio_agent_platform.interface.routes.pets import admin_router as admin_pets_router
 from aio_agent_platform.interface.routes.pets import router as pets_router
 from aio_agent_platform.interface.routes.public import router as public_router
@@ -35,12 +37,14 @@ __all__ = [
     "channel_bindings_router",
     "channels_router",
     "chat_router",
+    "commands_router",
     "confirmations_router",
     "cron_jobs_router",
     "delegations_router",
     "knowledge_router",
     "mcp_servers_router",
     "memories_router",
+    "models_router",
     "pets_router",
     "public_router",
     "remote_tools_router",

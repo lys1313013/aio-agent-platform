@@ -714,6 +714,114 @@ def _sse_event(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+async def _handle_command_stream(
+    req: ChatRequest,
+    request: Request,
+    user: User,
+    db: AsyncSession,
+) -> StreamingResponse:
+    """Intercept a slash-command message: run it without entering AgentLoop.
+
+    The user's message is persisted as a ``user`` message, the command result
+    as a ``system`` message (filtered out of LLM context by
+    ``_load_conversation_history``), and a ``command_result`` SSE event is
+    streamed back with optional ``data`` for frontend side effects.
+    """
+    import time as _time
+
+    from aio_agent_platform.interface.commands import CommandContext, dispatch
+
+    t_start = _time.monotonic()
+    logger.info("command_intercepted", user_id=str(user.id), message=req.message[:100])
+
+    # Resolve or create a session — command results persist into it.
+    session = None
+    if req.session_id:
+        result = await db.execute(
+            select(Session).where(
+                Session.id == req.session_id, Session.user_id == user.id
+            )
+        )
+        session = result.scalar_one_or_none()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+    if session is None:
+        session = Session(user_id=user.id, agent_id=req.agent_id, title="新对话")
+        db.add(session)
+        await db.flush()
+    session_id = session.id
+
+    # Persist the user's command message (same shape as a normal chat message).
+    _attachments_data = (
+        [a.model_dump() for a in req.attachments] if req.attachments else None
+    )
+    _file_attachments_data = _file_refs_to_dicts(req.file_attachments)
+    user_msg = Message(
+        session_id=session_id,
+        user_id=user.id,
+        role="user",
+        content=req.message,
+        attachments=_attachments_data,
+        file_attachments=_file_attachments_data,
+    )
+    db.add(user_msg)
+
+    ctx = CommandContext(
+        user=user,
+        user_id=str(user.id),
+        db=db,
+        raw=req.message.strip(),
+        session_id=str(session_id),
+        session=session,
+        tool_executor=getattr(request.app.state, "tool_executor", None),
+    )
+    result = await dispatch(ctx)
+
+    target_session_id = result.session_id or str(session_id)
+    sys_msg = Message(
+        session_id=UUID(target_session_id),
+        user_id=user.id,
+        role="system",
+        content=result.content,
+    )
+    db.add(sys_msg)
+    await db.commit()
+    await db.refresh(sys_msg)
+
+    logger.info(
+        "command_result",
+        user_id=str(user.id),
+        command=req.message.strip().split()[0] if req.message.strip() else "",
+        session_id=target_session_id,
+        elapsed_ms=round((_time.monotonic() - t_start) * 1000, 2),
+    )
+
+    async def event_generator():
+        try:
+            yield _sse_event(
+                {
+                    "type": "command_result",
+                    "message_id": str(sys_msg.id),
+                    "session_id": target_session_id,
+                    "content": result.content,
+                    "data": result.data,
+                }
+            )
+            yield _sse_event({"type": "done", "command": True})
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.post("/stream")
 async def chat_stream(
     req: ChatRequest,
@@ -722,6 +830,10 @@ async def chat_stream(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StreamingResponse:
     """Streaming chat via Server-Sent Events."""
+    # Slash command interception — commands run without entering AgentLoop.
+    if req.message.strip().startswith("/"):
+        return await _handle_command_stream(req, request, user, db)
+
     import time
     t_start = time.monotonic()
     tool_executor: ToolExecutor = request.app.state.tool_executor

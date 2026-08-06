@@ -65,6 +65,31 @@ export interface ChatResponse {
   done: boolean;
 }
 
+export interface CommandArgMeta {
+  name: string;
+  required: boolean;
+  variadic: boolean;
+  choices: string[] | null;
+  hint: string | null;
+}
+
+export interface CommandMeta {
+  name: string;
+  aliases: string[];
+  group: string;
+  desc: string;
+  usage: string;
+  args: CommandArgMeta[];
+  dynamic: boolean;
+}
+
+export interface ModelMeta {
+  id: string;
+  name: string;
+  provider: string | null;
+  is_default: boolean;
+}
+
 /** Streaming state during a WebSocket conversation */
 export interface StreamingState {
   thinking: string;
@@ -116,6 +141,7 @@ export interface WsServerMessage {
     | 'error'
     | 'session'
     | 'session_title'
+    | 'command_result'
     | 'delegation_start'
     | 'delegation_end'
     | 'confirmation_required'
@@ -128,6 +154,8 @@ export interface WsServerMessage {
   status?: string;
   preview?: string;
   message?: string;
+  // Command result fields
+  data?: Record<string, unknown>;
   // Delegation fields
   delegation_id?: string;
   child_agent_id?: string;

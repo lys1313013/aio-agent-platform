@@ -1,10 +1,12 @@
-import { useState, useRef, useCallback, useEffect, type FormEvent, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo, type FormEvent, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
 import { SendOutlined, StopOutlined, PictureOutlined, FileOutlined, CloseOutlined, LoadingOutlined, FileTextOutlined, FolderOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { Input, Button, App, Image, Tooltip, Select } from 'antd';
 import { chatApi } from '@/lib/api';
 import { useChatStore } from '@/stores/chatStore';
+import { useCommandStore } from '@/stores/commandStore';
 import { MAX_QUEUED_MESSAGES, type QueuedMessage } from '@/hooks/useMessageQueue';
-import type { ChatAttachment, FileAttachmentRef } from '@/lib/types';
+import type { ChatAttachment, CommandMeta, FileAttachmentRef } from '@/lib/types';
+import CommandMenu from './CommandMenu';
 
 const { TextArea } = Input;
 
@@ -67,11 +69,39 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [commandIndex, setCommandIndex] = useState(0);
+  const [commandDismissed, setCommandDismissed] = useState(false);
   const textareaRef = useRef<any>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { message } = App.useApp();
   const { workspaces, selectedWorkspaceId, isWorkspacesLoading, setSelectedWorkspace, loadWorkspaces } = useChatStore();
+
+  // Load the slash-command catalog once so the palette can be populated.
+  const loadCommands = useCommandStore((s) => s.load);
+  const searchCommands = useCommandStore((s) => s.search);
+  useEffect(() => {
+    loadCommands();
+  }, [loadCommands]);
+
+  const isCommandInput = !simple && input.startsWith('/');
+  const commandMenuOpen = isCommandInput && !commandDismissed;
+  const commandItems = useMemo(
+    () => (commandMenuOpen ? searchCommands(input.slice(1)) : []),
+    [commandMenuOpen, input, searchCommands],
+  );
+
+  // Reset palette navigation whenever the input changes or the palette closes.
+  useEffect(() => {
+    setCommandIndex(0);
+    setCommandDismissed(false);
+  }, [input]);
+
+  const selectCommand = (cmd: CommandMeta) => {
+    setInput(`/${cmd.name} `);
+    setCommandDismissed(true);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
 
   // Load workspaces on mount
   useEffect(() => {
@@ -188,23 +218,62 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
     const fileAttachments = pendingFiles.filter((p) => p.status === 'done' && p.fileRef).map((p) => p.fileRef!);
     if (!text && attachments.length === 0 && fileAttachments.length === 0) return;
 
-    // While the agent is streaming, messages go into the queue instead of
-    // being sent directly (Codex-style).
-    if (isStreaming && onQueue) {
+    const isCommand = text.startsWith('/');
+
+    // Commands bypass the queue so control commands (e.g. /stop) apply
+    // immediately. Interrupt any in-flight stream first.
+    if (isCommand) {
+      if (isStreaming && onStop) onStop();
+    } else if (isStreaming && onQueue) {
+      // While the agent is streaming, normal messages go into the queue
+      // instead of being sent directly (Codex-style). The parent flushes the
+      // queue head when the current turn completes — do NOT also call onSend
+      // here, or the same message would be sent twice.
       const queued = onQueue(text, attachments, fileAttachments.length > 0 ? fileAttachments : undefined);
       if (!queued) {
         message.warning(`最多排队 ${MAX_QUEUED_MESSAGES} 条消息`);
         return;
       }
-    } else {
-      onSend(text, attachments, fileAttachments.length > 0 ? fileAttachments : undefined);
+      setInput('');
+      setPending([]);
+      setPendingFiles([]);
+      return;
     }
+
+    onSend(text, attachments, fileAttachments.length > 0 ? fileAttachments : undefined);
     setInput('');
     setPending([]);
     setPendingFiles([]);
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (commandMenuOpen && commandItems.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setCommandIndex((i) => (i + 1) % commandItems.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setCommandIndex((i) => (i - 1 + commandItems.length) % commandItems.length);
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        selectCommand(commandItems[commandIndex]);
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        selectCommand(commandItems[commandIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setCommandDismissed(true);
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
@@ -266,7 +335,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
 
   return (
     <div
-      className={`border-t border-border p-4 ${isDragging ? 'bg-primary/5' : ''}`}
+      className={`border-t border-border ${simple ? 'p-2' : 'p-4'} ${isDragging ? 'bg-primary/5' : ''}`}
       onDragOver={simple ? undefined : handleDragOver}
       onDragLeave={simple ? undefined : handleDragLeave}
       onDrop={simple ? undefined : handleDrop}
@@ -454,7 +523,15 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
       )}
 
       {/* Input form */}
-      <form onSubmit={handleSubmit} className="mx-auto flex max-w-3xl items-end gap-3">
+      <form onSubmit={handleSubmit} className={`relative mx-auto flex items-end ${simple ? 'max-w-none gap-2' : 'max-w-3xl gap-3'}`}>
+        {commandMenuOpen && commandItems.length > 0 && (
+          <CommandMenu
+            query={input.slice(1)}
+            activeIndex={commandIndex}
+            onSelect={selectCommand}
+            onClose={() => setCommandDismissed(true)}
+          />
+        )}
         {!simple && (
           <>
             <Button
@@ -463,7 +540,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
               onClick={() => imageInputRef.current?.click()}
               disabled={disabled || totalPending() >= MAX_ATTACHMENTS}
               className="flex-shrink-0"
-              style={{ height: 44, width: 44 }}
+              style={{ height: simple ? 34 : 44, width: simple ? 34 : 44 }}
               title="上传图片"
             />
             <Button
@@ -472,7 +549,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
               onClick={() => fileInputRef.current?.click()}
               disabled={disabled || totalPending() >= MAX_ATTACHMENTS}
               className="flex-shrink-0"
-              style={{ height: 44, width: 44 }}
+              style={{ height: simple ? 34 : 44, width: simple ? 34 : 44 }}
               title="上传文件"
             />
           </>
@@ -490,7 +567,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
                 ? '回复中，Enter 将消息加入队列，可随时继续输入...'
                 : '输入消息... (Enter 发送, Shift+Enter 换行, 支持拖拽/粘贴图片和文件)'
           }
-          autoSize={{ minRows: 1, maxRows: 6 }}
+          autoSize={{ minRows: 1, maxRows: simple ? 4 : 6 }}
           disabled={disabled}
         />
         {isStreaming ? (
@@ -502,7 +579,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
                 icon={<SendOutlined />}
                 disabled={disabled || !canSend}
                 className="flex-shrink-0"
-                style={{ height: 44, width: 44 }}
+                style={{ height: simple ? 34 : 44, width: simple ? 34 : 44 }}
               />
             </Tooltip>
             <Tooltip title="停止生成">
@@ -512,7 +589,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
                 icon={<StopOutlined />}
                 onClick={onStop}
                 className="flex-shrink-0"
-                style={{ height: 44, width: 44 }}
+                style={{ height: simple ? 34 : 44, width: simple ? 34 : 44 }}
               />
             </Tooltip>
           </>
@@ -523,7 +600,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
             icon={<SendOutlined />}
             disabled={disabled || !canSend}
             className="flex-shrink-0"
-            style={{ height: 44, width: 44 }}
+            style={{ height: simple ? 34 : 44, width: simple ? 34 : 44 }}
           />
         )}
       </form>

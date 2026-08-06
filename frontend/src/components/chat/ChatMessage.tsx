@@ -129,6 +129,7 @@ export default function ChatMessage({ message: msg, onEditResend }: Props) {
   const [editContent, setEditContent] = useState(msg.content || '');
 
   const isUser = msg.role === 'user';
+  const isSystem = msg.role === 'system';
 
   // Parse tool calls from message, preserving original LLM order
   // Also extract delegation details for delegate_task entries
@@ -182,11 +183,11 @@ export default function ChatMessage({ message: msg, onEditResend }: Props) {
       <div
         className={cn(
           'flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full',
-          isUser ? 'bg-primary/10' : 'bg-muted',
+          isUser ? 'bg-primary/10' : isSystem ? 'border border-border bg-card' : 'bg-muted',
         )}
       >
         <span className={cn('text-sm font-medium', isUser ? 'text-primary' : 'text-muted-foreground')}>
-          {isUser ? '我' : 'AI'}
+          {isUser ? '我' : isSystem ? '系' : 'AI'}
         </span>
       </div>
 
@@ -338,7 +339,11 @@ export default function ChatMessage({ message: msg, onEditResend }: Props) {
             {/* Text content */}
             {msg.content && (() => {
               const { thinking: thinkContent, content: visibleContent } =
-                isUser ? { thinking: '', content: msg.content } : parseThinkBlocks(msg.content);
+                isUser
+                  ? { thinking: '', content: msg.content }
+                  : isSystem
+                    ? { thinking: '', content: msg.content }
+                    : parseThinkBlocks(msg.content);
               const hasThinkContent = thinkContent.length > 0;
 
               return (
@@ -375,7 +380,9 @@ export default function ChatMessage({ message: msg, onEditResend }: Props) {
                         'inline-block max-w-full rounded-2xl px-4 py-2.5',
                         isUser
                           ? 'bg-primary text-primary-foreground'
-                          : 'bg-muted text-foreground',
+                          : isSystem
+                            ? 'border border-border bg-card text-foreground'
+                            : 'bg-muted text-foreground',
                       )}
                     >
                       {isUser ? (

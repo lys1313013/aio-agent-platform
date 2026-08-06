@@ -253,11 +253,13 @@ class ChannelInboundPipeline:
             if text == "/bind":
                 await self._handle_bind(db, event, ctx)
                 return
-            if text == "/new":
+            if text in ("/new", "/reset", "/clear"):
                 await self._handle_new(db, event, ctx)
                 return
             if text == "/help":
-                await self._handle_help(event)
+                await self._handle_help(db, event, ctx)
+                return
+            if text.startswith("/") and await self._handle_unified_command(db, event, ctx, text):
                 return
 
             # 6. File/image message: download + store, wait for next text message.
@@ -377,14 +379,82 @@ class ChannelInboundPipeline:
         await db.commit()
         await self.adapter.send(event, "✅ 已开始新对话。")
 
-    async def _handle_help(self, event: InboundEvent) -> None:
-        reply = (
-            "📖 可用指令：\n"
-            "• /bind — 获取绑定码，关联已有平台账号\n"
-            "• /new — 开启新对话\n"
-            "• /help — 查看此帮助"
+    async def _handle_help(
+        self, db: AsyncSession, event: InboundEvent, ctx: _ResolvedContext
+    ) -> None:
+        """Help listing generated from the unified command registry."""
+        assert ctx.user_id is not None
+
+        from aio_agent_platform.db.models import User
+        from aio_agent_platform.interface.commands.dispatcher import dynamic_commands
+        from aio_agent_platform.interface.commands.registry import registry
+
+        user = await db.get(User, UUID(ctx.user_id))
+        cmds = registry.list_for(user) if user else registry.all()
+        dyn = await dynamic_commands(db, ctx.user_id)
+        known = {c.name for c in cmds}
+        cmds = [*cmds, *[d for d in dyn if d.name not in known]]
+
+        groups: dict[str, list] = {}
+        for c in cmds:
+            groups.setdefault(c.group, []).append(c)
+
+        order = [
+            "帮助", "会话", "技能", "记忆", "知识", "定时任务",
+            "智能体", "确认", "工作区", "模型", "运行", "通用",
+        ]
+        lines = ["📖 可用命令：", ""]
+        for g in order:
+            if g not in groups:
+                continue
+            lines.append(f"【{g}】")
+            for c in sorted(groups[g], key=lambda x: x.name):
+                lines.append(f"`{c.usage_text}` {c.desc}")
+            lines.append("")
+        lines.append("未知命令将作为普通消息发送。")
+        await self.adapter.send(event, "\n".join(lines))
+
+    async def _handle_unified_command(
+        self, db: AsyncSession, event: InboundEvent, ctx: _ResolvedContext, text: str
+    ) -> bool:
+        """Run a slash command through the unified command registry.
+
+        Returns True if the command is known and a reply was sent; False when
+        the command is unknown, in which case the caller degrades it to a
+        normal message for the agent.
+        """
+        assert ctx.user_id is not None and ctx.session_id is not None
+
+        from aio_agent_platform.db.models import User
+        from aio_agent_platform.interface.commands import CommandContext, dispatch
+        from aio_agent_platform.interface.commands import dynamic as _dynamic
+        from aio_agent_platform.interface.commands.registry import registry
+
+        name = text.split()[0].lstrip("/") if text.strip() else ""
+        if (
+            registry.get(name) is None
+            and await _dynamic.find_skill_command(db, ctx.user_id, name) is None
+        ):
+            return False  # unknown command → let the agent handle it
+
+        user = await db.get(User, UUID(ctx.user_id))
+        if user is None:
+            return False
+        session = await db.get(ChatSession, ctx.session_id)
+
+        cmd_ctx = CommandContext(
+            user=user,
+            user_id=ctx.user_id,
+            db=db,
+            raw=text,
+            session_id=str(ctx.session_id),
+            session=session,
+            tool_executor=self.tool_executor,
         )
-        await self.adapter.send(event, reply)
+        result = await dispatch(cmd_ctx)
+        await db.commit()  # persist writes made by the command handler
+        await self.adapter.send(event, result.content)
+        return True
 
     # --- Attachment (file/image) handling ---
 
