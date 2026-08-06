@@ -33,7 +33,8 @@ class SessionCreate(BaseModel):
 
 
 class SessionUpdate(BaseModel):
-    title: str = Field(..., min_length=1, max_length=512)
+    title: str | None = Field(default=None, min_length=1, max_length=512)
+    agent_id: UUID | None = None
 
 
 class SessionOut(BaseModel):
@@ -257,7 +258,7 @@ async def update_session(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Session:
-    """Rename a session."""
+    """Update a session (rename title and/or rebind agent)."""
     result = await db.execute(
         select(Session).where(Session.id == session_id, Session.user_id == user.id)
     )
@@ -265,7 +266,10 @@ async def update_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session.title = req.title
+    if req.title is not None:
+        session.title = req.title
+    if req.agent_id is not None:
+        session.agent_id = req.agent_id
     await db.flush()
     await db.refresh(session)
     return session

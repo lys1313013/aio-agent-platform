@@ -567,9 +567,11 @@ async def chat(
     await db.flush()
 
     # First message in the session → auto-generate title concurrently (if enabled on the agent)
-    title_task: asyncio.Task[str | None] | None = None
+    title_task: asyncio.Task[str] | None = None
     prior_msg_count = await db.scalar(
-        select(func.count(Message.id)).where(Message.session_id == session.id)
+        select(func.count(Message.id)).where(
+            Message.session_id == session.id, Message.id != user_msg.id
+        )
     )
     if not prior_msg_count and (agent.enable_auto_title if agent else True):
         title_task = asyncio.create_task(generate_session_title(req.message))
@@ -936,7 +938,7 @@ async def chat_stream(
     await db.commit()
 
     # First message in the session → auto-generate title concurrently (if enabled on the agent)
-    title_task: asyncio.Task[str | None] | None = None
+    title_task: asyncio.Task[str] | None = None
     prior_msg_count = await db.scalar(
         select(func.count(Message.id)).where(
             Message.session_id == session_id, Message.id != user_msg.id

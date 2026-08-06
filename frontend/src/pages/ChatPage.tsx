@@ -8,7 +8,7 @@ import ChatInput from '@/components/chat/ChatInput';
 import ChatHistorySidebar from '@/components/chat/ChatHistorySidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
 import { Alert, App, Button, Spin } from 'antd';
-import { PlusOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import type { StreamingState } from '@/lib/types';
 
 const IDLE_STREAMING: StreamingState = {
@@ -24,12 +24,14 @@ const IDLE_STREAMING: StreamingState = {
 };
 
 export default function ChatPage() {
-  const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession } = useChatStore();
-  const { message } = App.useApp();
+  const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession, deleteSession } = useChatStore();
+  const { message, modal } = App.useApp();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAMING);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // True when the current SSE turn is a slash command (no assistant message).
+  const gotCommandResultRef = useRef(false);
 
   // Codex-style message queue: while streaming, sent messages are queued and
   // flushed one by one as each turn completes.
@@ -475,6 +477,23 @@ export default function ChatPage() {
     await createSession('新对话');
   };
 
+  const handleDeleteChat = () => {
+    const sid = activeSessionId;
+    if (!sid) return;
+    interruptStream();
+    modal.confirm({
+      title: '删除对话？',
+      content: '此操作无法撤销。',
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        await deleteSession(sid);
+        usePetStore.getState().removeTask(sid);
+      },
+    });
+  };
+
   const handleEditResend = (content: string) => {
     if (streaming.isStreaming) {
       enqueue(content, []);
@@ -498,7 +517,16 @@ export default function ChatPage() {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Header with new chat button */}
-      <div className="flex items-center justify-end px-4 py-2 border-b border-border bg-card/50">
+      <div className="flex items-center justify-end gap-2 px-4 py-2 border-b border-border bg-card/50">
+        <Button
+          danger
+          icon={<DeleteOutlined />}
+          onClick={handleDeleteChat}
+          disabled={!activeSessionId}
+          className="ml-auto"
+        >
+          删除对话
+        </Button>
         <Button
           type="primary"
           icon={<PlusOutlined />}

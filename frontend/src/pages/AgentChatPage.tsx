@@ -9,7 +9,7 @@ import ChatInput from '@/components/chat/ChatInput';
 import AgentConfigSidebar from '@/components/AgentConfigSidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
 import { Alert, App, Typography, Spin, Tag, Button } from 'antd';
-import { PlusOutlined, LinkOutlined } from '@ant-design/icons';
+import { PlusOutlined, LinkOutlined, DeleteOutlined } from '@ant-design/icons';
 import { agentsApi } from '@/lib/api';
 import type { Agent, ChatAttachment, FileAttachmentRef, StreamingState, SessionStatus } from '@/lib/types';
 import { getAgentIcon } from '@/lib/agent-icons';
@@ -31,8 +31,8 @@ const IDLE_STREAMING: StreamingState = {
 export default function AgentChatPage() {
   const { agentId, sessionId: urlSessionId } = useParams<{ agentId: string; sessionId?: string }>();
   const navigate = useNavigate();
-  const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession, loadSessions, refreshSessions, setActiveSession } = useChatStore();
-  const { message } = App.useApp();
+  const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession, deleteSession, loadSessions, refreshSessions, setActiveSession } = useChatStore();
+  const { message, modal } = App.useApp();
   const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAMING);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -501,6 +501,25 @@ export default function AgentChatPage() {
     }
   };
 
+  const handleDeleteChat = () => {
+    const sid = activeSessionId;
+    if (!sid) return;
+    interruptStream();
+    modal.confirm({
+      title: '删除对话？',
+      content: '此操作无法撤销。',
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        await deleteSession(sid);
+        usePetStore.getState().removeTask(sid);
+        // 回到无会话的空对话状态，URL 去掉 sessionId
+        navigate(`/agents/${agentId}`, { replace: true });
+      },
+    });
+  };
+
   const handleEnsureSession = useCallback(async (): Promise<string | null> => {
     if (activeSessionId) return activeSessionId;
     const newId = await createSession('新对话', agentId);
@@ -885,10 +904,19 @@ export default function AgentChatPage() {
             <Tag className="text-xs">默认模型</Tag>
           )}
           <Button
+            danger
+            icon={<DeleteOutlined />}
+            onClick={handleDeleteChat}
+            disabled={!activeSessionId}
+            className="ml-auto"
+          >
+            删除对话
+          </Button>
+          <Button
             type="primary"
             icon={<PlusOutlined />}
             onClick={handleNewChat}
-            className="ml-auto !bg-brand-gradient !border-none shadow-brand hover:shadow-brand-lg"
+            className="!bg-brand-gradient !border-none shadow-brand hover:shadow-brand-lg"
           >
             新对话
           </Button>

@@ -646,7 +646,7 @@ class ChannelInboundPipeline:
             pass
 
         # 首条消息并发生成标题（渠道会话与 Web 端一致，覆盖「新对话 · xx」占位标题）
-        title_task: asyncio.Task[str | None] | None = None
+        title_task: asyncio.Task[str] | None = None
         prior_msg_count = await db.scalar(
             select(func.count(Message.id)).where(Message.session_id == ctx.session_id)
         )

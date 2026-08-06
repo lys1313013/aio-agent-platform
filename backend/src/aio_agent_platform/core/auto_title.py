@@ -85,8 +85,19 @@ def _clean_title(raw: str) -> str | None:
     return title[:MAX_TITLE_LENGTH]
 
 
-async def generate_session_title(message: str) -> str | None:
-    """Generate a session title from the first user message. None on failure."""
+def _fallback_title(message: str, max_len: int = 20) -> str:
+    """Fallback title: first non-empty line of the message, truncated. '新对话' if empty."""
+    first_line = (message or "").strip().splitlines()
+    text = first_line[0].strip() if first_line else ""
+    return text[:max_len] or "新对话"
+
+
+async def generate_session_title(message: str) -> str:
+    """Generate a session title from the first user message.
+
+    Never returns None — on any failure it falls back to a truncated prefix
+    of the message so a session always gets a visible title.
+    """
     from aio_agent_platform.db.connection import get_session_factory
 
     try:
@@ -110,11 +121,15 @@ async def generate_session_title(message: str) -> str | None:
                     .limit(1)
                 )
                 model = result.scalar_one_or_none()
+    except Exception:
+        logger.exception("auto_title skipped: failed to load model config")
+        return _fallback_title(message)
 
-        if not model or not model.provider:
-            logger.warning("auto_title skipped: no usable LLM model")
-            return None
+    if not model or not model.provider:
+        logger.warning("auto_title skipped: no usable LLM model")
+        return _fallback_title(message)
 
+    try:
         provider = create_provider(
             provider=model.provider.provider_type,
             model=model.model_name,
@@ -128,7 +143,12 @@ async def generate_session_title(message: str) -> str | None:
             temperature=0.3,
             max_tokens=100,
         )
-        return _clean_title(response.content)
     except Exception:
-        logger.exception("auto_title generation failed")
-        return None
+        logger.exception("auto_title failed: LLM call error")
+        return _fallback_title(message)
+
+    title = _clean_title(response.content)
+    if not title:
+        logger.warning("auto_title returned empty after cleaning", raw=(response.content or "")[:200])
+        return _fallback_title(message)
+    return title
