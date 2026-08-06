@@ -1,5 +1,7 @@
 """Application configuration via pydantic-settings."""
 
+from urllib.parse import quote
+
 from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,14 +23,27 @@ class DatabaseSettings(BaseSettings):
 
 
 class RedisSettings(BaseSettings):
-    """Redis configuration (在跑任务注册表等跨进程共享状态)."""
+    """Redis configuration (跨进程共享状态: 定时任务注册表、事件日志等)."""
 
     model_config = SettingsConfigDict(env_prefix="REDIS_")
 
-    url: str = Field(
-        default="redis://localhost:6379/0",
-        description="Redis connection URL",
+    host: str = Field(default="localhost", description="Redis host")
+    port: int = Field(default=6379, ge=1, le=65535, description="Redis port")
+    db: int = Field(default=0, ge=0, le=15, description="Redis logical database index")
+    password: str = Field(default="", description="Redis password (empty = no auth)")
+    username: str = Field(
+        default="", description="Redis ACL username (optional, Redis 6+)"
     )
+
+    @property
+    def url(self) -> str:
+        """Compose a redis:// URL from the discrete fields (consumed by from_url)."""
+        auth = ""
+        if self.username and self.password:
+            auth = f"{quote(self.username, safe='')}:{quote(self.password, safe='')}@"
+        elif self.password:
+            auth = f":{quote(self.password, safe='')}@"
+        return f"redis://{auth}{self.host}:{self.port}/{self.db}"
 
 
 class JWTSettings(BaseSettings):
