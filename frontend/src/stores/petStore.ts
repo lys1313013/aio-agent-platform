@@ -84,6 +84,8 @@ interface PetState {
   setSize: (size: number) => void;
   /** 开始一个任务（发送消息时调用），宠物旁展示任务条 */
   startTask: (sessionId: string, label: string, agentId?: string) => void;
+  /** 手动关闭任务条（用户点 × 移除，不走超时） */
+  removeTask: (sessionId: string) => void;
   /** SSE 事件驱动的状态机入口（ChatPage / AgentChatPage 每个事件调用一次） */
   reportEvent: (eventType: string, opts?: {
     sessionId?: string;
@@ -94,7 +96,7 @@ interface PetState {
   syncRemoteTasks: (list: PetActiveTask[]) => void;
   /** SSE 事件处理：snapshot / started / tool / finished */
   applyRemoteTaskEvent: (ev: Record<string, unknown>) => void;
-  /** 播放指定精灵图行动画 + 后端 interact(+1 exp，每日上限) */
+  /** 播放指定精灵图行动画 + 后端 interact 互动上报（刷新实例数据） */
   playRow: (row: number, opts?: { durationMs?: number; fps?: number }) => Promise<void>;
   /** 按动作名播放动画（不调 interact；智能体触发的情绪动作走这里） */
   playAction: (name: string) => void;
@@ -106,7 +108,7 @@ let resetTimer: ReturnType<typeof setTimeout> | null = null;
 const TASK_STALE_MS = 10 * 60 * 1000;
 const TASK_SWEEP_MS = 60 * 1000;
 /** 已完成任务打勾停留时长 */
-const DONE_LINGER_MS = 60 * 1000;
+const DONE_LINGER_MS = 10 * 60 * 1000;
 
 function pruneTasks(tasks: Record<string, PetTask>): Record<string, PetTask> {
   const now = Date.now();
@@ -233,6 +235,15 @@ export const usePetStore = create<PetState>((set, get) => ({
     }));
   },
 
+  removeTask: (sessionId) => {
+    set((s) => {
+      if (!(sessionId in s.tasks)) return s;
+      const next = { ...s.tasks };
+      delete next[sessionId];
+      return { tasks: next };
+    });
+  },
+
   reportEvent: (eventType, opts) => {
     if (!get().activePet) return;
     const sessionId = opts?.sessionId;
@@ -264,7 +275,7 @@ export const usePetStore = create<PetState>((set, get) => ({
         set((s) => ({ mood: 'think', tasks: touchTask(s.tasks, sessionId) }));
         break;
       case 'pet_action': {
-        // 智能体主动触发的情绪动作（闲聊/气泡），按 name 或 row 播放，不记 interact 经验
+        // 智能体主动触发的情绪动作（闲聊/气泡），按 name 或 row 播放，不触发互动上报
         const paName = opts?.petAction?.name;
         const paRow = opts?.petAction?.row;
         if (typeof paRow === 'number') {

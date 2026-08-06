@@ -12,8 +12,6 @@ from aio_agent_platform.pets.package import ParsedPetPackage, PetPackageError
 from aio_agent_platform.storage.client import ObjectStorage
 
 MAX_PACKAGES_PER_USER = 20
-INTERACT_DAILY_LIMIT = 5
-MAX_LEVEL = 50
 ADMIN_ROLES = {"admin", "superadmin"}
 
 # 平台状态名（row_mapping 的合法 key），idle 必选。
@@ -87,14 +85,6 @@ def build_actions(row_mapping: dict, row_count: int) -> dict:
             name = f"{PLACEHOLDER_PREFIX} {row}"
         actions[str(row)] = {"name": name, "state": state}
     return actions
-
-
-def level_from_exp(exp: int) -> int:
-    """累计经验 → 等级。等级 n 需 100*(n-1)^1.5 累计经验，上限 MAX_LEVEL。"""
-    level = 1
-    while level < MAX_LEVEL and exp >= 100 * level ** 1.5:
-        level += 1
-    return level
 
 
 class PetNotFoundError(LookupError):
@@ -329,29 +319,12 @@ class PetService:
         row = result.first()
         return (row[0], row[1]) if row is not None else None
 
-    async def interact(self, user: User, user_pet_id: UUID) -> tuple[UserPet, bool]:
-        """点击互动：+1 经验（每日上限 INTERACT_DAILY_LIMIT）。返回 (pet, 是否已加经验)。"""
+    async def interact(self, user: User, user_pet_id: UUID) -> UserPet:
+        """点击互动上报（播放动画由前端完成，此处仅做归属校验并返回最新实例数据）。"""
         pet = await self.db.get(UserPet, user_pet_id)
         if pet is None or pet.user_id != user.id:
             raise PetNotFoundError(str(user_pet_id))
-
-        today_count = await self.db.scalar(
-            select(func.count())
-            .select_from(PetExpLog)
-            .where(
-                PetExpLog.pet_id == user_pet_id,
-                PetExpLog.reason == "interact",
-                PetExpLog.created_at >= func.date_trunc("day", func.now()),
-            )
-        )
-        if (today_count or 0) >= INTERACT_DAILY_LIMIT:
-            return pet, False
-
-        pet.exp += 1
-        pet.level = level_from_exp(pet.exp)
-        self.db.add(PetExpLog(user_id=user.id, pet_id=user_pet_id, delta=1, reason="interact"))
-        await self.db.flush()
-        return pet, True
+        return pet
 
     # ---- 绑定智能体 ----
 

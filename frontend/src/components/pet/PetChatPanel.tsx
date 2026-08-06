@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Alert, Spin, message } from 'antd';
-import { CloseOutlined } from '@ant-design/icons';
+import { Alert, Spin, App } from 'antd';
+import { CloseOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useChatStore } from '@/stores/chatStore';
 import { usePetStore } from '@/stores/petStore';
 import { chatApi } from '@/lib/api';
@@ -22,8 +22,8 @@ const IDLE_STREAMING: StreamingState = {
   confirmationsResolved: {},
 };
 
-const PANEL_W = 400;
-const PANEL_H = 560;
+const PANEL_W = 340;
+const PANEL_H = 480;
 
 interface Props {
   open: boolean;
@@ -46,7 +46,9 @@ function defaultPos() {
  * activeSessionId，因此不影响主界面正在查看的会话。
  */
 export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }: Props) {
+  const { message, modal } = App.useApp();
   const addMessage = useChatStore((s) => s.addMessage);
+  const deleteSession = useChatStore((s) => s.deleteSession);
   const messages = useChatStore((s) => (sessionId ? s.messages[sessionId] : undefined)) ?? [];
   const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAMING);
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +95,23 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
       sessionId: sessionId ?? undefined,
     });
   }, [sessionId]);
+
+  const handleDeleteConversation = () => {
+    if (!sessionId) return;
+    interruptStream();
+    modal.confirm({
+      title: '删除对话？',
+      content: '此操作无法撤销。',
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        await deleteSession(sessionId);
+        usePetStore.getState().removeTask(sessionId);
+        onClose();
+      },
+    });
+  };
 
   const handleSendRef = useRef<(content: string, attachments?: ChatAttachment[], fileAttachments?: FileAttachmentRef[]) => Promise<void> | void>();
   const { queue, enqueue, remove: removeQueued, clear: clearQueue, flushNext, sendNow: sendQueuedNow } =
@@ -290,7 +309,9 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
     if (!el) return;
     const rect = el.getBoundingClientRect();
     dragRef.current = { startX: e.clientX, startY: e.clientY, baseX: rect.left, baseY: rect.top, moved: false };
-    el.setPointerCapture(e.pointerId);
+    // 必须在标题栏自身捕获：捕获到 panel（父元素）时，pointermove/up 会被浏览器
+    // 重定向到 panel，标题栏的 onPointerMove 收不到事件，拖拽会「断开」
+    e.currentTarget.setPointerCapture(e.pointerId);
   }, []);
 
   const onTitlePointerMove = useCallback((e: React.PointerEvent) => {
@@ -317,6 +338,10 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
     setPos({ x: r.left, y: r.top });
   }, []);
 
+  const onTitlePointerCancel = useCallback(() => {
+    dragRef.current = null;
+  }, []);
+
   if (!open) return null;
 
   // 用 portal 渲染到 body：PetWidget 容器带 transform，fixed 子元素会以它为
@@ -324,19 +349,29 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
   return createPortal(
     <div
       ref={panelRef}
-      className="fixed z-[60] flex flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+      className="fixed z-[60] flex flex-col overflow-hidden rounded-2xl border border-border bg-card/75 shadow-2xl backdrop-blur-xl"
       style={{ left: pos.x, top: pos.y, width: PANEL_W, height: `min(${PANEL_H}px, 80vh)` }}
     >
       {/* 标题栏：可拖动 */}
       <div
-        className="flex cursor-move select-none items-center gap-2 border-b border-border bg-muted/40 px-3 py-2"
+        className="flex cursor-move select-none items-center gap-2 border-b border-border bg-muted/25 px-2.5 py-1.5"
         onPointerDown={onTitlePointerDown}
         onPointerMove={onTitlePointerMove}
         onPointerUp={onTitlePointerUp}
+        onPointerCancel={onTitlePointerCancel}
       >
-        <span className="truncate text-sm font-semibold">
+        <span className="truncate text-[13px] font-semibold">
           {pet ? `和 ${pet.package.display_name} 对话` : '和宠物对话'}
         </span>
+        <button
+          type="button"
+          title="删除对话"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={handleDeleteConversation}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <DeleteOutlined className="text-xs" />
+        </button>
         <button
           type="button"
           title="关闭"
@@ -360,6 +395,7 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
             streaming={streaming}
             emptyTitle={pet ? `和 ${pet.package.display_name} 打个招呼吧` : '和宠物打个招呼吧'}
             onEditResend={handleEditResend}
+            scrollToBottomOnMount
           />
         )}
 

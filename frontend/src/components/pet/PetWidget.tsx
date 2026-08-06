@@ -103,7 +103,7 @@ class PetErrorBoundary extends Component<{ children: ReactNode }, { failed: bool
 }
 
 function PetWidgetInner() {
-  const { activePet, enabled, mood, actionRow, actionFps, size, loaded, tasks, loadActive, setEnabled, setSize, playRow } = usePetStore();
+  const { activePet, enabled, mood, actionRow, actionFps, size, loaded, tasks, loadActive, setEnabled, setSize, playRow, removeTask } = usePetStore();
   const navigate = useNavigate();
 
   // 点击任务条进入对应会话：有 agentId 走 Agent 会话路由，否则通用聊天页 + 激活会话
@@ -246,7 +246,7 @@ function PetWidgetInner() {
   const playSmartBubble = useCallback(() => {
     const pet = activePet;
     if (!pet || !pet.agent) return;
-    // 记 interact 经验（与现状点击一致，每日上限 5 后端去重）
+    // 互动上报（刷新实例数据，无经验奖励）
     void petsApi
       .interact(pet.id)
       .then((updated) => usePetStore.setState({ activePet: updated }))
@@ -573,27 +573,39 @@ function PetWidgetInner() {
         style={tasksExpanded ? { maxHeight: 5 * 24 } : undefined}
       >
         {(tasksExpanded ? taskList : taskList.slice(0, 2)).map(([sid, t]) => (
-          <button
+          <div
             key={sid}
-            type="button"
-            title="点击进入会话"
-            className={`pet-task-pill flex max-w-[220px] cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-card px-2.5 py-0.5 text-[11px] text-muted-foreground shadow-md hover:text-foreground ${t.status === 'done' ? 'opacity-75' : ''}`}
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => openSession(sid, t.agentId)}
+            className={`pet-task-pill group relative flex max-w-[240px] items-center rounded-full border border-border bg-card py-0.5 pl-2.5 pr-2 text-[11px] text-muted-foreground shadow-md hover:text-foreground ${t.status === 'done' ? 'opacity-75' : ''}`}
           >
+            <button
+              type="button"
+              title="关闭"
+              className="absolute left-0 top-0 z-10 flex h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border border-border bg-card text-[10px] leading-none text-muted-foreground opacity-0 shadow transition-opacity hover:text-foreground group-hover:opacity-100"
+              onClick={() => removeTask(sid)}
+            >
+              ×
+            </button>
+            <button
+              type="button"
+              title="点击进入会话"
+              className="flex min-w-0 cursor-pointer items-center whitespace-nowrap text-left"
+              onClick={() => openSession(sid, t.agentId)}
+            >
+              <span className="overflow-hidden text-ellipsis">
+                {t.source ? `${SOURCE_LABELS[t.source] ?? t.source} · ` : ''}
+                {t.label ?? '处理中'}
+                {t.tool ? ` · ${t.tool}` : ''}
+              </span>
+            </button>
             {t.status === 'done' ? (
-              <span className="shrink-0 text-[11px] font-bold leading-none" style={{ color: '#22c55e' }}>
+              <span className="ml-1.5 shrink-0 text-[11px] font-bold leading-none" style={{ color: '#22c55e' }}>
                 ✓
               </span>
             ) : (
-              <span className="pet-task-dot inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+              <span className="pet-task-dot ml-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
             )}
-            <span className="overflow-hidden text-ellipsis">
-              {t.source ? `${SOURCE_LABELS[t.source] ?? t.source} · ` : ''}
-              {t.label ?? '处理中'}
-              {t.tool ? ` · ${t.tool}` : ''}
-            </span>
-          </button>
+          </div>
         ))}
       </div>
       {taskList.length > 2 && (

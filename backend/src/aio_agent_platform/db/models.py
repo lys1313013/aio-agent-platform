@@ -1372,7 +1372,7 @@ class PetPackage(Base):
 
 
 class UserPet(Base):
-    """用户领养/上传的宠物实例（含养成数据）。"""
+    """用户领养/上传的宠物实例。"""
     __tablename__ = "user_pets"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
@@ -1381,8 +1381,6 @@ class UserPet(Base):
     agent_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), comment="实例级绑定智能体ID(优先级高于包级默认)"
     )
-    level: Mapped[int] = mapped_column(Integer, nullable=False, default=1, comment="等级")
-    exp: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="累计经验")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否当前激活")
     adopted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="领养时间"
@@ -1408,16 +1406,16 @@ class UserPet(Base):
 
 
 class PetExpLog(Base):
-    """宠物经验流水（审计 + 防刷判定）。"""
+    """宠物行为计数（当前用于智能气泡每日配额计数）。"""
     __tablename__ = "pet_exp_logs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键ID")
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="用户ID")
     pet_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="用户宠物ID")
-    delta: Mapped[int] = mapped_column(Integer, nullable=False, comment="经验变动值")
+    delta: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="计数变动值(配额流水恒为0)")
     reason: Mapped[str] = mapped_column(
         String(32), nullable=False,
-        comment="来源: task_complete/tool_call/daily_first/interact",
+        comment="来源: bubble_llm(智能气泡配额)",
     )
     ref_id: Mapped[str | None] = mapped_column(String(64), comment="关联ID(如session_id)")
     created_at: Mapped[datetime] = mapped_column(
@@ -1426,5 +1424,5 @@ class PetExpLog(Base):
 
     __table_args__ = (
         Index("idx_pet_exp_logs_user_date", "user_id", "created_at"),
-        {"comment": "宠物经验流水表"},
+        {"comment": "宠物行为计数表(气泡配额)"},
     )

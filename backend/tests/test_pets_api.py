@@ -305,23 +305,23 @@ async def test_invalid_row_mapping_state_rejected(client: AsyncClient, db_sessio
 
 
 @pytest.mark.asyncio
-async def test_interact_awards_exp_with_daily_limit(client: AsyncClient, db_session: AsyncSession):
+async def test_interact_no_exp_reward(client: AsyncClient, db_session: AsyncSession):
     owner = _make_user(OWNER_ID, TENANT_A)
     await _login_as(client, db_session, owner)
     await _upload(client, "interact-pet")
     pet_id = (await client.get("/api/pets/mine")).json()[0]["id"]
 
-    # 每天上限 5 次：前 5 次各 +1，第 6 次不再加
-    for i in range(6):
-        resp = await client.post(f"/api/pets/{pet_id}/interact")
-        assert resp.status_code == 200
-        exp = resp.json()["exp"]
-        assert exp == min(i + 1, 5), f"第 {i+1} 次后 exp={exp}"
+    # interact 仅校验归属并刷新实例数据，无经验奖励、无每日上限
+    resp = await client.post(f"/api/pets/{pet_id}/interact")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == pet_id
+    assert "exp" not in data
+    assert "level" not in data
 
-    # 经验已持久化
-    mine = (await client.get("/api/pets/mine")).json()
-    assert mine[0]["exp"] == 5
-    assert mine[0]["level"] == 1  # 5 exp 未到 100，等级保持 1
+    # 重复互动不改变任何字段（无经验累积）
+    resp2 = await client.post(f"/api/pets/{pet_id}/interact")
+    assert resp2.json()["id"] == pet_id
 
 
 @pytest.mark.asyncio

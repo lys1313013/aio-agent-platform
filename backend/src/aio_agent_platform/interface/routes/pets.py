@@ -98,8 +98,6 @@ class PetActionOut(BaseModel):
 class UserPetOut(BaseModel):
     id: UUID
     package_id: UUID
-    level: int
-    exp: int
     is_active: bool
     adopted_at: datetime
     package: PetPackageOut
@@ -120,8 +118,6 @@ class UserPetOut(BaseModel):
         return cls(
             id=pet.id,
             package_id=pet.package_id,
-            level=pet.level,
-            exp=pet.exp,
             is_active=pet.is_active,
             adopted_at=pet.adopted_at,
             package=PetPackageOut.from_model(pkg),
@@ -386,7 +382,7 @@ async def activate_pet(user_pet_id: UUID, user: CurrentUser, db: DbSession) -> U
 async def interact_pet(user_pet_id: UUID, user: CurrentUser, db: DbSession) -> UserPetOut:
     svc = PetService(db)
     try:
-        pet, _awarded = await svc.interact(user, user_pet_id)
+        pet = await svc.interact(user, user_pet_id)
     except PetNotFoundError as e:
         raise _not_found(e) from e
     pkg = await db.get(PetPackage, pet.package_id)

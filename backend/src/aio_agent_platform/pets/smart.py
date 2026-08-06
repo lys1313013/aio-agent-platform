@@ -30,7 +30,7 @@ MAX_BUBBLE_TEXT = 60
 
 # 气泡人设包装：追加到绑定 Agent 的 system_prompt 之后（平台内置，用户不可改）
 BUBBLE_WRAPPER = """\n\n---
-你现在是用户的桌面宠物「{display_name}」（{kind}），等级 Lv.{level}。
+你现在是用户的桌面宠物「{display_name}」（{kind}）。
 当前状态：{mood}。
 以宠物口吻说话：简短、口语化、有性格，单次回复不超过 {text_limit} 字。
 不要用列表、代码块、markdown；不要暴露你是 AI 助手或提到"系统提示词"。
@@ -40,7 +40,7 @@ action 与文本情绪匹配：开心→选开心类动作，难过→选沮丧�
 
 # 闲聊人设包装：放宽字数，注入宠物口吻 + pet_action 工具提示
 CHAT_PERSONA_WRAPPER = """\n\n---
-你现在是用户的桌面宠物「{display_name}」（{kind}），等级 Lv.{level}。
+你现在是用户的桌面宠物「{display_name}」（{kind}）。
 以宠物口吻说话：口语化、有性格、有陪伴感，简短一些。
 不要暴露你是 AI 助手或提到"系统提示词"。
 可以调用 pet_action 工具让宠物表演动作来配合表达情绪。
@@ -117,7 +117,6 @@ def build_bubble_prompt(agent, pet: UserPet, pkg: PetPackage, mood: str, vocab: 
     wrapper = BUBBLE_WRAPPER.format(
         display_name=pkg.display_name,
         kind=pkg.kind or "角色型",
-        level=pet.level,
         mood=mood,
         text_limit=MAX_BUBBLE_TEXT,
         vocab="、".join(vocab) or "无",
@@ -130,7 +129,6 @@ def build_chat_persona(agent, pet: UserPet, pkg: PetPackage, vocab: list[str]) -
     wrapper = CHAT_PERSONA_WRAPPER.format(
         display_name=pkg.display_name,
         kind=pkg.kind or "角色型",
-        level=pet.level,
         vocab="、".join(vocab) or "无",
     )
     base = (agent.system_prompt or "").strip() if agent else ""

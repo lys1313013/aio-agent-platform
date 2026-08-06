@@ -439,7 +439,7 @@ export default function PetsPage() {
     void reload();
   }, [reload]);
 
-  // 点击宠物互动后，store 里的 activePet 经验/等级会更新——同步进「我的宠物」列表
+  // 点击互动/绑定后 activePet 更新——同步进「我的宠物」列表
   useEffect(() => {
     if (!activePet) return;
     setMyPets((prev) => prev.map((p) => (p.id === activePet.id ? activePet : p)));
@@ -565,7 +565,7 @@ export default function PetsPage() {
   };
 
   const handleActionsSaved = (updated: PetPackage | UserPet) => {
-    if ('package_id' in updated && 'level' in updated) {
+    if ('package_id' in updated) {
       setMyPets((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
       if (updated.is_active) void loadActive();
     } else {

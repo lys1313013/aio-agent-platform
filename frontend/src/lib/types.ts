@@ -692,8 +692,6 @@ export interface PetAction {
 export interface UserPet {
   id: string;
   package_id: string;
-  level: number;
-  exp: number;
   is_active: boolean;
   adopted_at: string;
   package: PetPackage;

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { PlusOutlined } from '@ant-design/icons';
 import type { Agent, Message, StreamingState } from '@/lib/types';
 import BrandLogo from '@/components/BrandLogo';
@@ -13,9 +14,19 @@ interface Props {
   /** 覆盖空态欢迎语（宠物弹窗等无独立「新对话」场景） */
   emptyTitle?: string;
   emptySubtitle?: string;
+  /** 挂载时滚动到底部（宠物弹窗等场景：打开默认看最新消息） */
+  scrollToBottomOnMount?: boolean;
 }
 
-export default function MessageList({ messages, streaming, agent, onNewChat, onEditResend, emptyTitle, emptySubtitle }: Props) {
+export default function MessageList({ messages, streaming, agent, onNewChat, onEditResend, emptyTitle, emptySubtitle, scrollToBottomOnMount }: Props) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!scrollToBottomOnMount) return;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [scrollToBottomOnMount]);
+
   if (messages.length === 0 && !streaming.isStreaming) {
     const title = emptyTitle ?? (agent ? `欢迎使用 ${agent.name}` : '欢迎使用智能体平台');
     const subtitle = emptySubtitle ?? (agent?.description || '发送消息开始对话');
@@ -59,7 +70,7 @@ export default function MessageList({ messages, streaming, agent, onNewChat, onE
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div ref={scrollRef} className="flex-1 overflow-y-auto">
       <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
         {messages.map((msg) => (
           <ChatMessage key={msg.id} message={msg} onEditResend={onEditResend} />
