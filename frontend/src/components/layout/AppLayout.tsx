@@ -5,6 +5,7 @@ import {
   LogoutOutlined,
   RobotOutlined,
   BarChartOutlined,
+  LineChartOutlined,
   DashboardOutlined,
   BulbOutlined,
   ThunderboltOutlined,
@@ -60,6 +61,9 @@ export default function AppLayout() {
       items: [
         { path: '/dashboard', icon: <DashboardOutlined />, label: '仪表盘' },
         { path: '/usage', icon: <BarChartOutlined />, label: '用量统计' },
+        ...(isAdmin
+          ? [{ path: '/observability', icon: <LineChartOutlined />, label: '可观测性' }]
+          : []),
       ],
     },
     {

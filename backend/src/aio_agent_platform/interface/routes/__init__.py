@@ -15,6 +15,7 @@ from aio_agent_platform.interface.routes.knowledge import router as knowledge_ro
 from aio_agent_platform.interface.routes.mcp_servers import router as mcp_servers_router
 from aio_agent_platform.interface.routes.memories import router as memories_router
 from aio_agent_platform.interface.routes.models import router as models_router
+from aio_agent_platform.interface.routes.observability import router as observability_router
 from aio_agent_platform.interface.routes.pets import admin_router as admin_pets_router
 from aio_agent_platform.interface.routes.pets import router as pets_router
 from aio_agent_platform.interface.routes.public import router as public_router
@@ -45,6 +46,7 @@ __all__ = [
     "mcp_servers_router",
     "memories_router",
     "models_router",
+    "observability_router",
     "pets_router",
     "public_router",
     "remote_tools_router",

@@ -8,9 +8,10 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
+from sqlalchemy import select
 
 from aio_agent_platform.core.confirmation import confirmation_manager
 from aio_agent_platform.core.context import (
@@ -19,15 +20,56 @@ from aio_agent_platform.core.context import (
     estimate_messages_tokens,
 )
 from aio_agent_platform.core.usage import record_llm_usage
+from aio_agent_platform.db.connection import get_session_factory
+from aio_agent_platform.db.models import Session as ChatSession
+from aio_agent_platform.db.models import User
 from aio_agent_platform.llm import (
     LLMMessage,
     LLMProvider,
     ToolCall,
 )
 from aio_agent_platform.observation import get_current_observation, get_langfuse_client
+from aio_agent_platform.observation.recorder import (
+    ObsContext,
+    get_obs_context,
+    get_recorder,
+    set_obs_context,
+)
 from aio_agent_platform.tools.executor import ToolExecutor, ToolResult
 
 logger = structlog.get_logger(__name__)
+
+# user_id -> tenant_id 的进程内缓存，避免每次 Agent.run 重复查库
+_tenant_cache: dict[str, UUID | None] = {}
+
+
+async def _resolve_tenant_id(user_id: UUID) -> UUID | None:
+    """Resolve a user's tenant_id (cached per process)."""
+    key = str(user_id)
+    if key in _tenant_cache:
+        return _tenant_cache[key]
+    try:
+        factory = get_session_factory()
+        async with factory() as db:
+            row = await db.execute(select(User.tenant_id).where(User.id == user_id))
+            tid = row.scalar_one_or_none()
+    except Exception:
+        tid = None
+    _tenant_cache[key] = tid
+    return tid
+
+
+async def _resolve_agent_id(session_id: UUID) -> UUID | None:
+    """Resolve the agent bound to a session (session can switch agents)."""
+    try:
+        factory = get_session_factory()
+        async with factory() as db:
+            row = await db.execute(
+                select(ChatSession.agent_id).where(ChatSession.id == session_id)
+            )
+            return row.scalar_one_or_none()
+    except Exception:
+        return None
 
 
 @dataclass
@@ -227,6 +269,23 @@ class AgentLoop:
             workspace_slug=self.workspace_slug,
         )
 
+        # ---- Observation: open a trace for this execution ----
+        trace_id = uuid4()
+        tenant_id = await _resolve_tenant_id(user_id)
+        agent_id = await _resolve_agent_id(session_id)
+        set_obs_context(
+            ObsContext(
+                trace_id=trace_id,
+                session_id=session_id,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+            )
+        )
+        t_start = time.monotonic()
+        total_tokens = 0
+        tool_call_count = 0
+
         # Build message list
         messages: list[LLMMessage] = []
         if self.system_prompt:
@@ -297,6 +356,7 @@ class AgentLoop:
 
             if step_usage:
                 record_llm_usage(user_id, self.provider.model, step_usage)
+                total_tokens += step_usage.get("total_tokens", 0) or 0
 
             # Finalize tool calls from accumulated deltas
             for _idx, tc_data in pending_tool_calls.items():
@@ -307,6 +367,8 @@ class AgentLoop:
                 step.tool_calls.append(
                     ToolCall(id=tc_data["id"], name=tc_data["name"], arguments=args)
                 )
+
+            tool_call_count += len(step.tool_calls)
 
             # No tool calls -> final answer text, we're done
             if not step.tool_calls:
@@ -320,6 +382,13 @@ class AgentLoop:
                 for t in text_chunks:
                     yield f"text_delta:{t}"
                 step.final_output = step.thinking
+                self._finalize_trace(
+                    trace_id, t_start, session_id, user_id, tenant_id,
+                    status="completed",
+                    iteration_count=step_num,
+                    tool_call_count=tool_call_count,
+                    total_tokens=total_tokens,
+                )
                 step.done = True
                 yield step
                 return
@@ -409,6 +478,7 @@ class AgentLoop:
                 # AskUserQuestion: 特殊处理，避免死锁
                 # ============================================================
                 if tc.name == "AskUserQuestion":
+                    ask_t_start = time.monotonic()
                     async for evt in self._run_ask_user_flow(tc, ctx):
                         yield evt
 
@@ -419,8 +489,17 @@ class AgentLoop:
                         arguments=tc.arguments,
                         output=ask_output,
                         success=True,
+                        duration_ms=(time.monotonic() - ask_t_start) * 1000,
                     )
                     step.tool_results.append(result)
+                    get_recorder().record_tool_call(
+                        tool_name="AskUserQuestion",
+                        exec_type="direct",
+                        duration_ms=result.duration_ms,
+                        is_error=ask_output.startswith("Error:"),
+                        user_id=str(ctx.user_id),
+                        session_id=str(ctx.session_id),
+                    )
 
                     output_preview = ask_output[:500]
                     yield f"tool_result:{tc.id}:{tc.name}:ok:{json.dumps(output_preview, ensure_ascii=False)}"
@@ -524,11 +603,71 @@ class AgentLoop:
             session_id=str(session_id),
             max_iterations=self.max_iterations,
         )
+        self._finalize_trace(
+            trace_id, t_start, session_id, user_id, tenant_id,
+            status="timeout",
+            iteration_count=self.max_iterations,
+            tool_call_count=tool_call_count,
+            total_tokens=total_tokens,
+            hit_max_iterations=True,
+        )
         yield AgentStep(
             step=self.max_iterations,
             final_output="智能体已达到最大迭代次数，仍未完成任务。",
             done=True,
         )
+
+    # ------------------------------------------------------------------
+    # Observation finalize
+    # ------------------------------------------------------------------
+
+    def _finalize_trace(
+        self,
+        trace_id: UUID,
+        t_start: float,
+        session_id: UUID,
+        user_id: UUID,
+        tenant_id: UUID | None,
+        *,
+        status: str,
+        iteration_count: int = 0,
+        tool_call_count: int = 0,
+        total_tokens: int = 0,
+        hit_max_iterations: bool = False,
+    ) -> None:
+        """Write the trace summary row (fire-and-forget) and clear obs context."""
+        try:
+            get_recorder().record_trace(
+                trace_id=trace_id,
+                session_id=session_id,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                status=status,
+                iteration_count=iteration_count,
+                tool_call_count=tool_call_count,
+                total_tokens=total_tokens,
+                duration_ms=int((time.monotonic() - t_start) * 1000),
+                hit_max_iterations=hit_max_iterations,
+            )
+        except Exception:
+            logger.exception("agent_trace_record_failed", session_id=str(session_id))
+        finally:
+            set_obs_context(None)
+
+    def finalize_trace_error(self) -> None:
+        """Called by callers on abnormal termination to record an errored trace."""
+        ctx = get_obs_context()
+        if ctx is None:
+            return
+        get_recorder().record_trace(
+            trace_id=ctx.trace_id,
+            session_id=ctx.session_id,
+            user_id=ctx.user_id,
+            tenant_id=ctx.tenant_id,
+            status="error",
+            duration_ms=0,
+        )
+        set_obs_context(None)
 
     # ------------------------------------------------------------------
     # Tool execution with tracing

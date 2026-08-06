@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import structlog
+
 from aio_agent_platform.db.sanitize import sanitize_pg_text
+from aio_agent_platform.observation.recorder import get_recorder
 from aio_agent_platform.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
@@ -18,6 +22,8 @@ if TYPE_CHECKING:
     from aio_agent_platform.tools.mcp.manager import MCPManager
     from aio_agent_platform.tools.remote.executor import RemoteToolExecutor
     from aio_agent_platform.tools.remote.manager import RemoteToolManager
+
+logger = structlog.get_logger(__name__)
 
 
 class SecurityError(Exception):
@@ -108,7 +114,37 @@ class ToolExecutor:
                 None means all tools are allowed (default for parent agents).
         """
         t_start = time.monotonic()
+        result = await self._execute_impl(
+            tool_name=tool_name,
+            arguments=arguments,
+            tool_call_id=tool_call_id,
+            user_id=user_id,
+            session_id=session_id,
+            delegation=delegation,
+            event_queue=event_queue,
+            workspace_id=workspace_id,
+            workspace_slug=workspace_slug,
+            allowed_tools=allowed_tools,
+            t_start=t_start,
+        )
+        self._record_tool_call(result, user_id, session_id)
+        return result
 
+    async def _execute_impl(
+        self,
+        tool_name: str,
+        arguments: dict,
+        tool_call_id: str,
+        user_id: str,
+        session_id: str,
+        delegation: DelegationContext | None = None,
+        event_queue: asyncio.Queue | None = None,
+        workspace_id: str | None = None,
+        workspace_slug: str | None = None,
+        allowed_tools: set[str] | None = None,
+        t_start: float = 0.0,
+    ) -> ToolResult:
+        """Original dispatch body (wrapped by ``execute`` for observation)."""
         # ---- Tool permission check (runtime safety net) ----
         if allowed_tools is not None and tool_name not in allowed_tools:
             return ToolResult(
@@ -265,6 +301,61 @@ class ToolExecutor:
                 error=str(e),
                 duration_ms=(time.monotonic() - t_start) * 1000,
             )
+
+    # ---- Observation recording ----
+
+    def _exec_type(self, tool_name: str) -> str:
+        if self.mcp_manager and self.mcp_manager.is_mcp_tool(tool_name):
+            return "mcp"
+        if self.remote_manager and self.remote_manager.is_remote_tool(tool_name):
+            return "remote"
+        tool = self.registry.get(tool_name)
+        if tool and tool.requires_sandbox:
+            return "sandbox"
+        return "direct"
+
+    @staticmethod
+    def _error_type(result: ToolResult) -> str | None:
+        if result.success or not result.error:
+            return None
+        err = result.error
+        if "Security error" in err:
+            return "security"
+        if "Permission denied" in err:
+            return "permission"
+        if err.startswith("MCP error"):
+            return "mcp"
+        if err.startswith("Remote tool error"):
+            return "remote"
+        if err.startswith("Unknown tool"):
+            return "unknown"
+        return "tool_error"
+
+    def _record_tool_call(self, result: ToolResult, user_id: str, session_id: str) -> None:
+        try:
+            output = result.output if result.success else (result.error or "")
+            output_chars = len(output)
+            output_bytes = len(output.encode("utf-8", errors="replace"))
+            args_json = json.dumps(result.arguments, ensure_ascii=False, default=str)
+            arg_chars = len(args_json)
+            arg_bytes = len(args_json.encode("utf-8", errors="replace"))
+            get_recorder().record_tool_call(
+                tool_name=result.name,
+                exec_type=self._exec_type(result.name),
+                duration_ms=result.duration_ms,
+                is_error=not result.success,
+                error_type=self._error_type(result),
+                user_id=user_id,
+                session_id=session_id,
+                arg_bytes=arg_bytes,
+                arg_chars=arg_chars,
+                output_bytes=output_bytes,
+                output_chars=output_chars,
+                est_injected_tokens=int(output_chars / 4) if output_chars else None,
+                is_truncated=output_chars > self.MAX_OUTPUT_SIZE,
+            )
+        except Exception:
+            logger.exception("tool_observation_record_failed", tool_name=result.name)
 
     # ---- Security Checks ----
 

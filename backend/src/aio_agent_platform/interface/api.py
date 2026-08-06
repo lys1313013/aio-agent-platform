@@ -33,6 +33,7 @@ from aio_agent_platform.interface.routes import (
     mcp_servers_router,
     memories_router,
     models_router,
+    observability_router,
     pets_router,
     public_router,
     remote_tools_router,
@@ -238,6 +239,13 @@ async def lifespan(app: FastAPI):
 
     # 11.5 Langfuse observability
     init_langfuse()
+
+    # 11.6 Observation recorder — async batch writer for observability tables
+    from aio_agent_platform.observation.recorder import get_recorder
+
+    recorder = get_recorder()
+    recorder.start()
+    app.state.recorder = recorder
 
     # 12. Cron Job Scheduler — load and schedule all active jobs
     from aio_agent_platform.cron_jobs.scheduler import Scheduler
@@ -516,10 +524,14 @@ async def lifespan(app: FastAPI):
         )
 
     # 13. Channel connection manager — starts all enabled channel transports.
-    from aio_agent_platform.channels.connection_manager import ChannelConnectionManager
+    from aio_agent_platform.channels.connection_manager import (
+        ChannelConnectionManager,
+        set_global_channel_manager,
+    )
     from aio_agent_platform.channels.feishu.webhook_transport import build_webhook_router
 
     conn_manager = ChannelConnectionManager(tool_executor)
+    set_global_channel_manager(conn_manager)
     try:
         async with factory() as startup_db:
             await conn_manager.start_all(startup_db)
@@ -546,6 +558,9 @@ async def lifespan(app: FastAPI):
         await scheduler.shutdown()
     await mcp_manager.shutdown()
     await sandbox_mgr.shutdown()
+    recorder = getattr(app.state, "recorder", None)
+    if recorder:
+        await recorder.shutdown()
     await shutdown_langfuse()
     await close_db()
 
@@ -577,6 +592,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router)
     app.include_router(commands_router)
     app.include_router(models_router)
+    app.include_router(observability_router)
     app.include_router(settings_router)
     app.include_router(memories_router)
     app.include_router(pets_router)

@@ -543,6 +543,10 @@ class Session(Base):
         PG_UUID(as_uuid=True),
         comment="关联工作区ID",
     )
+    model_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        comment="会话级模型覆盖(缺省跟随智能体模型)",
+    )
     title: Mapped[str | None] = mapped_column(String(512), comment="会话标题")
     source: Mapped[str] = mapped_column(
         String(16), nullable=False, default="chat", server_default="chat",
@@ -956,6 +960,8 @@ class TokenUsageDaily(Base):
     total_tokens: Mapped[int] = mapped_column(Integer, default=0, comment="总令牌数")
     request_count: Mapped[int] = mapped_column(Integer, default=0, comment="请求次数")
     cost_usd: Mapped[float] = mapped_column(Numeric(10, 6), default=0, comment="费用(美元)")
+    cache_read_tokens: Mapped[int] = mapped_column(Integer, default=0, comment="缓存命中令牌数")
+    cache_creation_tokens: Mapped[int] = mapped_column(Integer, default=0, comment="缓存写入令牌数")
 
     __table_args__ = (
         Index("idx_token_usage_user_date", "user_id", "date"),
@@ -1425,4 +1431,172 @@ class PetExpLog(Base):
     __table_args__ = (
         Index("idx_pet_exp_logs_user_date", "user_id", "created_at"),
         {"comment": "宠物行为计数表(气泡配额)"},
+    )
+
+
+# ---- Observability (大模型可观测性) ----
+
+# 三张明细表为观测事实源，异步采集写入（observation/recorder.py）。
+# 预聚合表 tool_usage_daily / performance_daily 由采集侧累加，供报表秒查。
+
+
+class LLMCallLog(Base):
+    """每次 LLM 调用一行。"""
+
+    __tablename__ = "llm_call_logs"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    trace_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="Agent 执行实例ID")
+    session_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="会话ID")
+    user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="用户ID")
+    tenant_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="租户ID")
+    agent_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="智能体ID")
+    model_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="模型ID")
+    model: Mapped[str] = mapped_column(String(128), nullable=False, comment="模型标识")
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, comment="提供商类型")
+    call_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1, comment="一次执行中的第几轮")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, comment="输入令牌数")
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, comment="输出令牌数")
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, comment="总令牌数")
+    cache_read_tokens: Mapped[int] = mapped_column(Integer, default=0, comment="缓存命中令牌数")
+    cache_creation_tokens: Mapped[int] = mapped_column(Integer, default=0, comment="缓存写入令牌数")
+    context_window: Mapped[int | None] = mapped_column(Integer, comment="模型上下文窗口")
+    context_utilization: Mapped[float | None] = mapped_column(Float, comment="上下文利用率(输入/窗口)")
+    ttft_ms: Mapped[int | None] = mapped_column(Integer, comment="首token延迟(毫秒)")
+    duration_ms: Mapped[int | None] = mapped_column(Integer, comment="总耗时(毫秒)")
+    output_tokens_per_sec: Mapped[float | None] = mapped_column(Float, comment="输出吞吐(tokens/s)")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, comment="重试次数")
+    final_status: Mapped[str] = mapped_column(String(16), nullable=False, default="success", comment="最终状态: success/failed")
+    error_type: Mapped[str | None] = mapped_column(String(32), comment="错误分类")
+    stop_reason: Mapped[str | None] = mapped_column(String(16), comment="停止原因: stop/length/tool_calls/max_tokens")
+    temperature: Mapped[float | None] = mapped_column(Float, comment="温度")
+    max_tokens: Mapped[int | None] = mapped_column(Integer, comment="最大输出令牌")
+    tools_count: Mapped[int] = mapped_column(Integer, default=0, comment="携带工具数")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="调用时间"
+    )
+
+    __table_args__ = (
+        Index("idx_llm_call_logs_tenant_created", "tenant_id", "created_at"),
+        Index("idx_llm_call_logs_session", "session_id"),
+        Index("idx_llm_call_logs_trace", "trace_id"),
+        {"comment": "LLM调用明细表"},
+    )
+
+
+class ToolCallLog(Base):
+    """每次工具调用一行。"""
+
+    __tablename__ = "tool_call_logs"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    trace_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="Agent 执行实例ID")
+    session_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="会话ID")
+    user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="用户ID")
+    tenant_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="租户ID")
+    agent_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="智能体ID")
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False, comment="工具名")
+    exec_type: Mapped[str] = mapped_column(String(16), nullable=False, default="direct", comment="执行类型: sandbox/direct/mcp/remote/builtin")
+    call_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1, comment="执行链路序号")
+    duration_ms: Mapped[int | None] = mapped_column(Integer, comment="耗时(毫秒)")
+    is_error: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否失败")
+    error_type: Mapped[str | None] = mapped_column(String(32), comment="错误分类")
+    arg_bytes: Mapped[int | None] = mapped_column(Integer, comment="参数大小(字节)")
+    arg_chars: Mapped[int | None] = mapped_column(Integer, comment="参数长度(字符)")
+    output_bytes: Mapped[int | None] = mapped_column(Integer, comment="输出大小(字节)")
+    output_chars: Mapped[int | None] = mapped_column(Integer, comment="输出长度(字符)")
+    est_injected_tokens: Mapped[int | None] = mapped_column(Integer, comment="输出估算令牌")
+    is_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="输出是否截断")
+    is_concurrent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否并发执行(委派)")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="调用时间"
+    )
+
+    __table_args__ = (
+        Index("idx_tool_call_logs_tenant_tool_created", "tenant_id", "tool_name", "created_at"),
+        Index("idx_tool_call_logs_session", "session_id"),
+        Index("idx_tool_call_logs_trace", "trace_id"),
+        {"comment": "工具调用明细表"},
+    )
+
+
+class AgentTraceLog(Base):
+    """每次 Agent 执行（Agent.run）一行。"""
+
+    __tablename__ = "agent_trace_logs"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    trace_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), unique=True, nullable=False, comment="执行实例ID")
+    session_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="会话ID")
+    user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="用户ID")
+    tenant_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="租户ID")
+    agent_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="智能体ID")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="completed", comment="状态: completed/interrupted/timeout/error")
+    iteration_count: Mapped[int] = mapped_column(Integer, default=0, comment="LLM轮数")
+    tool_call_count: Mapped[int] = mapped_column(Integer, default=0, comment="工具调用总数")
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, comment="累计令牌")
+    duration_ms: Mapped[int | None] = mapped_column(Integer, comment="端到端耗时(毫秒)")
+    is_compressed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否触发上下文压缩")
+    tokens_before_compress: Mapped[int | None] = mapped_column(Integer, comment="压缩前令牌")
+    tokens_after_compress: Mapped[int | None] = mapped_column(Integer, comment="压缩后令牌")
+    saved_tokens: Mapped[int | None] = mapped_column(Integer, comment="压缩节省令牌")
+    summary_tokens: Mapped[int | None] = mapped_column(Integer, comment="摘要令牌")
+    hit_max_iterations: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否顶到最大迭代")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="执行时间"
+    )
+
+    __table_args__ = (
+        Index("idx_agent_trace_logs_tenant_created", "tenant_id", "created_at"),
+        Index("idx_agent_trace_logs_session", "session_id"),
+        {"comment": "Agent执行明细表"},
+    )
+
+
+class ToolUsageDaily(Base):
+    """按 用户×日期×工具 的预聚合（采集侧累加）。"""
+
+    __tablename__ = "tool_usage_daily"
+
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, comment="用户ID")
+    date: Mapped[datetime] = mapped_column(Date, primary_key=True, default=func.current_date, comment="统计日期")
+    tool_name: Mapped[str] = mapped_column(String(128), primary_key=True, comment="工具名")
+    request_count: Mapped[int] = mapped_column(Integer, default=0, comment="调用次数")
+    success_count: Mapped[int] = mapped_column(Integer, default=0, comment="成功次数")
+    error_count: Mapped[int] = mapped_column(Integer, default=0, comment="失败次数")
+    total_duration_ms: Mapped[int] = mapped_column(BigInteger, default=0, comment="总耗时(毫秒)")
+    max_duration_ms: Mapped[int] = mapped_column(Integer, default=0, comment="最大耗时(毫秒)")
+    total_injected_tokens: Mapped[int] = mapped_column(BigInteger, default=0, comment="注入上下文令牌合计")
+
+    __table_args__ = (
+        Index("idx_tool_usage_daily_tenant", "user_id", "date"),
+        {"comment": "工具用量每日统计表"},
+    )
+
+
+class PerformanceDaily(Base):
+    """按 租户×日期 的平台级性能预聚合。"""
+
+    __tablename__ = "performance_daily"
+
+    tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, comment="租户ID")
+    date: Mapped[datetime] = mapped_column(Date, primary_key=True, default=func.current_date, comment="统计日期")
+    trace_count: Mapped[int] = mapped_column(Integer, default=0, comment="执行次数")
+    success_count: Mapped[int] = mapped_column(Integer, default=0, comment="成功次数")
+    error_count: Mapped[int] = mapped_column(Integer, default=0, comment="失败次数")
+    interrupted_count: Mapped[int] = mapped_column(Integer, default=0, comment="中断次数")
+    timeout_count: Mapped[int] = mapped_column(Integer, default=0, comment="超时次数")
+    total_duration_ms: Mapped[int] = mapped_column(BigInteger, default=0, comment="总耗时(毫秒)")
+    total_tokens: Mapped[int] = mapped_column(BigInteger, default=0, comment="总令牌")
+    llm_call_count: Mapped[int] = mapped_column(Integer, default=0, comment="LLM调用总数")
+    tool_call_count: Mapped[int] = mapped_column(Integer, default=0, comment="工具调用总数")
+    llm_total_duration_ms: Mapped[int] = mapped_column(BigInteger, default=0, comment="LLM总耗时(毫秒)")
+    ttft_total_ms: Mapped[int] = mapped_column(BigInteger, default=0, comment="首token总延迟(毫秒)")
+    max_llm_duration_ms: Mapped[int] = mapped_column(Integer, default=0, comment="最大LLM耗时(毫秒)")
+    compress_count: Mapped[int] = mapped_column(Integer, default=0, comment="压缩触发次数")
+    saved_tokens_total: Mapped[int] = mapped_column(BigInteger, default=0, comment="压缩节省令牌合计")
+
+    __table_args__ = (
+        Index("idx_performance_daily_date", "date"),
+        {"comment": "平台性能每日统计表"},
     )

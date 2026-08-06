@@ -9,6 +9,7 @@ import AgentChatPage from '@/pages/AgentChatPage';
 import AgentApiPage from '@/pages/AgentApiPage';
 import DashboardPage from '@/pages/DashboardPage';
 import UsagePage from '@/pages/UsagePage';
+import ObservabilityPage from '@/pages/ObservabilityPage';
 import MemoryPage from '@/pages/MemoryPage';
 import SkillsPage from '@/pages/SkillsPage';
 import PetsPage from '@/pages/PetsPage';
@@ -89,6 +90,7 @@ export default function App() {
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/usage" element={<UsagePage />} />
+        <Route path="/observability" element={<ObservabilityPage />} />
         <Route path="/memory" element={<MemoryPage />} />
         <Route path="/skills" element={<SkillsPage />} />
         <Route path="/pets" element={<PetsPage />} />
