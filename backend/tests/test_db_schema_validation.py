@@ -1,99 +1,58 @@
 """Database schema validation tests.
 
-These tests ensure that SQLAlchemy models match the actual database schema.
-This prevents the issue where code references columns that don't exist yet
-because migrations haven't been run.
+These tests ensure every SQLAlchemy model matches the actual database schema,
+in both directions:
+
+- model columns must exist in the database (missing -> every query on that
+  column crashes with "column does not exist", e.g. a forgotten migration)
+- database columns must exist on the model (extra -> a pending DROP migration)
+
+Parameterized over all tables so new models/columns are covered automatically.
 """
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.db.models import Agent, Base
+from aio_agent_platform.db.models import Base
 
 
+async def _db_column_names(db: AsyncSession, table_name: str) -> set[str]:
+    result = await db.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = :t"
+        ),
+        {"t": table_name},
+    )
+    return {row[0] for row in result.fetchall()}
+
+
+@pytest.mark.parametrize(
+    "table", [t for t in Base.metadata.sorted_tables], ids=lambda t: t.name
+)
 class TestDatabaseSchemaValidation:
-    """Validate that models match the database schema."""
-
     @pytest.mark.asyncio
-    async def test_agents_table_has_temperature_column(self, db_session: AsyncSession):
-        """Verify agents table has temperature column in database."""
-        # Use raw SQL to inspect table - avoids transaction issues
-        result = await db_session.execute(
-            text("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name = 'agents' AND column_name = 'temperature'
-            """)
-        )
-        columns = result.fetchall()
+    async def test_model_columns_exist_in_db(self, db_session: AsyncSession, table):
+        """Every model column must exist in the database (no missing migration)."""
+        model_columns = {col.name for col in table.columns}
+        db_columns = await _db_column_names(db_session, table.name)
 
-        assert len(columns) > 0, (
-            "agents table is missing 'temperature' column. "
-            "Did you forget to run 'uv run alembic upgrade head'?"
+        missing = model_columns - db_columns
+        assert not missing, (
+            f"table '{table.name}' is missing model columns: {sorted(missing)}. "
+            "Did you forget to create and run a migration? "
+            "These queries would crash with 'column does not exist'."
         )
 
     @pytest.mark.asyncio
-    async def test_agents_table_has_welcome_message_column(self, db_session: AsyncSession):
-        """Verify agents table has welcome_message column in database."""
-        result = await db_session.execute(
-            text("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name = 'agents' AND column_name = 'welcome_message'
-            """)
-        )
-        columns = result.fetchall()
+    async def test_no_stale_db_columns(self, db_session: AsyncSession, table):
+        """Every database column must exist on the model (no pending drop)."""
+        model_columns = {col.name for col in table.columns}
+        db_columns = await _db_column_names(db_session, table.name)
 
-        assert len(columns) > 0, (
-            "agents table is missing 'welcome_message' column. "
-            "Did you forget to run 'uv run alembic upgrade head'?"
-        )
-
-    @pytest.mark.asyncio
-    async def test_all_model_columns_exist_in_database(self, db_session: AsyncSession):
-        """Verify all Agent model columns exist in the database."""
-        # Get columns from the model
-        model_columns = {col.name for col in Agent.__table__.columns}
-
-        # Get columns from the database
-        result = await db_session.execute(
-            text("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name = 'agents'
-            """)
-        )
-        db_columns = {row[0] for row in result.fetchall()}
-
-        missing_columns = model_columns - db_columns
-
-        assert not missing_columns, (
-            f"Agent model has columns that don't exist in database: {missing_columns}. "
-            "Did you forget to create and run a migration?"
-        )
-
-    @pytest.mark.asyncio
-    async def test_no_pending_migrations_for_model_columns(self, db_session: AsyncSession):
-        """Ensure model columns don't exceed database schema (detect missing migrations)."""
-        # Get all columns from Agent model
-        model_columns = {col.name for col in Agent.__table__.columns}
-
-        # Get all columns from database
-        result = await db_session.execute(
-            text("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name = 'agents'
-            """)
-        )
-        db_columns = {row[0] for row in result.fetchall()}
-
-        # Model should not have columns that database doesn't have
-        # (this would indicate a missing migration)
-        extra_model_columns = model_columns - db_columns
-
-        assert not extra_model_columns, (
-            f"Agent model defines columns {extra_model_columns} that don't exist in database. "
-            "You need to create a migration for these columns."
+        stale = db_columns - model_columns
+        assert not stale, (
+            f"table '{table.name}' has database columns not on the model: "
+            f"{sorted(stale)}. A drop migration is pending."
         )
