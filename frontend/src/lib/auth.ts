@@ -41,3 +41,17 @@ export const tokenStorage = {
     return !!localStorage.getItem(ACCESS_KEY) && !!localStorage.getItem(REFRESH_KEY);
   },
 };
+
+/**
+ * Attach the current access token to a chat-attachment image URL so an
+ * `<img>` tag (which cannot set an Authorization header) can load it. The
+ * backend `/api/public/images/{key}` endpoint validates the token and the
+ * key's ownership. Non-public URLs are returned unchanged.
+ */
+export function withImageAuth(url: string): string {
+  if (!url.includes('/api/public/images/')) return url;
+  const token = localStorage.getItem(ACCESS_KEY);
+  if (!token) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(token)}`;
+}

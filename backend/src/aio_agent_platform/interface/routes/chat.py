@@ -337,9 +337,9 @@ async def upload_workspace_file(
     """
     from uuid import uuid4
 
-    # Resolve workspace_id from session
+    # Resolve workspace_id from session (must be owned by the current user)
     session_result = await db.execute(
-        select(Session).where(Session.id == session_id)
+        select(Session).where(Session.id == session_id, Session.user_id == user.id)
     )
     session = session_result.scalar_one_or_none()
     if not session:

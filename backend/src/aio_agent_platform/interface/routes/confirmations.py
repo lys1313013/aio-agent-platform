@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from typing import Annotated
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.core.confirmation import confirmation_manager
+from aio_agent_platform.db.connection import get_db
+from aio_agent_platform.db.models import Session
 
 logger = structlog.get_logger()
 
@@ -57,7 +62,19 @@ async def respond_to_confirmation(
     body: ConfirmResponseRequest,
     user: CurrentUser,
 ) -> ConfirmResponseResponse:
-    """Submit a response to a pending confirmation request."""
+    """Submit a response to a pending confirmation request.
+
+    Only the user the confirmation was issued to may respond — otherwise a
+    third party could approve/reject another user's potentially destructive
+    agent actions.
+    """
+    confirmation = confirmation_manager.get(confirmation_id)
+    if not confirmation or confirmation.user_id != str(user.id):
+        raise HTTPException(
+            status_code=404,
+            detail="Confirmation not found or already resolved",
+        )
+
     resolved = confirmation_manager.resolve_confirmation(
         confirmation_id,
         response={
@@ -79,8 +96,18 @@ async def respond_to_confirmation(
 async def get_pending_confirmations(
     session_id: UUID,
     user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[PendingConfirmationResponse]:
     """Get all pending confirmation requests for a session (for page refresh recovery)."""
+    # Only the session owner may list its confirmations.
+    owned = await db.scalar(
+        select(Session.id).where(
+            Session.id == session_id, Session.user_id == user.id
+        )
+    )
+    if not owned:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     pending = confirmation_manager.get_pending(str(session_id))
     return [
         PendingConfirmationResponse(

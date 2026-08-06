@@ -276,7 +276,11 @@ async def list_versions(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[VersionOut]:
-    """List all published versions of an agent."""
+    """List all published versions of an agent (visible to the caller only)."""
+    agent = await _load_agent_with_relations(db, agent_id, user)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
     result = await db.execute(
         select(AgentVersion)
         .where(AgentVersion.agent_id == agent_id)
@@ -922,7 +926,17 @@ async def submit_message_feedback(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    """Submit feedback (up/down) for a message."""
+    """Submit feedback (up/down) for a message (session owner only)."""
+    # The session must belong to the caller, or anyone could mutate another
+    # user's message feedback.
+    owned = await db.scalar(
+        select(Session.id).where(
+            Session.id == session_id, Session.user_id == user.id
+        )
+    )
+    if not owned:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     result = await db.execute(
         select(Message)
         .where(Message.id == message_id, Message.session_id == session_id)

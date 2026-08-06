@@ -111,6 +111,10 @@ class ConfirmationManager:
         )
         return True
 
+    def get(self, confirmation_id: str) -> PendingConfirmation | None:
+        """Get a single pending confirmation by id (without waiting)."""
+        return self._pending.get(confirmation_id)
+
     def get_pending(self, session_id: str) -> list[PendingConfirmation]:
         """Get all pending confirmations for a session."""
         return [

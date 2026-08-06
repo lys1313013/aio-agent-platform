@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.db.connection import get_db
-from aio_agent_platform.db.models import Agent, Delegation
+from aio_agent_platform.db.models import Agent, Delegation, Session
 
 router = APIRouter(prefix="/api/delegations", tags=["delegations"])
 
@@ -48,10 +48,18 @@ class DelegationOut(BaseModel):
 @router.get("/sessions/{session_id}", response_model=list[DelegationOut])
 async def get_session_delegations(
     session_id: UUID,
-    _user: CurrentUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
-    """Get all delegations for a session."""
+    """Get all delegations for a session (owner only)."""
+    owned = await db.scalar(
+        select(Session.id).where(
+            Session.id == session_id, Session.user_id == user.id
+        )
+    )
+    if not owned:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
     result = await db.execute(
         select(Delegation)
         .where(Delegation.parent_session_id == session_id)
@@ -64,15 +72,24 @@ async def get_session_delegations(
 @router.get("/{delegation_id}", response_model=DelegationOut)
 async def get_delegation(
     delegation_id: UUID,
-    _user: CurrentUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    """Get a single delegation by ID."""
+    """Get a single delegation by ID (owner only)."""
     result = await db.execute(
         select(Delegation).where(Delegation.id == delegation_id)
     )
     delegation = result.scalar_one_or_none()
     if not delegation:
+        raise HTTPException(status_code=404, detail="委派记录不存在")
+
+    # Delegation records belong to the session that spawned them.
+    owner_id = await db.scalar(
+        select(Session.user_id).where(
+            Session.id == delegation.parent_session_id
+        )
+    )
+    if owner_id != user.id:
         raise HTTPException(status_code=404, detail="委派记录不存在")
 
     return await _delegation_to_dict(db, delegation)

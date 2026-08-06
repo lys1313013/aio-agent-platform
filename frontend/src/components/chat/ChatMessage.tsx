@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { CopyOutlined, CheckOutlined, EditOutlined, NodeIndexOutlined, BulbOutlined } from '@ant-design/icons';
 import { Button, App, Input, Collapse, Tag, Image } from 'antd';
 import { cn, parseThinkBlocks } from '@/lib/utils';
+import { withImageAuth } from '@/lib/auth';
 import type { Message, ToolCallInfo, DelegationInfo, PersistedConfirmation } from '@/lib/types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -283,12 +284,12 @@ export default function ChatMessage({ message: msg, onEditResend }: Props) {
                       className="group relative cursor-pointer overflow-hidden rounded-lg shadow-sm hover:shadow-md transition-all duration-200 hover:scale-[1.02]"
                     >
                       <Image
-                        src={att.url}
+                        src={withImageAuth(att.url)}
                         alt={att.filename}
                         width={160}
                         height={160}
                         className="object-cover"
-                        preview={{ src: att.url }}
+                        preview={{ src: withImageAuth(att.url) }}
                         style={{ display: 'block' }}
                       />
                       {/* Hover overlay with filename */}
