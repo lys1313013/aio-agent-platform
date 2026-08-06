@@ -78,3 +78,49 @@ async def cmd_delete(ctx: CommandContext) -> CommandResult:
         content=f"✅ 已删除会话 `{ctx.args['id']}`。",
         data={"deleted_session_id": ctx.args["id"]},
     )
+
+
+async def _switch_to(ctx: CommandContext, session: Session) -> CommandResult:
+    return CommandResult(
+        content=f"已切换到会话「{session.title or '未命名会话'}」。",
+        data={
+            "switch_session_id": str(session.id),
+            "session_id": str(session.id),
+            "session_title": session.title or "未命名会话",
+        },
+    )
+
+
+@command(
+    "switch",
+    group="会话",
+    desc="切换到指定会话",
+    args=[CommandArg(name="id", kind="uuid", required=True, hint="会话 ID")],
+)
+async def cmd_switch(ctx: CommandContext) -> CommandResult:
+    session = await ctx.db.get(Session, UUID(ctx.args["id"]))
+    if session is None or session.user_id != UUID(ctx.user_id):
+        return CommandResult(content="会话不存在。")
+    return await _switch_to(ctx, session)
+
+
+@command(
+    "resume",
+    group="会话",
+    desc="恢复上次会话（或指定 id）",
+    args=[CommandArg(name="id", kind="uuid", required=False, hint="会话 ID（缺省恢复最近一条）")],
+)
+async def cmd_resume(ctx: CommandContext) -> CommandResult:
+    if ctx.args.get("id"):
+        return await cmd_switch(ctx)
+    result = await ctx.db.execute(
+        select(Session)
+        .where(Session.user_id == UUID(ctx.user_id))
+        .order_by(Session.updated_at.desc())
+        .limit(20)
+    )
+    sessions = list(result.scalars().all())
+    candidates = [s for s in sessions if not ctx.session_id or str(s.id) != ctx.session_id]
+    if not candidates:
+        return CommandResult(content="没有可恢复的历史会话。")
+    return await _switch_to(ctx, candidates[0])

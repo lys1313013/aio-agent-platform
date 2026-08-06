@@ -168,8 +168,29 @@ async def _ws_use(ctx: CommandContext) -> CommandResult:
 # ---- Model ----
 
 
-@command("model", group="模型", desc="查看当前会话使用的模型与可用模型")
+@command(
+    "model",
+    group="模型",
+    desc="查看/切换当前会话使用的模型",
+    args=[CommandArg(name="name", required=False, hint="模型名称（缺省查看）")],
+)
 async def cmd_model(ctx: CommandContext) -> CommandResult:
+    name = ctx.args.get("name")
+    if name:
+        if ctx.session is None:
+            return CommandResult(content="当前没有会话，请先开始对话。")
+        model = await ctx.db.scalar(
+            select(LLMModel).where(LLMModel.is_active, LLMModel.name == name)
+        )
+        if model is None:
+            return CommandResult(content=f"模型 `{name}` 不存在或未启用。\n输入 /model 查看可用模型。")
+        ctx.session.model_id = model.id
+        await ctx.db.flush()
+        return CommandResult(
+            content=f"✅ 当前会话已切换到模型「{model.name}」。",
+            data={"model_id": str(model.id), "model_name": model.name},
+        )
+
     result = await ctx.db.execute(
         select(LLMModel)
         .options(selectinload(LLMModel.provider))
@@ -179,10 +200,13 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
     models = list(result.scalars().all())
 
     current = None
-    if ctx.session is not None and ctx.session.agent_id:
-        agent = await ctx.db.get(Agent, ctx.session.agent_id)
-        if agent is not None and agent.model_id:
-            current = await ctx.db.get(LLMModel, agent.model_id)
+    if ctx.session is not None:
+        current_id = ctx.session.model_id
+        if current_id is None and ctx.session.agent_id:
+            agent = await ctx.db.get(Agent, ctx.session.agent_id)
+            current_id = agent.model_id if agent else None
+        if current_id is not None:
+            current = await ctx.db.get(LLMModel, current_id)
 
     if not models:
         return CommandResult(content="暂无可用模型，请联系管理员配置。")
@@ -193,7 +217,8 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
         default = "（默认）" if m.is_default else ""
         provider_name = m.provider.name if m.provider else "?"
         lines.append(f"- `{m.name}` — {provider_name}{default}{marker}")
+    lines.append("")
+    lines.append("切换：`/model <名称>`")
     if current is None:
-        lines.append("")
         lines.append("当前会话使用系统默认模型。")
     return CommandResult(content="\n".join(lines))

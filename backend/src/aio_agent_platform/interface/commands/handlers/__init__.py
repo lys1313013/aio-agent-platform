@@ -2,6 +2,9 @@
 
 # Importing each handler module triggers @command registration.
 from . import agent as _agent  # noqa: F401
+from . import context as _context  # noqa: F401
+from . import delegation as _delegation  # noqa: F401
+from . import inspect_admin as _inspect_admin  # noqa: F401
 from . import schedule as _schedule  # noqa: F401
 from . import session as _session  # noqa: F401
 from . import skills_memory as _skills_memory  # noqa: F401

@@ -400,8 +400,8 @@ class ChannelInboundPipeline:
             groups.setdefault(c.group, []).append(c)
 
         order = [
-            "帮助", "会话", "技能", "记忆", "知识", "定时任务",
-            "智能体", "确认", "工作区", "模型", "运行", "通用",
+            "帮助", "会话", "上下文", "工具", "技能", "记忆", "知识", "定时任务",
+            "智能体", "确认", "工作区", "模型", "运行", "系统", "通用",
         ]
         lines = ["📖 可用命令：", ""]
         for g in order:
@@ -452,6 +452,21 @@ class ChannelInboundPipeline:
             tool_executor=self.tool_executor,
         )
         result = await dispatch(cmd_ctx)
+        # /switch and /resume carry the target session id in data; rebind this
+        # chat's active ChannelSessionMapping so the next message continues that
+        # session (the /switch handler already validated ownership).
+        switch_session_id = (result.data or {}).get("switch_session_id")
+        if switch_session_id:
+            await db.execute(
+                update(ChannelSessionMapping)
+                .where(
+                    ChannelSessionMapping.channel_id == self.channel.id,
+                    ChannelSessionMapping.chat_id == event.chat_id,
+                    ChannelSessionMapping.external_id == event.external_id,
+                    ChannelSessionMapping.is_active.is_(True),
+                )
+                .values(session_id=UUID(switch_session_id))
+            )
         await db.commit()  # persist writes made by the command handler
         await self.adapter.send(event, result.content)
         return True
@@ -615,7 +630,7 @@ class ChannelInboundPipeline:
 
         agent_loop = await build_agent_loop(
             self.tool_executor, system_prompt, db,
-            agent_model_id=agent.model_id,
+            agent_model_id=(session.model_id if session and session.model_id else None) or agent.model_id,
             agent_temperature=agent.temperature,
             agent_max_iterations=agent.max_iterations,
             agent_enable_retry=agent.enable_retry if agent.enable_retry is not None else True,

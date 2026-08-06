@@ -5,9 +5,9 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload
 
 from aio_agent_platform.auth.jwt_handler import TokenExpiredError, TokenPayload, decode_token
 from aio_agent_platform.db import TenantMembership, User
@@ -45,7 +45,8 @@ async def get_current_user(
     # Set RLS context variable
     current_user_id.set(payload.sub)
 
-    # Fetch user from DB
+    # Fetch user from DB. Fold tenant load + membership check into a single
+    # round trip (remote DB: each query costs a full RTT).
     try:
         user_id = UUID(payload.sub)
     except ValueError as e:
@@ -55,22 +56,29 @@ async def get_current_user(
         ) from e
 
     result = await db.execute(
-        select(User).options(selectinload(User.tenant)).where(User.id == user_id)
+        select(
+            User,
+            exists().where(
+                TenantMembership.user_id == User.id,
+                TenantMembership.tenant_id == User.tenant_id,
+            ).label("has_membership"),
+        )
+        .options(joinedload(User.tenant))
+        .where(User.id == user_id)
     )
-    user = result.scalar_one_or_none()
-
-    if not user or not user.is_active or not user.tenant.is_active:
+    row = result.one_or_none()
+    if not row:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
         )
-    membership = await db.scalar(
-        select(TenantMembership.user_id).where(
-            TenantMembership.user_id == user.id,
-            TenantMembership.tenant_id == user.tenant_id,
+    user, has_membership = row
+    if not user.is_active or not user.tenant.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
         )
-    )
-    if not membership:
+    if not has_membership:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Active tenant membership not found",

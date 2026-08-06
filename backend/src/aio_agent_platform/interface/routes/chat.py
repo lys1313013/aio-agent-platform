@@ -460,7 +460,7 @@ async def chat(
         await db.flush()
 
     # Resolve model info for provider-specific content formatting
-    agent_model_id = agent.model_id if agent else None
+    agent_model_id = (session.model_id if session and session.model_id else None) or (agent.model_id if agent else None)
     agent_temperature = agent.temperature if agent else None
     agent_max_iterations = agent.max_iterations if agent else None
     agent_enable_retry = agent.enable_retry if agent else True
@@ -902,7 +902,7 @@ async def chat_stream(
     session_id = session.id
 
     # Resolve model/provider info for provider-specific content formatting
-    agent_model_id = agent.model_id if agent else None
+    agent_model_id = (session.model_id if session and session.model_id else None) or (agent.model_id if agent else None)
     agent_enable_retry = agent.enable_retry if agent else True
     provider_type_for_content = "openai"
     _resolved_model = None
@@ -1018,7 +1018,7 @@ async def chat_stream(
                 )
 
                 # Resolve workspace first (needed by delegation context)
-                agent_model_id = agent.model_id if agent else None
+                agent_model_id = (session.model_id if session and session.model_id else None) or (agent.model_id if agent else None)
                 agent_temperature = agent.temperature if agent else None
                 agent_max_iterations = agent.max_iterations if agent else None
                 if pet_ctx:
@@ -1663,7 +1663,7 @@ async def chat_websocket(
                 logger.info("用户消息已保存")
 
                 # Build agent loop
-                agent_model_id = agent.model_id if agent else None
+                agent_model_id = (session.model_id if session and session.model_id else None) or (agent.model_id if agent else None)
                 agent_temperature = agent.temperature if agent else None
                 agent_max_iterations = agent.max_iterations if agent else None
                 workspace_id, workspace_slug = await _resolve_workspace(db, session, user_id)

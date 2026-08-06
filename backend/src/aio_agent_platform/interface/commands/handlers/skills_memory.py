@@ -82,16 +82,38 @@ async def cmd_remember(ctx: CommandContext) -> CommandResult:
 @command(
     "forget",
     group="记忆",
-    desc="删除指定记忆",
-    args=[CommandArg(name="id", kind="uuid", required=True, hint="记忆 ID")],
+    desc="删除指定记忆（按 ID 或关键词）",
+    args=[CommandArg(name="id", required=True, variadic=True, hint="记忆 ID 或关键词")],
 )
 async def cmd_forget(ctx: CommandContext) -> CommandResult:
-    deleted = await MemoryService.delete_memory(
-        ctx.db, UUID(ctx.args["id"]), UUID(ctx.user_id)
+    keyword = ctx.args["id"].strip()
+    if not keyword:
+        return CommandResult(content="请输入要删除的记忆 ID 或关键词。")
+
+    # Try parsing as UUID → delete by id.
+    try:
+        uid = UUID(keyword)
+    except ValueError:
+        uid = None
+    if uid is not None:
+        deleted = await MemoryService.delete_memory(ctx.db, uid, UUID(ctx.user_id))
+        if not deleted:
+            return CommandResult(content="记忆不存在。")
+        return CommandResult(content=f"✅ 已删除记忆 `{keyword}`。")
+
+    # Otherwise treat as keyword: search then delete matches.
+    matches = await MemoryService.search_memories(
+        ctx.db, UUID(ctx.user_id), keyword, top_k=20
     )
-    if not deleted:
-        return CommandResult(content="记忆不存在。")
-    return CommandResult(content=f"✅ 已删除记忆 `{ctx.args['id']}`。")
+    if not matches:
+        return CommandResult(content=f"未找到包含「{keyword}」的记忆。")
+    ids = [m.id for m, _score in matches]
+    count = await MemoryService.delete_memories(ctx.db, UUID(ctx.user_id), ids)
+    lines = [f"✅ 已删除 {count} 条匹配「{keyword}」的记忆：", ""]
+    for m, _score in matches:
+        content = (m.content or "").replace("\n", " ")[:80]
+        lines.append(f"- [`{m.id}`] {content}")
+    return CommandResult(content="\n".join(lines))
 
 
 # ---- Knowledge ----

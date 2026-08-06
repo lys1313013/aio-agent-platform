@@ -129,4 +129,4 @@ alembic downgrade -1
 
 ## 文档
 
-详细文档请参阅 `docs/00-产品需求文档.md` 和 `docs/01-技术栈.md`。
+详细文档入口见 [`docs/README.md`](docs/README.md)，从 `docs/00-产品需求文档.md` 与 `docs/01-技术栈.md` 开始阅读。

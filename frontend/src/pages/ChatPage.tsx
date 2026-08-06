@@ -154,6 +154,9 @@ export default function ChatPage() {
               if (data.workspace_id) {
                 useChatStore.getState().setSelectedWorkspace(data.workspace_id as string);
               }
+              if (data.switch_session_id) {
+                useChatStore.getState().setActiveSession(data.switch_session_id as string);
+              }
               break;
             }
 

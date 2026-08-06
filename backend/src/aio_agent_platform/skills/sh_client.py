@@ -40,6 +40,11 @@ REPO_CACHE_TTL = 6 * 3600  # cache repo metadata for 6 hours
 SHIELDS_CACHE_TTL = 3600  # shields.io fallback is rougher, re-check GitHub sooner
 _repo_meta_cache: dict[str, tuple[float, dict]] = {}
 
+
+def clear_repo_cache() -> None:
+    """Clear the skills.sh repo-metadata cache (skills themselves are DB-live)."""
+    _repo_meta_cache.clear()
+
 SHIELDS_STARS_URL = "https://img.shields.io/github/stars/{owner}/{repo}.json"
 SHIELDS_FORKS_URL = "https://img.shields.io/github/forks/{owner}/{repo}.json"
 SHIELDS_LICENSE_URL = "https://img.shields.io/github/license/{owner}/{repo}.json"

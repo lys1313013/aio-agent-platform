@@ -285,6 +285,39 @@ def resolve_provider_type(provider_type: str | None) -> str:
     return "openai"
 
 
+async def resolve_model(
+    db: AsyncSession,
+    model_id: UUID | None = None,
+) -> LLMModel:
+    """Resolve an LLMModel from a specific id, else the system default.
+
+    Returns a model with its ``provider`` relationship loaded. Raises
+    ``RuntimeError`` when no usable model exists (callers outside HTTP context
+    shouldn't raise HTTPException).
+    """
+    model_to_use = None
+    if model_id:
+        result = await db.execute(
+            select(LLMModel)
+            .options(selectinload(LLMModel.provider))
+            .where(LLMModel.id == model_id, LLMModel.is_active)
+        )
+        model_to_use = result.scalar_one_or_none()
+
+    if not model_to_use:
+        result = await db.execute(
+            select(LLMModel)
+            .options(selectinload(LLMModel.provider))
+            .where(LLMModel.is_default, LLMModel.is_active)
+            .limit(1)
+        )
+        model_to_use = result.scalar_one_or_none()
+
+    if not model_to_use or not model_to_use.provider:
+        raise RuntimeError("没有可用的模型，请在管理后台配置模型并为智能体绑定模型")
+    return model_to_use
+
+
 async def build_agent_loop(
     tool_executor: ToolExecutor,
     system_prompt: str,
@@ -303,27 +336,7 @@ async def build_agent_loop(
 
     Raises HTTPException (or RuntimeError for non-HTTP callers) if no model is available.
     """
-    model_to_use = None
-    if agent_model_id:
-        result = await db.execute(
-            select(LLMModel)
-            .options(selectinload(LLMModel.provider))
-            .where(LLMModel.id == agent_model_id, LLMModel.is_active)
-        )
-        model_to_use = result.scalar_one_or_none()
-
-    if not model_to_use:
-        result = await db.execute(
-            select(LLMModel)
-            .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default, LLMModel.is_active)
-            .limit(1)
-        )
-        model_to_use = result.scalar_one_or_none()
-
-    if not model_to_use or not model_to_use.provider:
-        # Callers without an HTTP context (cron, channels) shouldn't raise HTTPException.
-        raise RuntimeError("没有可用的模型，请在管理后台配置模型并为智能体绑定模型")
+    model_to_use = await resolve_model(db, agent_model_id)
 
     provider = create_provider(
         provider=model_to_use.provider.provider_type,

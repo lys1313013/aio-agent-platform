@@ -26,8 +26,8 @@ async def cmd_help(ctx: CommandContext) -> CommandResult:
         groups.setdefault(c.group, []).append(c)
 
     order = [
-        "帮助", "会话", "技能", "记忆", "知识", "定时任务",
-        "智能体", "确认", "工作区", "模型", "运行", "通用",
+        "帮助", "会话", "上下文", "工具", "技能", "记忆", "知识", "定时任务",
+        "智能体", "确认", "工作区", "模型", "运行", "系统", "通用",
     ]
     lines = ["## 可用命令", ""]
     for g in order:

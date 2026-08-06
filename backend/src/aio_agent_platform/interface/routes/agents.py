@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload, with_loader_criteria
+from sqlalchemy.orm import joinedload, selectinload, with_loader_criteria
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.db.connection import get_db
@@ -130,7 +130,7 @@ async def admin_list_agents(
     result = await db.execute(
         select(Agent)
         .options(
-            selectinload(Agent.model),
+            joinedload(Agent.model),
             selectinload(Agent.skills),
             selectinload(Agent.knowledge_bases),
             selectinload(Agent.children),
@@ -206,7 +206,7 @@ async def admin_create_agent(
     result = await db.execute(
         select(Agent)
         .options(
-            selectinload(Agent.model),
+            joinedload(Agent.model),
             selectinload(Agent.skills),
             selectinload(Agent.knowledge_bases),
             selectinload(Agent.children),
@@ -229,7 +229,7 @@ async def admin_update_agent(
     result = await db.execute(
         select(Agent)
         .options(
-            selectinload(Agent.model),
+            joinedload(Agent.model),
             selectinload(Agent.skills),
             selectinload(Agent.knowledge_bases),
             selectinload(Agent.children),
@@ -320,7 +320,7 @@ async def admin_update_agent(
     result = await db.execute(
         select(Agent)
         .options(
-            selectinload(Agent.model),
+            joinedload(Agent.model),
             selectinload(Agent.skills),
             selectinload(Agent.knowledge_bases),
             selectinload(Agent.children),
@@ -386,7 +386,7 @@ async def list_agents(
     result = await db.execute(
         select(Agent)
         .options(
-            selectinload(Agent.model),
+            joinedload(Agent.model),
             selectinload(Agent.skills),
             selectinload(Agent.knowledge_bases),
             selectinload(Agent.children),
@@ -409,7 +409,7 @@ async def get_agent(
     result = await db.execute(
         select(Agent)
         .options(
-            selectinload(Agent.model),
+            joinedload(Agent.model),
             selectinload(Agent.skills),
             selectinload(Agent.knowledge_bases),
             selectinload(Agent.children),

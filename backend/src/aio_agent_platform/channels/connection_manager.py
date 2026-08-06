@@ -23,6 +23,19 @@ from aio_agent_platform.tools.executor import ToolExecutor
 
 logger = structlog.get_logger()
 
+# Process-wide singleton, set during app lifespan. Command handlers have no
+# app.state access, so /status reaches the channel manager through this.
+_global_channel_manager: ChannelConnectionManager | None = None
+
+
+def set_global_channel_manager(manager: ChannelConnectionManager | None) -> None:
+    global _global_channel_manager
+    _global_channel_manager = manager
+
+
+def get_global_channel_manager() -> ChannelConnectionManager | None:
+    return _global_channel_manager
+
 
 class ChannelConnectionManager:
     """Manages the lifecycle of all channel connections.
