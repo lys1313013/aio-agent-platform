@@ -86,7 +86,7 @@ cd backend && uv run uvicorn aio_agent_platform.interface.api:app --host 0.0.0.0
 cd frontend && npm run dev
 ```
 
-前端：**http://localhost:5273**（`/api` 请求自动代理到后端）
+前端：**http://localhost:1717**（`/api` 请求自动代理到后端）
 
 ### 其他命令
 
@@ -106,7 +106,7 @@ cd frontend && npm run build          # 前端生产构建
 | `DATABASE_URL` | `postgresql+asyncpg://agent_user:changeme@localhost:5435/aio_agent_platform` | 数据库连接字符串 |
 | `JWT_SECRET` | *（必填）* | JWT 签名密钥 |
 | `HOST` / `PORT` | `0.0.0.0` / `8100` | API 服务绑定地址 |
-| `CORS_ORIGINS` | `http://localhost:5273,http://localhost:3000` | 允许的跨域来源 |
+| `CORS_ORIGINS` | `http://localhost:1717,http://localhost:3000` | 允许的跨域来源 |
 | `AGENT_TRUST_LEVEL` | `ask_dangerous` | 工具执行信任级别：`ask_always` / `ask_dangerous` / `auto_all` |
 | `SANDBOX_IMAGE` | `aio-agent-platform/sandbox:latest` | 沙箱 Docker 镜像 |
 

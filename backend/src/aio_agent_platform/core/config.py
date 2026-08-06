@@ -199,7 +199,7 @@ class ServerSettings(BaseSettings):
 
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8100, ge=1, le=65535)
-    cors_origins: str = Field(default="http://localhost:5273")
+    cors_origins: str = Field(default="http://localhost:1717")
     log_level: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR)$")
     reload: bool = Field(
         default=False,

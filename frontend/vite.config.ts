@@ -13,7 +13,7 @@ export default defineConfig({
     include: ['antd', '@ant-design/icons'],
   },
   server: {
-    port: 5273,
+    port: 1717,
     proxy: {
       // SSE streaming endpoint — needs special handling
       '/api/chat/stream': {

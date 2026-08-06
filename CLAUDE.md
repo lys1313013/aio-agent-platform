@@ -24,7 +24,7 @@ uv run mypy src/                         # 类型检查
 
 # 前端
 cd frontend
-npm run dev                              # 开发服务器 (localhost:5273)
+npm run dev                              # 开发服务器 (localhost:1717)
 npm run build                            # 生产构建
 npm run lint                             # ESLint
 
