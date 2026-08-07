@@ -2144,6 +2144,10 @@ export interface ObsOverviewCards {
   p95_latency_ms: number | null;
   total_tokens: number;
   context_util_p95: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_read_tokens: number;
+  cache_hit_rate: number;
 }
 
 export interface ObsOverview {

@@ -144,23 +144,35 @@ function OverviewTab({ window }: { window: ObsWindow }) {
   return (
     <>
       <Row gutter={[16, 16]}>
-        <Col span={4}>
+        <Col span={3}>
           <StatCard title="LLM 调用" value={fmt(c.llm_requests)} />
         </Col>
-        <Col span={4}>
+        <Col span={3}>
           <StatCard title="工具调用" value={fmt(c.tool_requests)} />
         </Col>
-        <Col span={4}>
+        <Col span={3}>
           <StatCard title="LLM 失败率" value={c.llm_error_rate} suffix="%" danger={c.llm_error_rate > 5} />
         </Col>
-        <Col span={4}>
+        <Col span={3}>
           <StatCard title="工具错误率" value={c.tool_error_rate} suffix="%" danger={c.tool_error_rate > 20} />
         </Col>
-        <Col span={4}>
+        <Col span={3}>
           <StatCard title="平均 TTFT" value={dur(c.avg_ttft_ms)} />
         </Col>
-        <Col span={4}>
+        <Col span={3}>
           <StatCard title="Token 消耗" value={fmt(c.total_tokens)} />
+        </Col>
+        <Col span={3}>
+          <StatCard
+            title="输入缓存命中率"
+            value={c.cache_hit_rate}
+            suffix="%"
+            danger={c.cache_hit_rate < 20}
+            warning={c.cache_hit_rate >= 20 && c.cache_hit_rate < 50}
+          />
+        </Col>
+        <Col span={3}>
+          <StatCard title="输出 Token" value={fmt(c.completion_tokens)} />
         </Col>
       </Row>
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
@@ -247,7 +259,24 @@ function TracesTab({ window }: { window: ObsWindow }) {
   const llmCols: ColumnsType<Record<string, unknown>> = [
     { title: '#', dataIndex: 'call_order', width: 50 },
     { title: '模型', dataIndex: 'model', ellipsis: true },
-    { title: 'Token', render: (_, r) => `${r.total_tokens ?? 0} (in ${r.prompt_tokens ?? 0})` },
+    { title: '输入', dataIndex: 'prompt_tokens', align: 'right', render: (v) => fmt(v as number) },
+    { title: '输出', dataIndex: 'completion_tokens', align: 'right', render: (v) => fmt(v as number) },
+    {
+      title: '缓存命中率',
+      key: 'cache_hit_rate',
+      align: 'right',
+      render: (_, r) => {
+        const prompt = Number(r.prompt_tokens ?? 0);
+        const cache = Number(r.cache_read_tokens ?? 0);
+        if (!prompt) return <Text type="secondary">-</Text>;
+        const rate = (cache / prompt) * 100;
+        return (
+          <span style={{ color: rate >= 80 ? '#16A34A' : rate >= 50 ? '#D97706' : '#DC2626' }}>
+            {rate.toFixed(0)}%
+          </span>
+        );
+      },
+    },
     { title: 'TTFT', dataIndex: 'ttft_ms', render: (v) => dur(v as number | null) },
     { title: '耗时', dataIndex: 'duration_ms', render: (v) => dur(v as number | null) },
     {

@@ -60,11 +60,9 @@ def _resolve_range(
 
 
 def _bucket_expr(column, window: str):
-    if window == "1h":
-        return func.date_trunc("minute", column)
-    if window == "7d":
-        return func.date_trunc("day", column)
-    return func.date_trunc("hour", column)
+    trunc = "minute" if window == "1h" else "day" if window == "7d" else "hour"
+    # 先转 UTC 墙钟再截断，保证 bucket 边界与 _fill_series 的 UTC 对齐一致
+    return func.timezone("UTC", func.date_trunc(trunc, func.timezone("UTC", column)))
 
 
 def _bucket_step(window: str) -> timedelta:
@@ -81,9 +79,19 @@ def _fill_series(
     step: timedelta,
     data: dict[datetime, float],
 ) -> list[dict]:
+    def align(dt: datetime) -> datetime:
+        # 对齐到 bucket 边界（UTC），与 date_trunc 返回的键保持一致
+        dt = dt.astimezone(UTC)
+        if step == timedelta(days=1):
+            return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        if step == timedelta(minutes=1):
+            return dt.replace(second=0, microsecond=0)
+        return dt.replace(minute=0, second=0, microsecond=0)
+
     points: list[dict] = []
-    t = start
-    while t <= end:
+    t = align(start)
+    end_key = align(end)
+    while t <= end_key:
         points.append({"ts": t.isoformat(), "value": data.get(t, 0.0)})
         t += step
     return points
@@ -101,6 +109,10 @@ class OverviewCards(BaseModel):
     p95_latency_ms: float | None
     total_tokens: int
     context_util_p95: float | None
+    prompt_tokens: int
+    completion_tokens: int
+    cache_read_tokens: int
+    cache_hit_rate: float
 
 
 class OverviewOut(BaseModel):
@@ -213,6 +225,21 @@ async def get_overview(
             *_in_range(LLMCallLog.created_at)
         )
     )
+    prompt_tokens = await db.scalar(
+        select(func.coalesce(func.sum(LLMCallLog.prompt_tokens), 0)).where(
+            *_in_range(LLMCallLog.created_at)
+        )
+    )
+    completion_tokens = await db.scalar(
+        select(func.coalesce(func.sum(LLMCallLog.completion_tokens), 0)).where(
+            *_in_range(LLMCallLog.created_at)
+        )
+    )
+    cache_read_tokens = await db.scalar(
+        select(func.coalesce(func.sum(LLMCallLog.cache_read_tokens), 0)).where(
+            *_in_range(LLMCallLog.created_at)
+        )
+    )
     ctx_p95 = await db.scalar(
         select(
             func.percentile_cont(0.95).within_group(LLMCallLog.context_utilization)
@@ -231,6 +258,10 @@ async def get_overview(
         p95_latency_ms=round(p95_latency, 1) if p95_latency is not None else None,
         total_tokens=total_tokens,
         context_util_p95=round(ctx_p95, 4) if ctx_p95 is not None else None,
+        prompt_tokens=int(prompt_tokens),
+        completion_tokens=int(completion_tokens),
+        cache_read_tokens=int(cache_read_tokens),
+        cache_hit_rate=round(cache_read_tokens / prompt_tokens * 100, 2) if prompt_tokens else 0.0,
     )
 
     step = _bucket_step(window)

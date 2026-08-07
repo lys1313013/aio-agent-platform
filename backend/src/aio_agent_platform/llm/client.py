@@ -277,9 +277,11 @@ class OpenAIProvider(LLMProvider):
         parsed = self._parse_response(resp)
         usage = parsed.usage or {}
         cache_read = 0
+        cache_creation = 0
         details = getattr(resp.usage, "prompt_tokens_details", None)
         if details:
-            cache_read = details.cached_tokens or 0
+            cache_read = getattr(details, "cached_tokens", 0) or 0
+            cache_creation = getattr(details, "cache_creation", 0) or 0
         duration_ms = int((time.monotonic() - t_start) * 1000)
         completion = usage.get("completion_tokens", 0)
         get_recorder().record_llm_call(
@@ -289,6 +291,7 @@ class OpenAIProvider(LLMProvider):
             completion_tokens=completion,
             total_tokens=usage.get("total_tokens", 0),
             cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_creation,
             duration_ms=duration_ms,
             output_tokens_per_sec=(completion / max(duration_ms / 1000, 0.001)) if completion else None,
             retry_count=retries,
@@ -315,6 +318,7 @@ class OpenAIProvider(LLMProvider):
         t_start = time.monotonic()
         first_chunk_at: float | None = None
         cache_read_tokens = 0
+        cache_creation_tokens = 0
         retries = 0
         llm_error_type: str | None = None
         stop_reason: str | None = None
@@ -375,7 +379,8 @@ class OpenAIProvider(LLMProvider):
                     if event.usage:
                         details = getattr(event.usage, "prompt_tokens_details", None)
                         if details:
-                            cache_read_tokens = details.cached_tokens or 0
+                            cache_read_tokens = getattr(details, "cached_tokens", 0) or 0
+                            cache_creation_tokens = getattr(details, "cache_creation", 0) or 0
                     chunk = self._parse_stream_event(event)
                     if chunk and first_chunk_at is None and chunk.type in ("text_delta", "tool_call_start"):
                         first_chunk_at = time.monotonic()
@@ -444,6 +449,7 @@ class OpenAIProvider(LLMProvider):
                 completion_tokens=completion,
                 total_tokens=total,
                 cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
                 ttft_ms=ttft_ms,
                 duration_ms=duration_ms,
                 output_tokens_per_sec=(completion / max(duration_ms / 1000, 0.001)) if completion else None,
