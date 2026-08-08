@@ -154,6 +154,8 @@ async def _webhook(
                     await asyncio.sleep(BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)])
                     continue
                 raise
+    # attempts >= 1，循环内必然 return 或 raise；此行仅为满足类型检查
+    return ActionResult(status="failed", error="webhook 未执行")
 
 
 async def _sandbox_command(hook: HookDef, payload: dict, sandbox_mgr, ctx: dict) -> ActionResult:
