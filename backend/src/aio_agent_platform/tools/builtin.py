@@ -23,6 +23,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     registry.register(DELEGATE_TASK)
     registry.register(ASK_USER_QUESTION)
     registry.register(KNOWLEDGE_RETRIEVAL)
+    registry.register(GRAPH_RETRIEVAL)
     registry.register(FILE_INFO)
     registry.register(FILE_GREP)
     registry.register(FILE_QUERY)
@@ -683,6 +684,35 @@ KNOWLEDGE_RETRIEVAL = Tool(
                 "type": "integer",
                 "description": "Maximum number of results to return (default: 5)",
                 "default": 5,
+            },
+        },
+        "required": ["query"],
+    },
+    requires_sandbox=False,
+    permission_level="read",
+    timeout=30,
+)
+
+
+GRAPH_RETRIEVAL = Tool(
+    name="graph_retrieval",
+    description=(
+        "Search the knowledge graph for entities and their relationships. "
+        "Use this for relational or multi-hop questions, e.g. who manages what, "
+        "which components depend on X, or what X is related to. "
+        "Returns structured entities and relationship triples."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The query to find related entities",
+            },
+            "max_depth": {
+                "type": "integer",
+                "description": "How many hops of relationships to traverse (default: 2)",
+                "default": 2,
             },
         },
         "required": ["query"],

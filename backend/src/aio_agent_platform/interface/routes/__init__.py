@@ -1,5 +1,6 @@
 """API route modules."""
 
+from aio_agent_platform.graph_knowledge.routes import router as graph_knowledge_router
 from aio_agent_platform.interface.routes.admin_models import router as admin_models_router
 from aio_agent_platform.interface.routes.agent_api import router as agent_api_router
 from aio_agent_platform.interface.routes.agents import router as agents_router
@@ -42,6 +43,7 @@ __all__ = [
     "confirmations_router",
     "cron_jobs_router",
     "delegations_router",
+    "graph_knowledge_router",
     "knowledge_router",
     "mcp_servers_router",
     "memories_router",

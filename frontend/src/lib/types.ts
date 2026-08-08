@@ -458,6 +458,7 @@ export interface Agent {
   is_active: boolean;
   skill_ids: string[];
   knowledge_base_ids: string[];
+  graph_knowledge_base_ids: string[];
   // Multi-agent relationships
   parent_ids: string[];
   child_ids: string[];

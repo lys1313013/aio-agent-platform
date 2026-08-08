@@ -47,8 +47,8 @@ REGISTRY = [
     (ChannelBindingOut, ChannelBinding, set()),
     (
         AgentOut, Agent,
-        {"model_name", "skill_ids", "knowledge_base_ids", "parent_ids",
-         "child_ids", "children_count", "can_edit"},
+        {"model_name", "skill_ids", "knowledge_base_ids", "graph_knowledge_base_ids",
+         "parent_ids", "child_ids", "children_count", "can_edit"},
     ),
     (MCPServerOut, MCPServer, {"tools_count", "tools"}),
     (PetPackageOut, PetPackage, {"spritesheet_url"}),

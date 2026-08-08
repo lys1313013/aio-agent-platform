@@ -46,8 +46,8 @@ import {
   Modal,
 } from 'antd';
 import type { MenuProps } from 'antd';
-import { agentsApi, adminApi, skillsApi, toolsApi, mcpApi, knowledgeApi } from '@/lib/api';
-import type { McpServer, KnowledgeBase } from '@/lib/api';
+import { agentsApi, adminApi, skillsApi, toolsApi, mcpApi, knowledgeApi, graphKnowledgeApi } from '@/lib/api';
+import type { McpServer, KnowledgeBase, GraphKnowledgeBase } from '@/lib/api';
 import { useChatStore } from '@/stores/chatStore';
 import { formatRelativeTime, cn } from '@/lib/utils';
 import { PROMPT_TEMPLATES } from '@/lib/promptTemplates';
@@ -87,7 +87,7 @@ const TOOL_CATEGORY_ORDER = [
   'other',
 ];
 
-type AdminSectionKey = 'prompt' | 'tools' | 'mcp' | 'knowledge' | 'skills' | 'children';
+type AdminSectionKey = 'prompt' | 'tools' | 'mcp' | 'knowledge' | 'graph-knowledge' | 'skills' | 'children';
 type SectionKey = AdminSectionKey | 'overview' | 'history';
 
 interface AgentConfigSidebarProps {
@@ -115,6 +115,8 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
   const [enabledMcpTools, setEnabledMcpTools] = useState<string[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<string[]>([]);
+  const [graphKnowledgeBases, setGraphKnowledgeBases] = useState<GraphKnowledgeBase[]>([]);
+  const [selectedGraphKnowledgeBaseIds, setSelectedGraphKnowledgeBaseIds] = useState<string[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
   const [systemPrompt, setSystemPrompt] = useState('');
   const [agentTemperature, setAgentTemperature] = useState<number | null>(null);
@@ -176,13 +178,14 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
   const fetchAgentData = useCallback(async () => {
     setLoading(true);
     try {
-      const [agents, m, s, t, mcp, kbs] = await Promise.all([
+      const [agents, m, s, t, mcp, kbs, graphKbs] = await Promise.all([
         agentsApi.adminList(),
         adminApi.listModels(),
         skillsApi.list({ is_active: true, limit: 200 }),
         toolsApi.list(),
         mcpApi.list(),
         knowledgeApi.list(),
+        graphKnowledgeApi.list(),
       ]);
       const found = agents.find((a) => a.id === agentId);
       if (found) {
@@ -192,6 +195,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
         // by backend when knowledge bases / child agents are bound
         setEnabledTools((found.enabled_tools || []).filter((t) => t !== 'knowledge_retrieval' && t !== 'delegate_task'));
         setSelectedKnowledgeBaseIds(found.knowledge_base_ids || []);
+        setSelectedGraphKnowledgeBaseIds(found.graph_knowledge_base_ids || []);
         setSelectedSkillIds(found.skill_ids || []);
         setSelectedChildIds(found.child_ids || []);
         setSystemPrompt(found.system_prompt || '');
@@ -209,6 +213,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
       setAllTools(t);
       setMcpServers(mcp);
       setKnowledgeBases(kbs);
+      setGraphKnowledgeBases(graphKbs);
       // Initialize child max iterations from loaded agents
       const childIters: Record<string, number | null> = {};
       agents.forEach((a) => {
@@ -563,6 +568,16 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                       {agent.knowledge_base_ids?.length ?? 0} 个
                     </Tag>
                   </div>
+                  <div className="flex items-center justify-between">
+                    <Text type="secondary" className="text-xs">图谱知识库</Text>
+                    <Tag
+                      color="cyan"
+                      className="text-xs cursor-pointer"
+                      onClick={() => setActiveSection('graph-knowledge')}
+                    >
+                      {agent.graph_knowledge_base_ids?.length ?? 0} 个
+                    </Tag>
+                  </div>
                 </div>
               </div>
             )}
@@ -742,6 +757,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
       tools: { icon: <ToolOutlined />, label: '工具配置' },
       mcp: { icon: <DisconnectOutlined />, label: 'MCP 服务' },
       knowledge: { icon: <DatabaseOutlined />, label: '知识库' },
+      'graph-knowledge': { icon: <ApartmentOutlined />, label: '图谱知识库' },
       skills: { icon: <ThunderboltOutlined />, label: '技能配置' },
       children: { icon: <ApartmentOutlined />, label: '子智能体' },
     };
@@ -1732,6 +1748,85 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
             </div>
           )}
 
+          {activeSection === 'graph-knowledge' && (
+            <div>
+              <Text type="secondary" className="text-xs block mb-2">
+                选择该智能体可检索的图谱知识库。绑定后，Agent 可自动调用图谱检索工具，
+                沿实体关系链回答关系型与多跳问题。
+              </Text>
+
+              {graphKnowledgeBases.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-8 text-muted-foreground/60">
+                  <ApartmentOutlined className="text-lg mb-2" />
+                  <Text type="secondary" className="text-xs">
+                    暂无可用的图谱知识库
+                  </Text>
+                  <Text type="secondary" className="text-xs">
+                    请先在知识图谱页面创建并抽取知识库
+                  </Text>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {graphKnowledgeBases.map((kb) => {
+                    const isSelected = selectedGraphKnowledgeBaseIds.includes(kb.id);
+                    return (
+                      <div
+                        key={kb.id}
+                        className={cn(
+                          'flex items-center gap-2 p-2 rounded-lg cursor-pointer border transition-colors',
+                          isSelected
+                            ? 'bg-primary/5 border-primary/30'
+                            : 'border-border/50 hover:bg-muted/50',
+                          !kb.is_active && 'opacity-50',
+                        )}
+                        onClick={() => {
+                          setSelectedGraphKnowledgeBaseIds((prev) =>
+                            isSelected
+                              ? prev.filter((id) => id !== kb.id)
+                              : [...prev, kb.id]
+                          );
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          readOnly
+                          className="accent-primary"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1">
+                            <Text className="text-xs font-medium truncate">{kb.name}</Text>
+                            {!kb.is_active && (
+                              <Tag className="text-[10px] leading-none px-1 py-0 ml-auto">已禁用</Tag>
+                            )}
+                          </div>
+                          <Text type="secondary" className="text-[10px] block">
+                            {kb.entity_count} 实体 · {kb.relationship_count} 关系
+                          </Text>
+                          {kb.description && (
+                            <Text type="secondary" className="text-[10px] block truncate">
+                              {kb.description}
+                            </Text>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <SaveButtonRow
+                saving={savingSection === 'graph-knowledge'}
+                saved={savedSection === 'graph-knowledge'}
+                onSave={() =>
+                  saveSection('graph-knowledge', {
+                    graph_knowledge_base_ids: selectedGraphKnowledgeBaseIds,
+                  })
+                }
+              />
+            </div>
+          )}
+
           {activeSection === 'skills' && (
             <>
             <div>
@@ -2509,6 +2604,20 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
             )}
           >
             <DatabaseOutlined />
+          </button>
+        </Tooltip>
+
+        <Tooltip title="图谱知识库" placement="right" mouseEnterDelay={0.5}>
+          <button
+            onClick={() => toggleSection('graph-knowledge')}
+            className={cn(
+              'flex items-center justify-center w-9 h-9 rounded-lg transition-colors',
+              activeSection === 'graph-knowledge'
+                ? 'bg-primary/15 text-primary'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+            )}
+          >
+            <ApartmentOutlined />
           </button>
         </Tooltip>
 

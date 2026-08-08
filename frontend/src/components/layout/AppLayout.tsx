@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import {
@@ -14,6 +14,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   ApiOutlined,
+  ApartmentOutlined,
   CloudServerOutlined,
   DatabaseOutlined,
   GlobalOutlined,
@@ -26,18 +27,20 @@ import {
   SearchOutlined,
   SmileOutlined,
   RightOutlined,
+  BgColorsOutlined,
 } from '@ant-design/icons';
-import { Dropdown, Avatar, Select } from 'antd';
+import { Dropdown, Avatar, Select, Modal } from 'antd';
 import type { MenuProps } from 'antd';
 import { cn } from '@/lib/utils';
 import { settingsApi } from '@/lib/api';
-import SkinPicker from '@/components/SkinPicker';
+import { SkinPickerContent } from '@/components/SkinPicker';
 import BrandLogo from '@/components/BrandLogo';
 import PetWidget from '@/components/pet/PetWidget';
 
 export default function AppLayout() {
-  const { logout, role, username } = useAuthStore();
+  const { logout, role, username, tenantName } = useAuthStore();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [skinOpen, setSkinOpen] = useState(false);
   const [tenantOptions, setTenantOptions] = useState<Array<{
     id: string;
     name: string;
@@ -54,7 +57,19 @@ export default function AppLayout() {
     settingsApi.listTenants().then(setTenantOptions).catch(() => {});
   }, []);
 
-  const navGroups = [
+  interface NavItem {
+    label: string;
+    path?: string;
+    icon?: ReactNode;
+    children?: NavItem[];
+  }
+  interface NavGroup {
+    key: string;
+    label: string;
+    items: NavItem[];
+  }
+
+  const navGroups: NavGroup[] = [
     {
       key: 'overview',
       label: '概览',
@@ -87,7 +102,14 @@ export default function AppLayout() {
         ...(isAdmin
           ? [
               { path: '/channels', icon: <MessageOutlined />, label: '渠道管理' },
-              { path: '/knowledge', icon: <DatabaseOutlined />, label: '知识库' },
+              {
+                label: '知识库',
+                icon: <DatabaseOutlined />,
+                children: [
+                  { path: '/knowledge-graph', icon: <ApartmentOutlined />, label: '知识图谱' },
+                  { path: '/knowledge', icon: <DatabaseOutlined />, label: 'RAGFlow 知识库' },
+                ],
+              },
               { path: '/mcp-servers', icon: <CloudServerOutlined />, label: 'MCP 服务' },
               { path: '/remote-tools', icon: <GlobalOutlined />, label: '远程工具' },
               { path: '/web-tools', icon: <SearchOutlined />, label: 'Web 工具' },
@@ -127,14 +149,24 @@ export default function AppLayout() {
     },
   ];
 
+  const isItemActive = (item: NavItem) => {
+    if (item.path) {
+      return item.path === '/'
+        ? location.pathname === '/'
+        : location.pathname.startsWith(item.path);
+    }
+    return (
+      item.children?.some(
+        (child) =>
+          child.path === '/'
+            ? location.pathname === '/'
+            : location.pathname.startsWith(child.path ?? ''),
+      ) ?? false
+    );
+  };
+
   const activeGroupKey =
-    navGroups.find((group) =>
-      group.items.some((item) =>
-        item.path === '/'
-          ? location.pathname === '/'
-          : location.pathname.startsWith(item.path),
-      ),
-    )?.key ?? navGroups[0].key;
+    navGroups.find((group) => group.items.some(isItemActive))?.key ?? navGroups[0].key;
 
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
     try {
@@ -163,7 +195,34 @@ export default function AppLayout() {
     });
   }, []);
 
+  const [collapsedSubmenus, setCollapsedSubmenus] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('nav-collapsed-submenus');
+      if (saved) return JSON.parse(saved) as Record<string, boolean>;
+    } catch {}
+    return {};
+  });
+
+  const toggleSubmenu = useCallback((label: string) => {
+    setCollapsedSubmenus((prev) => {
+      const next = { ...prev, [label]: !prev[label] };
+      localStorage.setItem('nav-collapsed-submenus', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const isSubmenuExpanded = (item: NavItem) => {
+    const saved = collapsedSubmenus[item.label];
+    return saved === undefined ? isItemActive(item) : !saved;
+  };
+
   const userMenuItems: MenuProps['items'] = [
+    {
+      key: 'appearance',
+      icon: <BgColorsOutlined />,
+      label: '外观与主题',
+      onClick: () => setSkinOpen(true),
+    },
     {
       key: 'settings',
       icon: <SettingOutlined />,
@@ -190,7 +249,7 @@ export default function AppLayout() {
         </div>
 
         <div className="flex items-center gap-2">
-          {tenantOptions.length > 0 && (
+          {tenantOptions.length > 1 ? (
             <Select
               aria-label="当前租户"
               size="small"
@@ -204,8 +263,15 @@ export default function AppLayout() {
                 window.location.reload();
               }}
             />
-          )}
-          <SkinPicker />
+          ) : tenantName ? (
+            <span
+              title={tenantName}
+              className="flex max-w-52 items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-muted-foreground"
+            >
+              <GlobalOutlined className="shrink-0 text-primary" />
+              <span className="truncate">{tenantName}</span>
+            </span>
+          ) : null}
           <Dropdown menu={{ items: userMenuItems }} trigger={['click']} placement="bottomRight">
             <button className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-muted">
               <Avatar size={28} icon={<UserOutlined />} className="bg-primary/20 text-primary" />
@@ -245,15 +311,89 @@ export default function AppLayout() {
                     >
                       <div className="overflow-hidden">
                         {group.items.map((item) => {
+                          if (item.children && item.children.length) {
+                            const expanded = isSubmenuExpanded(item);
+                            const active = isItemActive(item);
+                            return (
+                              <div key={item.label} className="mb-0.5">
+                                <button
+                                  onClick={() => toggleSubmenu(item.label)}
+                                  className="group relative flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all hover:bg-muted/50 hover:text-foreground"
+                                  title={item.label}
+                                >
+                                  {active && (
+                                    <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-brand-gradient-b" />
+                                  )}
+                                  <span
+                                    className={cn(
+                                      'text-base transition',
+                                      active && 'text-primary',
+                                    )}
+                                  >
+                                    {item.icon}
+                                  </span>
+                                  <span className="flex-1 text-left">{item.label}</span>
+                                  <RightOutlined
+                                    className={cn(
+                                      'text-[10px] transition-transform duration-200',
+                                      expanded && 'rotate-90',
+                                    )}
+                                  />
+                                </button>
+                                <div
+                                  className={cn(
+                                    'grid transition-[grid-template-rows] duration-200 ease-in-out',
+                                    expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
+                                  )}
+                                >
+                                  <div className="overflow-hidden">
+                                    {item.children.map((child) => {
+                                      const childActive =
+                                        child.path === '/'
+                                          ? location.pathname === '/'
+                                          : location.pathname.startsWith(child.path ?? '');
+
+                                      return (
+                                        <NavLink
+                                          key={child.path}
+                                          to={child.path ?? '#'}
+                                          className={cn(
+                                            'group relative flex items-center gap-3 rounded-lg py-2.5 pl-9 pr-3 text-sm transition-all',
+                                            childActive
+                                              ? 'bg-muted text-foreground font-medium'
+                                              : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+                                          )}
+                                        >
+                                          {childActive && (
+                                            <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-brand-gradient-b" />
+                                          )}
+                                          <span
+                                            className={cn(
+                                              'text-sm transition',
+                                              childActive && 'text-primary',
+                                            )}
+                                          >
+                                            {child.icon}
+                                          </span>
+                                          <span>{child.label}</span>
+                                        </NavLink>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          }
+
                           const isActive =
                             item.path === '/'
                               ? location.pathname === '/'
-                              : location.pathname.startsWith(item.path);
+                              : location.pathname.startsWith(item.path ?? '');
 
                           return (
                             <NavLink
                               key={item.path}
-                              to={item.path}
+                              to={item.path ?? '#'}
                               className={cn(
                                 'group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all',
                                 isActive
@@ -265,7 +405,10 @@ export default function AppLayout() {
                                 <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-brand-gradient-b" />
                               )}
                               <span
-                                className={cn('text-base transition', isActive && 'text-primary')}
+                                className={cn(
+                                  'text-base transition',
+                                  isActive && 'text-primary',
+                                )}
                               >
                                 {item.icon}
                               </span>
@@ -294,28 +437,32 @@ export default function AppLayout() {
             {navGroups.map((group, groupIndex) => (
               <div key={group.key} className="flex flex-col items-center gap-1 w-full">
                 {groupIndex > 0 && <div className="my-1 h-px w-6 bg-border" />}
-                {group.items.map((item) => {
-                  const isActive =
-                    item.path === '/'
-                      ? location.pathname === '/'
-                      : location.pathname.startsWith(item.path);
+                {group.items
+                  .flatMap((item) =>
+                    item.children && item.children.length ? item.children : [item],
+                  )
+                  .map((item) => {
+                    const isActive =
+                      item.path === '/'
+                        ? location.pathname === '/'
+                        : location.pathname.startsWith(item.path ?? '');
 
-                  return (
-                    <NavLink
-                      key={item.path}
-                      to={item.path}
-                      className={cn(
-                        'flex h-9 w-9 items-center justify-center rounded-lg text-base transition',
-                        isActive
-                          ? 'bg-muted text-primary'
-                          : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
-                      )}
-                      title={item.label}
-                    >
-                      {item.icon}
-                    </NavLink>
-                  );
-                })}
+                    return (
+                      <NavLink
+                        key={item.path}
+                        to={item.path ?? '#'}
+                        className={cn(
+                          'flex h-9 w-9 items-center justify-center rounded-lg text-base transition',
+                          isActive
+                            ? 'bg-muted text-primary'
+                            : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+                        )}
+                        title={item.label}
+                      >
+                        {item.icon}
+                      </NavLink>
+                    );
+                  })}
               </div>
             ))}
             <div className="flex-1" />
@@ -335,6 +482,15 @@ export default function AppLayout() {
         </main>
       </div>
       <PetWidget />
+      <Modal
+        open={skinOpen}
+        onCancel={() => setSkinOpen(false)}
+        footer={null}
+        title="外观与主题"
+        width={340}
+      >
+        <SkinPickerContent />
+      </Modal>
     </div>
   );
 }

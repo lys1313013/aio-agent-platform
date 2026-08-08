@@ -192,6 +192,22 @@ class WebSettings(BaseSettings):
     )
 
 
+class HookSettings(BaseSettings):
+    """Hook mechanism configuration."""
+
+    model_config = SettingsConfigDict(env_prefix="HOOK_")
+
+    enabled: bool = Field(default=True, description="Enable hook dispatch")
+    queue_size: int = Field(default=2048, ge=64, le=65536, description="Bounded dispatch queue size")
+    concurrency: int = Field(default=4, ge=1, le=32, description="Hook worker count")
+    action_timeout_ms: int = Field(default=5000, ge=1000, le=30000, description="Default per-action timeout")
+    max_retries: int = Field(default=1, ge=0, le=3, description="Failed-action retries")
+    log_pre_events: bool = Field(default=False, description="Log PreToolUse/PreCompact executions")
+    allow_private_urls: bool = Field(default=False, description="Allow webhook URLs to internal/private hosts")
+    url_allowlist: str = Field(default="", description="Comma-separated allowed webhook domains (empty = public-only check)")
+    max_payload_bytes: int = Field(default=1_000_000, ge=10_000, le=10_000_000, description="Max webhook body bytes")
+
+
 class ServerSettings(BaseSettings):
     """Server configuration."""
 
@@ -237,6 +253,7 @@ class AppSettings(BaseSettings):
     server: ServerSettings = Field(default_factory=ServerSettings)
     langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
     web: WebSettings = Field(default_factory=WebSettings)
+    hook: HookSettings = Field(default_factory=HookSettings)
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

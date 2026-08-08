@@ -19,6 +19,8 @@ import PortraitPage from '@/pages/PortraitPage';
 import ModelManagementPage from '@/pages/ModelManagementPage';
 import McpManagementPage from '@/pages/McpManagementPage';
 import KnowledgeManagementPage from '@/pages/KnowledgeManagementPage';
+import KnowledgeGraphPage from '@/pages/KnowledgeGraphPage';
+import KnowledgeGraphDetailPage from '@/pages/KnowledgeGraphDetailPage';
 import RemoteToolManagementPage from '@/pages/RemoteToolManagementPage';
 import WebToolSettingsPage from '@/pages/WebToolSettingsPage';
 import SystemConfigPage from '@/pages/SystemConfigPage';
@@ -101,6 +103,8 @@ export default function App() {
         <Route path="/system-config" element={<SystemConfigPage />} />
         <Route path="/mcp-servers" element={<McpManagementPage />} />
         <Route path="/knowledge" element={<KnowledgeManagementPage />} />
+        <Route path="/knowledge-graph" element={<KnowledgeGraphPage />} />
+        <Route path="/knowledge-graph/:kbId" element={<KnowledgeGraphDetailPage />} />
         <Route path="/remote-tools" element={<RemoteToolManagementPage />} />
         <Route path="/web-tools" element={<WebToolSettingsPage />} />
         <Route path="/channels" element={<ChannelsPage />} />

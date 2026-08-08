@@ -13,6 +13,7 @@ import jinja2
 import openai
 
 from aio_agent_platform.core.config import settings
+from aio_agent_platform.hooks import get_hook_manager
 from aio_agent_platform.llm.client import LLMMessage, LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -428,6 +429,10 @@ async def prepare_context(
         total_tokens,
         budget.trigger_at,
     )
+    tokens_before_compress = total_tokens
+    get_hook_manager().fire_nowait(
+        "PreCompact", data={"tokens_before": tokens_before_compress}
+    )
 
     # Step 1: Light truncation (zero cost)
     # Separate system messages from history for targeted truncation
@@ -480,6 +485,14 @@ async def prepare_context(
         len(new_messages),
         total_tokens,
         final_tokens,
+    )
+    get_hook_manager().fire_nowait(
+        "PostCompact",
+        data={
+            "tokens_before": tokens_before_compress,
+            "tokens_after": final_tokens,
+            "saved_tokens": max(tokens_before_compress - final_tokens, 0),
+        },
     )
 
     return new_messages, True

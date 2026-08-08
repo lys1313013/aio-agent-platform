@@ -23,6 +23,7 @@ from aio_agent_platform.core.usage import record_llm_usage
 from aio_agent_platform.db.connection import get_session_factory
 from aio_agent_platform.db.models import Session as ChatSession
 from aio_agent_platform.db.models import User
+from aio_agent_platform.hooks import get_hook_manager
 from aio_agent_platform.llm import (
     LLMMessage,
     LLMProvider,
@@ -293,6 +294,25 @@ class AgentLoop:
         messages.extend(conversation_history)
         messages.append(LLMMessage(role="user", content=user_input))
 
+        # ---- Hook: session started ----
+        get_hook_manager().fire_nowait(
+            "SessionStart",
+            trace_id=str(trace_id),
+            user_id=user_id,
+            session_id=session_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            model=self.provider.model,
+            workspace_id=self.workspace_id,
+            workspace_slug=self.workspace_slug,
+            data={
+                "user_input": str(user_input)[:500] if user_input else "",
+                "model": self.provider.model,
+                "max_iterations": self.max_iterations,
+                "trust_level": self.trust_level,
+            },
+        )
+
         for step_num in range(1, self.max_iterations + 1):
             step = AgentStep(step=step_num)
             logger.debug(
@@ -304,8 +324,34 @@ class AgentLoop:
 
             # --- Context budget check: compress early tool results ---
             if step_num > 3:
+                tokens_before = estimate_messages_tokens(messages)
+                get_hook_manager().fire_nowait(
+                    "PreCompact",
+                    trace_id=str(trace_id),
+                    user_id=user_id,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    model=self.provider.model,
+                    data={"tokens_before": tokens_before},
+                )
                 messages = compress_early_tool_results(messages, step_num)
-                current_tokens = estimate_messages_tokens(messages)
+                tokens_after = estimate_messages_tokens(messages)
+                get_hook_manager().fire_nowait(
+                    "PostCompact",
+                    trace_id=str(trace_id),
+                    user_id=user_id,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    model=self.provider.model,
+                    data={
+                        "tokens_before": tokens_before,
+                        "tokens_after": tokens_after,
+                        "saved_tokens": max(tokens_before - tokens_after, 0),
+                    },
+                )
+                current_tokens = tokens_after
                 budget = ContextBudget.from_settings()
                 if current_tokens > budget.usable * 0.9:
                     logger.warning(
@@ -313,6 +359,23 @@ class AgentLoop:
                         step_num,
                         current_tokens,
                         budget.usable,
+                    )
+                    get_hook_manager().fire_nowait(
+                        "Notification",
+                        trace_id=str(trace_id),
+                        user_id=user_id,
+                        session_id=session_id,
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        model=self.provider.model,
+                        data={
+                            "level": "warning",
+                            "category": "context_high_utilization",
+                            "message": (
+                                f"ReAct iteration {step_num}: context at ~{current_tokens} "
+                                f"tokens (90% of {budget.usable} usable)"
+                            ),
+                        },
                     )
 
             # Pending tool calls being accumulated from stream deltas
@@ -388,6 +451,7 @@ class AgentLoop:
                     iteration_count=step_num,
                     tool_call_count=tool_call_count,
                     total_tokens=total_tokens,
+                    agent_id=agent_id,
                 )
                 step.done = True
                 yield step
@@ -461,6 +525,21 @@ class AgentLoop:
                         "tool_permission_denied",
                         tool_name=tc.name,
                         allowed_tools=sorted(self.allowed_tools),
+                    )
+                    get_hook_manager().fire_nowait(
+                        "Notification",
+                        user_id=str(ctx.user_id),
+                        session_id=str(ctx.session_id),
+                        workspace_id=str(ctx.workspace_id) if ctx.workspace_id else None,
+                        workspace_slug=ctx.workspace_slug,
+                        data={
+                            "level": "permission",
+                            "category": "permission_denied",
+                            "message": (
+                                f"Permission denied: tool '{tc.name}' is not available "
+                                "to this agent."
+                            ),
+                        },
                     )
                     result = ToolResult(
                         tool_call_id=tc.id,
@@ -610,6 +689,23 @@ class AgentLoop:
             tool_call_count=tool_call_count,
             total_tokens=total_tokens,
             hit_max_iterations=True,
+            agent_id=agent_id,
+        )
+        get_hook_manager().fire_nowait(
+            "Notification",
+            trace_id=str(trace_id),
+            user_id=user_id,
+            session_id=session_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            model=self.provider.model,
+            data={
+                "level": "warning",
+                "category": "max_iterations",
+                "message": (
+                    f"Agent reached max iterations ({self.max_iterations}) without completing"
+                ),
+            },
         )
         yield AgentStep(
             step=self.max_iterations,
@@ -634,8 +730,10 @@ class AgentLoop:
         tool_call_count: int = 0,
         total_tokens: int = 0,
         hit_max_iterations: bool = False,
+        agent_id: UUID | None = None,
     ) -> None:
         """Write the trace summary row (fire-and-forget) and clear obs context."""
+        duration_ms = int((time.monotonic() - t_start) * 1000)
         try:
             get_recorder().record_trace(
                 trace_id=trace_id,
@@ -646,13 +744,32 @@ class AgentLoop:
                 iteration_count=iteration_count,
                 tool_call_count=tool_call_count,
                 total_tokens=total_tokens,
-                duration_ms=int((time.monotonic() - t_start) * 1000),
+                duration_ms=duration_ms,
                 hit_max_iterations=hit_max_iterations,
             )
         except Exception:
             logger.exception("agent_trace_record_failed", session_id=str(session_id))
         finally:
             set_obs_context(None)
+
+        # ---- Hook: session ended ----
+        get_hook_manager().fire_nowait(
+            "SessionEnd",
+            trace_id=str(trace_id),
+            session_id=session_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            model=self.provider.model,
+            data={
+                "status": status,
+                "duration_ms": duration_ms,
+                "iteration_count": iteration_count,
+                "tool_call_count": tool_call_count,
+                "total_tokens": total_tokens,
+                "hit_max_iterations": hit_max_iterations,
+            },
+        )
 
     def finalize_trace_error(self) -> None:
         """Called by callers on abnormal termination to record an errored trace."""
@@ -666,6 +783,17 @@ class AgentLoop:
             tenant_id=ctx.tenant_id,
             status="error",
             duration_ms=0,
+        )
+        # ---- Hook: session ended (error path) ----
+        get_hook_manager().fire_nowait(
+            "SessionEnd",
+            trace_id=str(ctx.trace_id),
+            session_id=ctx.session_id,
+            user_id=ctx.user_id,
+            tenant_id=ctx.tenant_id,
+            agent_id=ctx.agent_id,
+            model=self.provider.model,
+            data={"status": "error", "duration_ms": 0},
         )
         set_obs_context(None)
 

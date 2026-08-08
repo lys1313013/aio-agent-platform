@@ -34,6 +34,7 @@ from aio_agent_platform.db import Message, Session
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
 from aio_agent_platform.db.models import (
     Agent,
+    GraphKnowledgeBase,
     KnowledgeBase,
     LLMModel,
     User,
@@ -82,6 +83,7 @@ async def load_agent(
             selectinload(Agent.model),
             selectinload(Agent.children),
             selectinload(Agent.knowledge_bases),
+            selectinload(Agent.graph_knowledge_bases),
         )
         .where(
             Agent.id == agent_id,
@@ -99,6 +101,15 @@ async def load_agent(
                 & or_(
                     KnowledgeBase.visibility == "tenant",
                     KnowledgeBase.created_by == user.id,
+                ),
+                include_aliases=True,
+            ),
+            with_loader_criteria(
+                GraphKnowledgeBase,
+                (GraphKnowledgeBase.tenant_id == user.tenant_id)
+                & or_(
+                    GraphKnowledgeBase.visibility == "tenant",
+                    GraphKnowledgeBase.created_by == user.id,
                 ),
                 include_aliases=True,
             ),
@@ -135,13 +146,13 @@ def filter_tools_by_agent(
         filtered = [
             t for t in all_tools
             if t.name in enabled_set
-            and t.name not in {"knowledge_retrieval", "delegate_task"}
+            and t.name not in {"knowledge_retrieval", "graph_retrieval", "delegate_task"}
             and t.name not in blacklist
         ]
     else:
         filtered = [
             t for t in all_tools
-            if t.name not in {"knowledge_retrieval", "delegate_task"}
+            if t.name not in {"knowledge_retrieval", "graph_retrieval", "delegate_task"}
             and t.name not in blacklist
         ]
 
@@ -157,6 +168,20 @@ def filter_tools_by_agent(
             agent_id=str(agent.id) if agent else None,
             knowledge_bases=kb_names,
             kb_count=len(kb_names),
+        )
+
+    # Auto-inject graph_retrieval when agent has bound graph knowledge bases.
+    has_graph_kb = bool(agent and agent.graph_knowledge_bases)
+    if has_graph_kb and "graph_retrieval" not in blacklist:
+        gr_tool = next((t for t in all_tools if t.name == "graph_retrieval"), None)
+        if gr_tool and gr_tool not in filtered:
+            filtered.append(gr_tool)
+        gkb_names = [kb.name for kb in agent.graph_knowledge_bases] if agent else []
+        logger.info(
+            "graph_retrieval_tool_injected",
+            agent_id=str(agent.id) if agent else None,
+            graph_knowledge_bases=gkb_names,
+            kb_count=len(gkb_names),
         )
 
     # Auto-inject delegate_task so the agent can delegate to existing children

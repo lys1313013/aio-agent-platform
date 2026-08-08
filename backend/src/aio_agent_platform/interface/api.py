@@ -12,6 +12,7 @@ from aio_agent_platform.core.config import settings
 from aio_agent_platform.cron_jobs.handlers import CRON_JOB_HANDLERS
 from aio_agent_platform.db.connection import close_db, init_db
 from aio_agent_platform.delegation import DELEGATION_HANDLERS
+from aio_agent_platform.graph_knowledge.handlers import GRAPH_HANDLERS
 from aio_agent_platform.interaction import INTERACTION_HANDLERS
 
 # Importing the commands package registers all built-in slash commands.
@@ -29,6 +30,7 @@ from aio_agent_platform.interface.routes import (
     confirmations_router,
     cron_jobs_router,
     delegations_router,
+    graph_knowledge_router,
     knowledge_router,
     mcp_servers_router,
     memories_router,
@@ -65,8 +67,9 @@ async def lifespan(app: FastAPI):
 
     # 1. Database bootstrap (create tables if not exist — for dev convenience)
     try:
-        # 外部 DB 不可达时 30s 内放弃（连接本身另有 8s connect 超时），避免启动无限卡住
-        await asyncio.wait_for(init_db(), timeout=30)
+        # 远程库 create_all 全量建表较慢，放宽到 10 分钟；连接本身另有 8s connect
+        # 超时，外部 DB 不可达时仍会快速失败，不会因本超时无限等待
+        await asyncio.wait_for(init_db(), timeout=600)
     except TimeoutError:
         import structlog
 
@@ -110,6 +113,10 @@ async def lifespan(app: FastAPI):
 
     # 7.5 Register knowledge tool handlers
     for name, handler in KNOWLEDGE_HANDLERS.items():
+        tool_executor.register_direct_handler(name, handler)
+
+    # 7.6 Register graph knowledge tool handlers
+    for name, handler in GRAPH_HANDLERS.items():
         tool_executor.register_direct_handler(name, handler)
 
     # 8. Register delegation tool handlers
@@ -246,6 +253,13 @@ async def lifespan(app: FastAPI):
     recorder = get_recorder()
     recorder.start()
     app.state.recorder = recorder
+
+    # 11.7 Hook manager — 事件驱动的自动化动作（webhook / 沙箱命令）
+    from aio_agent_platform.hooks import get_hook_manager
+
+    hook_manager = get_hook_manager()
+    hook_manager.start(sandbox_mgr)
+    app.state.hook_manager = hook_manager
 
     # 12. Cron Job Scheduler — load and schedule all active jobs
     from aio_agent_platform.cron_jobs.scheduler import Scheduler
@@ -561,6 +575,9 @@ async def lifespan(app: FastAPI):
     recorder = getattr(app.state, "recorder", None)
     if recorder:
         await recorder.shutdown()
+    hook_manager = getattr(app.state, "hook_manager", None)
+    if hook_manager:
+        await hook_manager.shutdown()
     await shutdown_langfuse()
     await close_db()
 
@@ -606,6 +623,7 @@ def create_app() -> FastAPI:
     app.include_router(workspaces_router)
     app.include_router(mcp_servers_router)
     app.include_router(knowledge_router)
+    app.include_router(graph_knowledge_router)
     app.include_router(agent_api_router)
     app.include_router(remote_tools_router)
     app.include_router(cron_jobs_router)

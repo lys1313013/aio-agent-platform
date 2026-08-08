@@ -8,6 +8,8 @@ interface AuthState {
   error: string | null;
   role: string | null;
   username: string | null;
+  tenantId: string | null;
+  tenantName: string | null;
 
   login: (usernameOrEmail: string, password: string) => Promise<boolean>;
   register: (username: string, email: string, password: string, tenantName?: string) => Promise<boolean>;
@@ -33,6 +35,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   error: null,
   role: initial.role,
   username: null,
+  tenantId: null,
+  tenantName: null,
 
   login: async (usernameOrEmail, password) => {
     set({ isLoading: true, error: null });
@@ -57,7 +61,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const tokens = await authApi.register(username, email, password, tenantName);
       tokenStorage.set(tokens.access_token, tokens.refresh_token);
       set({ isAuthenticated: true, isLoading: false, role: getUserRole() });
-      set({ username });
+      await get().loadProfile();
       return true;
     } catch (err) {
       set({
@@ -78,7 +82,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
     }
     tokenStorage.clear();
-    set({ isAuthenticated: false, role: null, username: null });
+    set({ isAuthenticated: false, role: null, username: null, tenantId: null, tenantName: null });
   },
 
   checkAuth: () => {
@@ -97,7 +101,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   loadProfile: async () => {
     try {
       const profile = await settingsApi.getProfile();
-      set({ username: profile.display_name || profile.username });
+      set({
+        username: profile.display_name || profile.username,
+        tenantId: profile.tenant_id,
+        tenantName: profile.tenant_name,
+      });
     } catch {
       /* ignore */
     }

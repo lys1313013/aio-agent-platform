@@ -15,9 +15,11 @@ from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.db.connection import get_db
 from aio_agent_platform.db.models import (
     Agent,
+    AgentGraphKnowledgeBase,
     AgentKnowledgeBase,
     AgentRelationship,
     AgentSkill,
+    GraphKnowledgeBase,
     KnowledgeBase,
     LLMModel,
     MCPServer,
@@ -60,6 +62,7 @@ class AgentOut(BaseModel):
     is_active: bool = True
     skill_ids: list[str] = []
     knowledge_base_ids: list[str] = []
+    graph_knowledge_base_ids: list[str] = []
     # Multi-agent fields
     parent_ids: list[str] = []
     child_ids: list[str] = []
@@ -89,6 +92,7 @@ class AgentCreate(BaseModel):
     enable_auto_title: bool = True
     skill_ids: list[str] = Field(default_factory=list)
     knowledge_base_ids: list[str] = Field(default_factory=list)
+    graph_knowledge_base_ids: list[str] = Field(default_factory=list)
     child_ids: list[str] = Field(default_factory=list)
     visibility: str = Field(default="tenant", pattern="^(tenant|private)$")
 
@@ -110,6 +114,7 @@ class AgentUpdate(BaseModel):
     enable_auto_title: bool | None = None
     skill_ids: list[str] | None = None
     knowledge_base_ids: list[str] | None = None
+    graph_knowledge_base_ids: list[str] | None = None
     is_active: bool | None = None
     child_ids: list[str] | None = None
     visibility: str | None = Field(default=None, pattern="^(tenant|private)$")
@@ -133,6 +138,7 @@ async def admin_list_agents(
             joinedload(Agent.model),
             selectinload(Agent.skills),
             selectinload(Agent.knowledge_bases),
+            selectinload(Agent.graph_knowledge_bases),
             selectinload(Agent.children),
             selectinload(Agent.parents),
             with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
@@ -196,6 +202,13 @@ async def admin_create_agent(
             kb_uuid = UUID(kb_id) if isinstance(kb_id, str) else kb_id
             db.add(AgentKnowledgeBase(agent_id=agent.id, knowledge_base_id=kb_uuid))
 
+    # Bind graph knowledge bases
+    if req.graph_knowledge_base_ids:
+        await _validate_graph_knowledge_bases(db, user, req.graph_knowledge_base_ids)
+        for kb_id in req.graph_knowledge_base_ids:
+            kb_uuid = UUID(kb_id) if isinstance(kb_id, str) else kb_id
+            db.add(AgentGraphKnowledgeBase(agent_id=agent.id, knowledge_base_id=kb_uuid))
+
     # Bind child relationships
     if req.child_ids:
         await _set_child_relationships(db, agent.id, req.child_ids, user)
@@ -209,6 +222,7 @@ async def admin_create_agent(
             joinedload(Agent.model),
             selectinload(Agent.skills),
             selectinload(Agent.knowledge_bases),
+            selectinload(Agent.graph_knowledge_bases),
             selectinload(Agent.children),
             selectinload(Agent.parents),
             with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
@@ -232,6 +246,7 @@ async def admin_update_agent(
             joinedload(Agent.model),
             selectinload(Agent.skills),
             selectinload(Agent.knowledge_bases),
+            selectinload(Agent.graph_knowledge_bases),
             selectinload(Agent.children),
             selectinload(Agent.parents),
             with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
@@ -310,6 +325,19 @@ async def admin_update_agent(
                 kb_uuid = UUID(kb_id) if isinstance(kb_id, str) else kb_id
                 db.add(AgentKnowledgeBase(agent_id=agent_id, knowledge_base_id=kb_uuid))
 
+    # Update graph knowledge base bindings if provided
+    if req.is_set("graph_knowledge_base_ids"):
+        await db.execute(
+            AgentGraphKnowledgeBase.__table__.delete().where(
+                AgentGraphKnowledgeBase.__table__.c.agent_id == agent_id
+            )
+        )
+        if req.graph_knowledge_base_ids:
+            await _validate_graph_knowledge_bases(db, user, req.graph_knowledge_base_ids)
+            for kb_id in req.graph_knowledge_base_ids:
+                kb_uuid = UUID(kb_id) if isinstance(kb_id, str) else kb_id
+                db.add(AgentGraphKnowledgeBase(agent_id=agent_id, knowledge_base_id=kb_uuid))
+
     # Update child relationships if provided
     if req.is_set("child_ids"):
         await _set_child_relationships(db, agent_id, req.child_ids or [], user)
@@ -323,6 +351,7 @@ async def admin_update_agent(
             joinedload(Agent.model),
             selectinload(Agent.skills),
             selectinload(Agent.knowledge_bases),
+            selectinload(Agent.graph_knowledge_bases),
             selectinload(Agent.children),
             selectinload(Agent.parents),
             with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
@@ -370,6 +399,13 @@ async def admin_delete_agent(
         )
     )
 
+    # Clean up graph knowledge base bindings
+    await db.execute(
+        AgentGraphKnowledgeBase.__table__.delete().where(
+            AgentGraphKnowledgeBase.__table__.c.agent_id == agent_id
+        )
+    )
+
     await db.delete(agent)
     await db.flush()
     return {"message": "智能体已删除"}
@@ -389,6 +425,7 @@ async def list_agents(
             joinedload(Agent.model),
             selectinload(Agent.skills),
             selectinload(Agent.knowledge_bases),
+            selectinload(Agent.graph_knowledge_bases),
             selectinload(Agent.children),
             selectinload(Agent.parents),
             with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
@@ -412,6 +449,7 @@ async def get_agent(
             joinedload(Agent.model),
             selectinload(Agent.skills),
             selectinload(Agent.knowledge_bases),
+            selectinload(Agent.graph_knowledge_bases),
             selectinload(Agent.children),
             selectinload(Agent.parents),
             with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
@@ -663,6 +701,26 @@ async def _validate_knowledge_bases(
         raise HTTPException(status_code=404, detail="知识库不存在或无权访问")
 
 
+async def _validate_graph_knowledge_bases(
+    db: AsyncSession, user, graph_knowledge_base_ids: list[str]
+) -> None:
+    ids = [UUID(value) if isinstance(value, str) else value for value in graph_knowledge_base_ids]
+    if not ids:
+        return
+    result = await db.execute(
+        select(GraphKnowledgeBase.id).where(
+            GraphKnowledgeBase.id.in_(ids),
+            GraphKnowledgeBase.tenant_id == user.tenant_id,
+            or_(
+                GraphKnowledgeBase.visibility == "tenant",
+                GraphKnowledgeBase.created_by == user.id,
+            ),
+        )
+    )
+    if set(result.scalars().all()) != set(ids):
+        raise HTTPException(status_code=404, detail="图谱知识库不存在或无权访问")
+
+
 async def _validate_mcp_servers(db: AsyncSession, user, mcp_server_ids: list[str]) -> None:
     ids = [UUID(value) if isinstance(value, str) else value for value in mcp_server_ids]
     if not ids:
@@ -697,6 +755,7 @@ def _agent_to_dict(agent: Agent, include_prompt: bool = True, user=None) -> dict
         "is_active": agent.is_active,
         "skill_ids": [str(s.id) for s in agent.skills] if agent.skills else [],
         "knowledge_base_ids": [str(kb.id) for kb in agent.knowledge_bases] if agent.knowledge_bases else [],
+        "graph_knowledge_base_ids": [str(kb.id) for kb in agent.graph_knowledge_bases] if agent.graph_knowledge_bases else [],
         "parent_ids": [str(p.id) for p in agent.parents] if agent.parents else [],
         "child_ids": [str(c.id) for c in agent.children] if agent.children else [],
         "children_count": len(agent.children) if agent.children else 0,

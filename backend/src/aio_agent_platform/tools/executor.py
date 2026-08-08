@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from aio_agent_platform.db.sanitize import sanitize_pg_text
+from aio_agent_platform.hooks import get_hook_manager
 from aio_agent_platform.observation.recorder import get_recorder
 from aio_agent_platform.tools.registry import ToolRegistry
 
@@ -114,6 +115,19 @@ class ToolExecutor:
                 None means all tools are allowed (default for parent agents).
         """
         t_start = time.monotonic()
+        get_hook_manager().fire_nowait(
+            "PreToolUse",
+            user_id=user_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            workspace_slug=workspace_slug,
+            data={
+                "tool_name": tool_name,
+                "exec_type": self._exec_type(tool_name),
+                "arguments": arguments,
+                "is_delegation": delegation is not None,
+            },
+        )
         result = await self._execute_impl(
             tool_name=tool_name,
             arguments=arguments,
@@ -128,6 +142,22 @@ class ToolExecutor:
             t_start=t_start,
         )
         self._record_tool_call(result, user_id, session_id)
+        get_hook_manager().fire_nowait(
+            "PostToolUse",
+            user_id=user_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            workspace_slug=workspace_slug,
+            data={
+                "tool_name": result.name,
+                "exec_type": self._exec_type(result.name),
+                "success": result.success,
+                "error_type": self._error_type(result),
+                "duration_ms": int(result.duration_ms),
+                "output_excerpt": (result.output if result.success else result.error or "")[:500],
+                "is_truncated": len(result.output) > self.MAX_OUTPUT_SIZE,
+            },
+        )
         return result
 
     async def _execute_impl(

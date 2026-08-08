@@ -440,6 +440,12 @@ class Agent(Base):
         secondaryjoin="AgentKnowledgeBase.knowledge_base_id == KnowledgeBase.id",
         foreign_keys="[AgentKnowledgeBase.agent_id, AgentKnowledgeBase.knowledge_base_id]",
     )
+    graph_knowledge_bases: Mapped[list["GraphKnowledgeBase"]] = relationship(
+        secondary="agent_graph_knowledge_bases",
+        primaryjoin="Agent.id == AgentGraphKnowledgeBase.agent_id",
+        secondaryjoin="AgentGraphKnowledgeBase.knowledge_base_id == GraphKnowledgeBase.id",
+        foreign_keys="[AgentGraphKnowledgeBase.agent_id, AgentGraphKnowledgeBase.knowledge_base_id]",
+    )
 
     __table_args__ = (
         Index("idx_agents_tenant_visibility", "tenant_id", "visibility"),
@@ -1132,6 +1138,240 @@ class AgentKnowledgeBase(Base):
     )
 
 
+# ---- Graph Knowledge Base (知识图谱) ----
+
+
+class GraphKnowledgeBase(Base):
+    """Graph knowledge base — entities & relationships extracted from documents."""
+    __tablename__ = "graph_knowledge_bases"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=DEFAULT_TENANT_ID, comment="所属租户ID"
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False, comment="知识库名称")
+    description: Mapped[str | None] = mapped_column(Text, comment="描述")
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", comment="是否启用"
+    )
+    visibility: Mapped[str] = mapped_column(
+        String(16), default="tenant", server_default="tenant", comment="可见范围: tenant/private"
+    )
+    created_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="创建者用户ID")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), onupdate=func.now(), comment="更新时间"
+    )
+
+    __table_args__ = (
+        Index("idx_graph_kbs_tenant_visibility", "tenant_id", "visibility"),
+        {"comment": "图谱知识库"},
+    )
+
+
+class GraphDocument(Base):
+    """Document inside a graph knowledge base — source text to be chunked & extracted."""
+    __tablename__ = "graph_documents"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, comment="所属图谱知识库ID"
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False, comment="文档标题")
+    content: Mapped[str] = mapped_column(Text, nullable=False, comment="文档原文")
+    source_type: Mapped[str] = mapped_column(
+        String(16), default="text", server_default="text", comment="来源: text/upload"
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", server_default="pending", comment="状态: pending/chunked/failed"
+    )
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0, comment="分块数量")
+    created_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="创建者用户ID")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+
+    __table_args__ = (
+        Index("idx_graph_documents_kb", "knowledge_base_id"),
+        {"comment": "图谱文档"},
+    )
+
+
+class GraphChunk(Base):
+    """Chunk of a graph document — the unit fed to LLM extraction."""
+    __tablename__ = "graph_chunks"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    document_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="来源文档ID")
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, comment="所属图谱知识库ID"
+    )
+    seq: Mapped[int] = mapped_column(Integer, default=0, comment="序号")
+    content: Mapped[str] = mapped_column(Text, nullable=False, comment="分块内容")
+
+    __table_args__ = (
+        Index("idx_graph_chunks_document", "document_id"),
+        Index("idx_graph_chunks_kb", "knowledge_base_id"),
+        {"comment": "图谱分块"},
+    )
+
+
+class GraphEntity(Base):
+    """Entity node in a graph knowledge base."""
+    __tablename__ = "graph_entities"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, comment="所属图谱知识库ID"
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False, comment="实体名称")
+    name_norm: Mapped[str] = mapped_column(String(128), nullable=False, comment="归一化名称(去空白小写)")
+    type: Mapped[str] = mapped_column(String(64), nullable=False, default="entity", server_default="entity", comment="实体类型")
+    description: Mapped[str | None] = mapped_column(Text, comment="描述")
+    properties: Mapped[dict | None] = mapped_column(JSONB, comment="扩展属性")
+    source_chunk_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="来源分块ID")
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", server_default="pending", comment="状态: pending/approved"
+    )
+    created_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="创建者用户ID")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), onupdate=func.now(), comment="更新时间"
+    )
+
+    __table_args__ = (
+        Index("idx_graph_entities_kb_name", "knowledge_base_id", "name_norm"),
+        Index("idx_graph_entities_kb_type", "knowledge_base_id", "type"),
+        UniqueConstraint("knowledge_base_id", "name_norm", name="uq_graph_entities_kb_name"),
+        {"comment": "图谱实体"},
+    )
+
+
+class GraphRelationship(Base):
+    """Relationship edge between two entities in a graph knowledge base."""
+    __tablename__ = "graph_relationships"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, comment="所属图谱知识库ID"
+    )
+    source_entity_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, comment="来源实体ID"
+    )
+    target_entity_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, comment="目标实体ID"
+    )
+    relation_type: Mapped[str] = mapped_column(String(64), nullable=False, comment="关系类型")
+    description: Mapped[str | None] = mapped_column(Text, comment="描述")
+    confidence: Mapped[float] = mapped_column(Float, default=0.8, comment="置信度 0-1")
+    source_chunk_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="来源分块ID")
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", server_default="pending", comment="状态: pending/approved"
+    )
+    created_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="创建者用户ID")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), onupdate=func.now(), comment="更新时间"
+    )
+
+    __table_args__ = (
+        Index("idx_graph_rels_kb_source", "knowledge_base_id", "source_entity_id"),
+        Index("idx_graph_rels_kb_type", "knowledge_base_id", "relation_type"),
+        {"comment": "图谱关系"},
+    )
+
+
+class GraphExtractionJob(Base):
+    """LLM extraction job over a graph knowledge base's documents."""
+    __tablename__ = "graph_extraction_jobs"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, comment="所属图谱知识库ID"
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", server_default="pending", comment="状态: pending/running/done/failed"
+    )
+    total_chunks: Mapped[int] = mapped_column(Integer, default=0, comment="分块总数")
+    processed_chunks: Mapped[int] = mapped_column(Integer, default=0, comment="已处理分块数")
+    entities_found: Mapped[int] = mapped_column(Integer, default=0, comment="抽取实体数")
+    relationships_found: Mapped[int] = mapped_column(Integer, default=0, comment="抽取关系数")
+    error: Mapped[str | None] = mapped_column(Text, comment="失败原因")
+    created_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="创建者用户ID")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="完成时间")
+
+    __table_args__ = (
+        Index("idx_graph_jobs_kb", "knowledge_base_id"),
+        {"comment": "图谱抽取任务"},
+    )
+
+
+class AgentGraphKnowledgeBase(Base):
+    """Agent-GraphKnowledgeBase many-to-many relationship."""
+    __tablename__ = "agent_graph_knowledge_bases"
+
+    agent_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        comment="智能体ID",
+    )
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        comment="图谱知识库ID",
+    )
+
+    __table_args__ = (
+        Index("idx_agent_graph_kbs_agent", "agent_id"),
+        Index("idx_agent_graph_kbs_kb", "knowledge_base_id"),
+        {"comment": "智能体-图谱知识库关联表"},
+    )
+
+
+@event.listens_for(GraphDocument, "before_insert")
+@event.listens_for(GraphDocument, "before_update")
+def _scrub_graph_document_nul(mapper, connection, target: "GraphDocument") -> None:
+    """Strip NUL bytes — Postgres text columns cannot store \\u0000."""
+    if target.content is not None:
+        target.content = sanitize_pg_text(target.content)
+    if target.title is not None:
+        target.title = sanitize_pg_text(target.title)
+
+
+@event.listens_for(GraphChunk, "before_insert")
+@event.listens_for(GraphChunk, "before_update")
+def _scrub_graph_chunk_nul(mapper, connection, target: "GraphChunk") -> None:
+    if target.content is not None:
+        target.content = sanitize_pg_text(target.content)
+
+
+@event.listens_for(GraphEntity, "before_insert")
+@event.listens_for(GraphEntity, "before_update")
+def _scrub_graph_entity_nul(mapper, connection, target: "GraphEntity") -> None:
+    if target.name is not None:
+        target.name = sanitize_pg_text(target.name)
+    if target.description is not None:
+        target.description = sanitize_pg_text(target.description)
+
+
+@event.listens_for(GraphRelationship, "before_insert")
+@event.listens_for(GraphRelationship, "before_update")
+def _scrub_graph_relationship_nul(mapper, connection, target: "GraphRelationship") -> None:
+    if target.description is not None:
+        target.description = sanitize_pg_text(target.description)
+    if target.relation_type is not None:
+        target.relation_type = sanitize_pg_text(target.relation_type)
+
+
 # ---- Remote Tools (HTTP Tools) ----
 
 
@@ -1599,4 +1839,70 @@ class PerformanceDaily(Base):
     __table_args__ = (
         Index("idx_performance_daily_date", "date"),
         {"comment": "平台性能每日统计表"},
+    )
+
+
+class Hook(Base):
+    """Hook 配置：事件 → 动作，global/tenant/agent 三级作用域。"""
+
+    __tablename__ = "hooks"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    tenant_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="所属租户ID（global 作用域为 NULL）")
+    created_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), comment="创建者用户ID")
+    name: Mapped[str] = mapped_column(String(128), nullable=False, comment="名称")
+    description: Mapped[str | None] = mapped_column(Text, comment="描述")
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="tenant", comment="作用域: global/tenant/agent")
+    agent_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="scope=agent 时目标智能体ID")
+    event: Mapped[str] = mapped_column(String(64), nullable=False, comment="事件名")
+    action_type: Mapped[str] = mapped_column(String(16), nullable=False, default="webhook", comment="动作类型: webhook/sandbox_command")
+    config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, comment="动作参数")
+    timeout_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=5000, comment="动作超时(毫秒)")
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, comment="失败重试次数")
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, comment="是否启用")
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="tenant", comment="可见范围: tenant/private")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), server_default=func.now(), comment="更新时间"
+    )
+
+    __table_args__ = (
+        Index("idx_hooks_tenant_event", "tenant_id", "event"),
+        Index("idx_hooks_agent_event", "agent_id", "event"),
+        {"comment": "Hook配置表"},
+    )
+
+
+class HookExecution(Base):
+    """Hook 执行日志（每次触发一行）。"""
+
+    __tablename__ = "hook_executions"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    hook_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), comment="关联HookID")
+    event: Mapped[str] = mapped_column(String(64), nullable=False, comment="事件名")
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, comment="作用域")
+    trace_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="执行实例ID")
+    session_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="会话ID")
+    user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="用户ID")
+    tenant_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="租户ID")
+    agent_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="智能体ID")
+    action_type: Mapped[str] = mapped_column(String(16), nullable=False, comment="动作类型")
+    target: Mapped[str | None] = mapped_column(String(512), comment="URL 或命令（脱敏）")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="success", comment="状态: success/failed/timeout/skipped")
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, comment="耗时(毫秒)")
+    http_status: Mapped[int | None] = mapped_column(Integer, comment="HTTP状态码")
+    exit_code: Mapped[int | None] = mapped_column(Integer, comment="命令退出码")
+    error: Mapped[str | None] = mapped_column(Text, comment="错误信息")
+    response_preview: Mapped[str | None] = mapped_column(Text, comment="响应摘要")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="触发时间"
+    )
+
+    __table_args__ = (
+        Index("idx_hook_executions_tenant_created", "tenant_id", "created_at"),
+        Index("idx_hook_executions_hook_created", "hook_id", "created_at"),
+        {"comment": "Hook执行日志表"},
     )

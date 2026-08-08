@@ -10,11 +10,11 @@ import { useThemeStore } from '@/stores/themeStore';
 import { SKINS } from '@/styles/skins';
 import { cn } from '@/lib/utils';
 
-export default function SkinPicker() {
+export function SkinPickerContent() {
   const { theme, skin, setTheme, setSkin } = useThemeStore();
 
-  const content = (
-    <div className="w-64">
+  return (
+    <div>
       <div className="mb-1.5 text-xs font-medium text-muted-foreground">外观模式</div>
       <Segmented
         block
@@ -64,6 +64,14 @@ export default function SkinPicker() {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+export default function SkinPicker() {
+  const content = (
+    <div className="w-64">
+      <SkinPickerContent />
     </div>
   );
 
