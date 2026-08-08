@@ -268,6 +268,7 @@ class _ScriptedLLMProvider:
         self.scripted_tool_calls = scripted_tool_calls or []
         self.captured: list[_CapturedLLMCall] = []
         self._call_index = 0
+        self.model = "test-model"
 
     async def stream(self, messages, tools=None):
         self.captured.append(
