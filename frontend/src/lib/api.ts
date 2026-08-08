@@ -591,7 +591,7 @@ export const usersApi = {
     email: string;
     display_name?: string;
     password: string;
-    role?: 'user' | 'admin';
+    role?: 'user' | 'admin' | 'superadmin';
     tenant_ids: string[];
     active_tenant_id?: string;
   }) {
@@ -606,7 +606,7 @@ export const usersApi = {
     email?: string;
     display_name?: string | null;
     password?: string;
-    role?: 'user' | 'admin';
+    role?: 'user' | 'admin' | 'superadmin';
     is_active?: boolean;
   }) {
     return request<AdminUser>(`/admin/users/${userId}`, {

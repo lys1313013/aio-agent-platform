@@ -44,8 +44,9 @@ def test_tenant_and_user_schema_role_limits() -> None:
         role="admin",
         tenant_ids=["00000000-0000-0000-0000-000000000001"],
     ).role == "admin"
+    assert UserAdminUpdate(role="superadmin").role == "superadmin"
     with pytest.raises(ValidationError):
-        UserAdminUpdate(role="superadmin")
+        UserAdminUpdate(role="owner")
 
 
 def test_tenant_user_update_supports_profile_and_password_changes() -> None:

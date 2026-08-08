@@ -18,6 +18,13 @@ export function getUserRole(): string | null {
   return payload?.role ?? null;
 }
 
+export function getUserId(): string | null {
+  const token = localStorage.getItem(ACCESS_KEY);
+  if (!token) return null;
+  const payload = decodeJwtPayload(token);
+  return payload?.sub ?? null;
+}
+
 export const tokenStorage = {
   getAccess(): string | null {
     return localStorage.getItem(ACCESS_KEY);

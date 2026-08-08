@@ -37,7 +37,7 @@ class UserAdminCreate(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
     display_name: str | None = Field(default=None, max_length=128)
-    role: str = Field(default="user", pattern="^(user|admin)$")
+    role: str = Field(default="user", pattern="^(user|admin|superadmin)$")
     tenant_ids: list[UUID] = Field(..., min_length=1)
     active_tenant_id: UUID | None = None
 
@@ -47,7 +47,7 @@ class UserAdminUpdate(BaseModel):
     email: EmailStr | None = None
     display_name: str | None = Field(default=None, max_length=128)
     password: str | None = Field(default=None, min_length=8, max_length=128)
-    role: str | None = Field(default=None, pattern="^(user|admin)$")
+    role: str | None = Field(default=None, pattern="^(user|admin|superadmin)$")
     is_active: bool | None = None
 
 

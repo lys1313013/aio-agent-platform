@@ -28,6 +28,7 @@ import type { ColumnsType } from 'antd/es/table';
 
 import { tenantsApi, usersApi } from '@/lib/api';
 import type { AdminUser, Tenant } from '@/lib/api';
+import { getUserId } from '@/lib/auth';
 import { useAuthStore } from '@/stores/authStore';
 
 const { Text } = Typography;
@@ -35,6 +36,7 @@ const { Text } = Typography;
 export default function UserManagementPage() {
   const { message } = App.useApp();
   const role = useAuthStore((state) => state.role);
+  const currentUserId = getUserId();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [loading, setLoading] = useState(true);
@@ -101,7 +103,7 @@ export default function UserManagementPage() {
           display_name: values.display_name || null,
           password: values.password || undefined,
         };
-        if (editingUser.role !== 'superadmin') {
+        if (editingUser.id !== currentUserId) {
           payload.role = values.role;
           payload.is_active = values.is_active;
         }
@@ -342,17 +344,18 @@ export default function UserManagementPage() {
           )}
           <Form.Item name="role" label="角色">
             <Select
-              disabled={editingUser?.role === 'superadmin'}
+              disabled={editingUser?.id === currentUserId}
               options={[
                 { value: 'user', label: '用户' },
                 { value: 'admin', label: '管理员' },
+                { value: 'superadmin', label: '超级管理员' },
               ]}
             />
           </Form.Item>
           {editingUser && (
             <>
               <Form.Item name="is_active" label="启用用户" valuePropName="checked">
-                <Switch disabled={editingUser.role === 'superadmin'} />
+                <Switch disabled={editingUser.id === currentUserId} />
               </Form.Item>
               <Text type="secondary" className="text-xs">
                 用户的租户成员关系请在“租户管理”中调整。
