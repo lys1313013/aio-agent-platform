@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 from aio_agent_platform.cron_jobs.scheduler import Scheduler
-from aio_agent_platform.db.models import CronJob, CronJobRun, User
+from aio_agent_platform.db.models import CronJob, CronJobRun, Tenant, User
 from aio_agent_platform.interface.api import app
 
 
@@ -342,3 +342,196 @@ async def test_notify_channel_handler_rejects_empty_text():
         current_cron_notify_ctx.reset(token)
 
     assert "text 参数" in result
+
+
+# ---- Tenant isolation ----
+
+async def test_cron_job_tenant_isolation(client, db_session: AsyncSession):
+    """A user must not see or manage a cron job belonging to another tenant."""
+    from aio_agent_platform.auth.dependencies import get_current_user
+
+    tenant_a = Tenant(name="tenant-a", slug="cron-iso-a")
+    tenant_b = Tenant(name="tenant-b", slug="cron-iso-b")
+    db_session.add_all([tenant_a, tenant_b])
+    await db_session.flush()
+
+    user_a = User(
+        id=uuid4(), username="cron-iso-user-a", email="a@test.com",
+        password_hash="x", role="admin", is_active=True, tenant_id=tenant_a.id,
+    )
+    user_b = User(
+        id=uuid4(), username="cron-iso-user-b", email="b@test.com",
+        password_hash="x", role="admin", is_active=True, tenant_id=tenant_b.id,
+    )
+    db_session.add_all([user_a, user_b])
+    await db_session.flush()
+
+    async def act_as(user):
+        async def override_current_user():
+            return user
+        app.dependency_overrides[get_current_user] = override_current_user
+
+    # user A creates a job in tenant A
+    await act_as(user_a)
+    resp = await client.post(
+        "/api/cron-jobs",
+        json={"name": "tenant-a job", "cron_expr": "0 9 * * *", "message": "hi", "task_config": {}},
+    )
+    assert resp.status_code == 201, resp.text
+    job_id = resp.json()["id"]
+
+    # user B cannot fetch, update, delete, or see the job
+    await act_as(user_b)
+    assert (await client.get(f"/api/cron-jobs/{job_id}")).status_code == 404
+    resp = await client.put(f"/api/cron-jobs/{job_id}", json={"name": "hijack"})
+    assert resp.status_code == 404
+    assert (await client.delete(f"/api/cron-jobs/{job_id}")).status_code == 404
+    assert (await client.get(f"/api/cron-jobs/{job_id}/runs")).status_code == 404
+
+    resp = await client.get("/api/cron-jobs")
+    assert resp.status_code == 200
+    assert job_id not in [j["id"] for j in resp.json()["items"]]
+
+    # job still exists for tenant A
+    await act_as(user_a)
+    resp = await client.get(f"/api/cron-jobs/{job_id}")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == job_id
+
+
+# ---- Tool handler tenant isolation (agent auto-created cron jobs) ----
+# The `create_cron_job` / `list_cron_jobs` / `delete_cron_job` tools run through
+# cron_jobs.handlers, which resolve tenant_id from the invoking user. Patch the
+# module-level session factory so handlers hit the test DB instead of the
+# configured remote DB.
+
+
+def _test_factory(engine):
+    return sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+async def test_handler_create_cron_job_sets_tenant_id(engine, db_session, monkeypatch):
+    from aio_agent_platform.cron_jobs.handlers import handle_create_cron_job
+
+    tenant = Tenant(name="handler-tenant", slug="cron-handler-create")
+    db_session.add(tenant)
+    await db_session.flush()
+    user = User(
+        id=uuid4(), username="handler-user", email="h@test.com",
+        password_hash="x", role="admin", is_active=True, tenant_id=tenant.id,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    await db_session.commit()
+
+    factory = _test_factory(engine)
+    monkeypatch.setattr(
+        "aio_agent_platform.cron_jobs.handlers.get_session_factory",
+        lambda: factory,
+    )
+
+    resp = await handle_create_cron_job(
+        {"name": "auto job", "cron_expr": "0 8 * * *", "message": "hello"},
+        str(user.id),
+        "session-x",
+    )
+    assert "successfully" in resp
+
+    async with factory() as db:
+        job = (
+            await db.execute(select(CronJob).where(CronJob.name == "auto job"))
+        ).scalar_one()
+        assert job.user_id == user.id
+        assert job.tenant_id == tenant.id
+
+
+async def test_handler_list_cron_jobs_scoped_to_tenant(engine, db_session, monkeypatch):
+    from aio_agent_platform.cron_jobs.handlers import handle_list_cron_jobs
+
+    tenant_a = Tenant(name="ta", slug="cron-handler-list-a")
+    tenant_b = Tenant(name="tb", slug="cron-handler-list-b")
+    db_session.add_all([tenant_a, tenant_b])
+    await db_session.flush()
+    user_a = User(
+        id=uuid4(), username="cron-h-u-a", email="a@t.com",
+        password_hash="x", role="admin", is_active=True, tenant_id=tenant_a.id,
+    )
+    user_b = User(
+        id=uuid4(), username="cron-h-u-b", email="b@t.com",
+        password_hash="x", role="admin", is_active=True, tenant_id=tenant_b.id,
+    )
+    db_session.add_all([user_a, user_b])
+    await db_session.flush()
+    await db_session.commit()
+
+    factory = _test_factory(engine)
+    monkeypatch.setattr(
+        "aio_agent_platform.cron_jobs.handlers.get_session_factory",
+        lambda: factory,
+    )
+    async with factory() as db:
+        db.add_all([
+            CronJob(
+                tenant_id=tenant_a.id, user_id=user_a.id, name="job-a",
+                cron_expr="0 9 * * *", task_config={}, is_active=True,
+            ),
+            CronJob(
+                tenant_id=tenant_b.id, user_id=user_b.id, name="job-b",
+                cron_expr="0 9 * * *", task_config={}, is_active=True,
+            ),
+        ])
+        await db.commit()
+
+    resp = await handle_list_cron_jobs({}, str(user_a.id), "s")
+    assert "job-a" in resp
+    assert "job-b" not in resp
+
+
+async def test_handler_delete_cron_job_scoped_to_tenant(engine, db_session, monkeypatch):
+    from aio_agent_platform.cron_jobs.handlers import handle_delete_cron_job
+
+    tenant_a = Tenant(name="ta", slug="cron-handler-del-a")
+    tenant_b = Tenant(name="tb", slug="cron-handler-del-b")
+    db_session.add_all([tenant_a, tenant_b])
+    await db_session.flush()
+    user_a = User(
+        id=uuid4(), username="cron-h-d-a", email="a@t.com",
+        password_hash="x", role="admin", is_active=True, tenant_id=tenant_a.id,
+    )
+    user_b = User(
+        id=uuid4(), username="cron-h-d-b", email="b@t.com",
+        password_hash="x", role="admin", is_active=True, tenant_id=tenant_b.id,
+    )
+    db_session.add_all([user_a, user_b])
+    await db_session.flush()
+    await db_session.commit()
+
+    factory = _test_factory(engine)
+    monkeypatch.setattr(
+        "aio_agent_platform.cron_jobs.handlers.get_session_factory",
+        lambda: factory,
+    )
+    async with factory() as db:
+        job_a = CronJob(
+            tenant_id=tenant_a.id, user_id=user_a.id, name="job-a",
+            cron_expr="0 9 * * *", task_config={}, is_active=True,
+        )
+        job_b = CronJob(
+            tenant_id=tenant_b.id, user_id=user_b.id, name="job-b",
+            cron_expr="0 9 * * *", task_config={}, is_active=True,
+        )
+        db.add_all([job_a, job_b])
+        await db.commit()
+        job_a_id, job_b_id = job_a.id, job_b.id
+
+    # cross-tenant delete must fail; own-tenant delete must succeed
+    resp = await handle_delete_cron_job({"job_id": str(job_b_id)}, str(user_a.id), "s")
+    assert "not found" in resp
+    resp = await handle_delete_cron_job({"job_id": str(job_a_id)}, str(user_a.id), "s")
+    assert "deleted" in resp
+
+    async with factory() as db:
+        remaining = (
+            await db.execute(select(CronJob).where(CronJob.name == "job-b"))
+        ).scalar_one_or_none()
+        assert remaining is not None

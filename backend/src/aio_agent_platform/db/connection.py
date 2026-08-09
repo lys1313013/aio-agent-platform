@@ -70,7 +70,10 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except BaseException:
+            # CancelledError (client disconnect / request cancelled) is NOT an
+            # Exception; without rolling back here the session's transaction
+            # stays open and the pooled connection idles forever, blocking DDL.
             await session.rollback()
             raise
 
@@ -208,6 +211,21 @@ async def _run_manual_migrations(conn) -> None:
         # CronJob: agent_id and message columns
         "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS agent_id UUID",
         "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS message TEXT",
+        # Cron job tenant isolation
+        "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS tenant_id UUID",
+        """UPDATE cron_jobs cj SET tenant_id = u.tenant_id
+           FROM users u WHERE cj.user_id = u.id AND cj.tenant_id IS NULL""",
+        """UPDATE cron_jobs SET tenant_id = '00000000-0000-0000-0000-000000000001'
+           WHERE tenant_id IS NULL""",
+        "ALTER TABLE cron_jobs ALTER COLUMN tenant_id SET NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_cron_jobs_tenant ON cron_jobs (tenant_id)",
+        "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()",
+        "ALTER TABLE cron_job_runs ADD COLUMN IF NOT EXISTS tenant_id UUID",
+        """UPDATE cron_job_runs cr SET tenant_id = u.tenant_id
+           FROM users u WHERE cr.user_id = u.id AND cr.tenant_id IS NULL""",
+        """UPDATE cron_job_runs SET tenant_id = '00000000-0000-0000-0000-000000000001'
+           WHERE tenant_id IS NULL""",
+        "ALTER TABLE cron_job_runs ALTER COLUMN tenant_id SET NOT NULL",
         # LLM tenant isolation
         "ALTER TABLE llm_providers ADD COLUMN IF NOT EXISTS tenant_id UUID",
         """UPDATE llm_providers SET tenant_id = '00000000-0000-0000-0000-000000000001'

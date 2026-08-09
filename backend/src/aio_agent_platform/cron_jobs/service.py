@@ -20,13 +20,13 @@ class CronJobService:
     @staticmethod
     async def list_jobs(
         db: AsyncSession,
-        user_id: UUID,
+        tenant_id: UUID,
         limit: int = 50,
         offset: int = 0,
     ) -> list[CronJob]:
         stmt = (
             select(CronJob)
-            .where(CronJob.user_id == user_id)
+            .where(CronJob.tenant_id == tenant_id)
             .order_by(CronJob.last_run_at.desc().nulls_last())
             .limit(limit)
             .offset(offset)
@@ -38,16 +38,17 @@ class CronJobService:
     async def get_job(
         db: AsyncSession,
         job_id: UUID,
-        user_id: UUID,
+        tenant_id: UUID,
     ) -> CronJob | None:
         result = await db.execute(
-            select(CronJob).where(CronJob.id == job_id, CronJob.user_id == user_id)
+            select(CronJob).where(CronJob.id == job_id, CronJob.tenant_id == tenant_id)
         )
         return result.scalar_one_or_none()
 
     @staticmethod
     async def create_job(
         db: AsyncSession,
+        tenant_id: UUID,
         user_id: UUID,
         name: str,
         task_config: dict,
@@ -59,6 +60,7 @@ class CronJobService:
         is_active: bool = True,
     ) -> CronJob:
         job = CronJob(
+            tenant_id=tenant_id,
             user_id=user_id,
             agent_id=agent_id,
             name=name,
@@ -79,7 +81,7 @@ class CronJobService:
     async def update_job(
         db: AsyncSession,
         job_id: UUID,
-        user_id: UUID,
+        tenant_id: UUID,
         name: str | None = None,
         agent_id: UUID | None = None,
         message: str | None = None,
@@ -90,7 +92,7 @@ class CronJobService:
         is_active: bool | None = None,
         clear_channel: bool = False,
     ) -> CronJob | None:
-        job = await CronJobService.get_job(db, job_id, user_id)
+        job = await CronJobService.get_job(db, job_id, tenant_id)
         if not job:
             return None
 
@@ -122,9 +124,9 @@ class CronJobService:
     async def delete_job(
         db: AsyncSession,
         job_id: UUID,
-        user_id: UUID,
+        tenant_id: UUID,
     ) -> bool:
-        job = await CronJobService.get_job(db, job_id, user_id)
+        job = await CronJobService.get_job(db, job_id, tenant_id)
         if not job:
             return False
         await db.delete(job)

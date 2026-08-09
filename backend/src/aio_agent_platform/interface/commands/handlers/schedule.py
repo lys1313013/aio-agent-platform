@@ -46,7 +46,7 @@ async def cmd_cron(ctx: CommandContext) -> CommandResult:
 async def _cron_list(ctx: CommandContext) -> CommandResult:
     result = await ctx.db.execute(
         select(CronJob)
-        .where(CronJob.user_id == UUID(ctx.user_id))
+        .where(CronJob.tenant_id == ctx.user.tenant_id)
         .order_by(CronJob.created_at.desc())
     )
     jobs = list(result.scalars().all())
@@ -78,6 +78,7 @@ async def _cron_create(ctx: CommandContext) -> CommandResult:
     name = message[:30]
     job = await CronJobService.create_job(
         db=ctx.db,
+        tenant_id=ctx.user.tenant_id,
         user_id=UUID(ctx.user_id),
         name=name,
         task_config={},
@@ -110,7 +111,7 @@ async def _cron_set_active(ctx: CommandContext, active: bool) -> CommandResult:
 
     job = await ctx.db.scalar(
         select(CronJob).where(
-            CronJob.id == job_uuid, CronJob.user_id == UUID(ctx.user_id)
+            CronJob.id == job_uuid, CronJob.tenant_id == ctx.user.tenant_id
         )
     )
     if job is None:
@@ -133,7 +134,7 @@ async def _cron_delete(ctx: CommandContext) -> CommandResult:
     except ValueError:
         return CommandResult(content=f"任务 ID 格式不正确：{job_id}")
 
-    deleted = await CronJobService.delete_job(ctx.db, job_uuid, UUID(ctx.user_id))
+    deleted = await CronJobService.delete_job(ctx.db, job_uuid, ctx.user.tenant_id)
     if not deleted:
         return CommandResult(content="任务不存在。")
     scheduler = get_global_scheduler()

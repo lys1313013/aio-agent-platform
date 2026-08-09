@@ -841,10 +841,16 @@ class CronJob(Base):
     __tablename__ = "cron_jobs"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=False,
+        default=DEFAULT_TENANT_ID,
+        comment="所属租户ID",
+    )
     user_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         nullable=False,
-        comment="关联用户ID",
+        comment="归属用户ID",
     )
     agent_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -863,6 +869,7 @@ class CronJob(Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否启用")
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="最后执行时间")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="创建时间")
 
     user: Mapped["User"] = relationship(
         back_populates="cron_jobs",
@@ -870,7 +877,10 @@ class CronJob(Base):
         foreign_keys="[CronJob.user_id]",
     )
 
-    __table_args__ = ({"comment": "定时任务表"},)
+    __table_args__ = (
+        Index("idx_cron_jobs_tenant", "tenant_id"),
+        {"comment": "定时任务表"},
+    )
 
 
 class CronJobRun(Base):
@@ -879,6 +889,12 @@ class CronJobRun(Base):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
     job_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="关联定时任务ID")
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=False,
+        default=DEFAULT_TENANT_ID,
+        comment="所属租户ID",
+    )
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="任务所属用户ID")
     status: Mapped[str] = mapped_column(String(32), default="running", comment="运行状态: running/success/failed")
     session_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), comment="本次执行创建的会话ID")

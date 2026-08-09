@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # 后端
 cd backend
 uv sync                                  # 安装依赖
-uv run uvicorn aio_agent_platform.interface.api:app --host 0.0.0.0 --port 8100 --reload
+uv run uvicorn aio_agent_platform.interface.api:app --host 0.0.0.0 --port 8100
 uv run aio-cli                           # CLI 对话
 uv run aio-manage                        # 管理命令
 uv run alembic upgrade head              # 数据库迁移
@@ -69,7 +69,7 @@ docker compose --profile build up sandbox-build  # 构建沙箱镜像
 
 ### 数据库
 
-`db/models.py` — 所有表定义，无外键约束（依赖应用层维护关系）。归属分租户级（`tenant_id`，如 agents/knowledge_bases/mcp_servers/channel_configs/pet_packages）与用户级（`user_id`，如 sessions/memories/cron_jobs）。隔离靠应用层 where 过滤；`db/connection.py` 的 `get_db()` 会 `SET LOCAL app.current_user_id` 写入会话变量，但**未配置数据库 RLS policy**（无 CREATE POLICY）。后台执行（定时任务、渠道回调）由代码显式 `set_config("app.current_user_id", ...)`。详见 `docs/17-用户与租户隔离.md`。`db/sanitize.py` 处理 NUL 字节防止 PostgreSQL 写入失败。
+`db/models.py` — 所有表定义，无外键约束（依赖应用层维护关系）。归属分租户级（`tenant_id`，如 agents/knowledge_bases/mcp_servers/channel_configs/pet_packages/cron_jobs）与用户级（`user_id`，如 sessions/memories）。隔离靠应用层 where 过滤；`db/connection.py` 的 `get_db()` 会 `SET LOCAL app.current_user_id` 写入会话变量，但**未配置数据库 RLS policy**（无 CREATE POLICY）。后台执行（定时任务、渠道回调）由代码显式 `set_config("app.current_user_id", ...)`。详见 `docs/17-用户与租户隔离.md`。`db/sanitize.py` 处理 NUL 字节防止 PostgreSQL 写入失败。
 
 ### 应用启动流程
 

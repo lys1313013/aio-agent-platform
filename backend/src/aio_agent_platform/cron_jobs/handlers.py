@@ -12,12 +12,18 @@ from sqlalchemy import func, select
 from aio_agent_platform.cron_jobs.scheduler import CRON_TIMEZONE, get_global_scheduler
 from aio_agent_platform.cron_jobs.service import CronJobService
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
-from aio_agent_platform.db.models import Session
+from aio_agent_platform.db.models import Session, User
 
 
 async def _set_rls_context(db, user_id: str) -> None:
     """Set PostgreSQL RLS context using set_config."""
     await db.execute(select(func.set_config("app.current_user_id", user_id, True)))
+
+
+async def _get_tenant_id(db, user_id: UUID) -> UUID | None:
+    """Resolve the tenant a job operation belongs to (handlers receive no tenant)."""
+    result = await db.execute(select(User.tenant_id).where(User.id == user_id))
+    return result.scalar_one_or_none()
 
 
 async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str, **kwargs) -> str:
@@ -73,8 +79,12 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
     async with factory() as db:
         current_user_id.set(user_id)
         await _set_rls_context(db, user_id)
+        tenant_id = await _get_tenant_id(db, uid)
+        if tenant_id is None:
+            return f"Error: user {uid} not found"
         job = await CronJobService.create_job(
             db=db,
+            tenant_id=tenant_id,
             user_id=uid,
             name=name,
             agent_id=agent_id,
@@ -107,7 +117,10 @@ async def handle_list_cron_jobs(arguments: dict, user_id: str, session_id: str, 
     async with factory() as db:
         current_user_id.set(user_id)
         await _set_rls_context(db, user_id)
-        jobs = await CronJobService.list_jobs(db, uid)
+        tenant_id = await _get_tenant_id(db, uid)
+        if tenant_id is None:
+            return f"Error: user {uid} not found"
+        jobs = await CronJobService.list_jobs(db, tenant_id)
 
     if not jobs:
         return "No cron jobs found."
@@ -145,7 +158,10 @@ async def handle_delete_cron_job(arguments: dict, user_id: str, session_id: str,
     async with factory() as db:
         current_user_id.set(user_id)
         await _set_rls_context(db, user_id)
-        deleted = await CronJobService.delete_job(db, job_id, uid)
+        tenant_id = await _get_tenant_id(db, uid)
+        if tenant_id is None:
+            return f"Error: user {uid} not found"
+        deleted = await CronJobService.delete_job(db, job_id, tenant_id)
         await db.commit()
 
     if deleted:

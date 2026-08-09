@@ -155,6 +155,7 @@ class Scheduler:
             # Create execution log record
             run = CronJobRun(
                 job_id=job.id,
+                tenant_id=job.tenant_id,
                 user_id=job.user_id,
                 status="running",
                 started_at=datetime.now(UTC),

@@ -121,11 +121,11 @@ async def list_cron_jobs(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
-    """List cron jobs for current user."""
-    jobs = await CronJobService.list_jobs(db, user.id, limit=limit, offset=offset)
+    """List cron jobs for current tenant."""
+    jobs = await CronJobService.list_jobs(db, user.tenant_id, limit=limit, offset=offset)
 
     count_stmt = (
-        select(func.count()).select_from(CronJob).where(CronJob.user_id == user.id)
+        select(func.count()).select_from(CronJob).where(CronJob.tenant_id == user.tenant_id)
     )
     total_result = await db.execute(count_stmt)
     total = total_result.scalar()
@@ -154,6 +154,7 @@ async def create_cron_job(
 
     job = await CronJobService.create_job(
         db=db,
+        tenant_id=user.tenant_id,
         user_id=user.id,
         name=req.name,
         agent_id=req.agent_id,
@@ -180,7 +181,7 @@ async def get_cron_job(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Get a single cron job."""
-    job = await CronJobService.get_job(db, job_id, user.id)
+    job = await CronJobService.get_job(db, job_id, user.tenant_id)
     if not job:
         raise HTTPException(status_code=404, detail="Cron job not found")
     return CronJobOut.from_model(job).model_dump(mode="json")
@@ -200,7 +201,7 @@ async def update_cron_job(
     job = await CronJobService.update_job(
         db=db,
         job_id=job_id,
-        user_id=user.id,
+        tenant_id=user.tenant_id,
         name=req.name,
         agent_id=req.agent_id,
         message=req.message,
@@ -230,7 +231,7 @@ async def delete_cron_job(
     request: Request,
 ) -> None:
     """Delete a cron job."""
-    deleted = await CronJobService.delete_job(db, job_id, user.id)
+    deleted = await CronJobService.delete_job(db, job_id, user.tenant_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Cron job not found")
     await db.commit()
@@ -249,7 +250,7 @@ async def list_cron_job_runs(
     offset: int = Query(default=0, ge=0),
 ) -> dict:
     """List execution logs for a cron job."""
-    job = await CronJobService.get_job(db, job_id, user.id)
+    job = await CronJobService.get_job(db, job_id, user.tenant_id)
     if not job:
         raise HTTPException(status_code=404, detail="Cron job not found")
 
