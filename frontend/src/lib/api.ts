@@ -717,6 +717,13 @@ export const settingsApi = {
     );
   },
 
+  deletePortraitVersion(versionId: string) {
+    return request<void>(
+      `/settings/personal-portrait/versions/${versionId}`,
+      { method: 'DELETE' },
+    );
+  },
+
   // Memory config
   getMemoryConfig() {
     return request<{

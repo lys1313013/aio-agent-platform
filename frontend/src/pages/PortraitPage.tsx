@@ -9,6 +9,7 @@ import {
   RobotOutlined,
   UserOutlined,
   RollbackOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import { Button, Spin, App, Typography, Popconfirm, Tag } from 'antd';
 import ReactMarkdown from 'react-markdown';
@@ -105,6 +106,17 @@ export default function PortraitPage() {
       setRestoring(false);
     }
   }, []);
+
+  const handleDelete = useCallback(async (version: PortraitVersion) => {
+    try {
+      await settingsApi.deletePortraitVersion(version.id);
+      if (selectedVersion?.id === version.id) setSelectedVersion(null);
+      loadVersions();
+      message.success('版本已删除');
+    } catch (err: any) {
+      message.error(err.message || '删除失败');
+    }
+  }, [selectedVersion]);
 
   const displayedContent = selectedVersion
     ? (selectedVersion.content || '')
@@ -254,30 +266,49 @@ export default function PortraitPage() {
                     versions.map((v) => {
                       const isSelected = selectedVersion?.id === v.id;
                       return (
-                        <button
+                        <div
                           key={v.id}
-                          onClick={() => setSelectedVersion(isSelected ? null : v)}
-                          className={`w-full text-left px-4 py-2.5 transition border-l-2 ${
+                          className={`group relative transition border-l-2 ${
                             isSelected
                               ? 'border-primary bg-primary/5'
                               : 'border-transparent hover:bg-muted/50'
                           }`}
                         >
-                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-0.5">
-                            {v.source === 'ai' ? (
-                              <RobotOutlined className="text-[10px] text-blue-500" />
-                            ) : (
-                              <UserOutlined className="text-[10px] text-green-500" />
-                            )}
-                            <Tag
-                              color={v.source === 'ai' ? 'blue' : 'green'}
-                              className="text-[10px] leading-none px-1 py-0 m-0"
-                            >
-                              {v.source === 'ai' ? 'AI' : '手动'}
-                            </Tag>
-                            <span>{formatTime(v.created_at)}</span>
-                          </div>
-                        </button>
+                          <button
+                            onClick={() => setSelectedVersion(isSelected ? null : v)}
+                            className="w-full text-left px-4 py-2.5 pr-8"
+                          >
+                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-0.5">
+                              {v.source === 'ai' ? (
+                                <RobotOutlined className="text-[10px] text-blue-500" />
+                              ) : (
+                                <UserOutlined className="text-[10px] text-green-500" />
+                              )}
+                              <Tag
+                                color={v.source === 'ai' ? 'blue' : 'green'}
+                                className="text-[10px] leading-none px-1 py-0 m-0"
+                              >
+                                {v.source === 'ai' ? 'AI' : '手动'}
+                              </Tag>
+                              <span>{formatTime(v.created_at)}</span>
+                            </div>
+                          </button>
+                          <Popconfirm
+                            title="删除此版本"
+                            description="删除后不可恢复，确定删除？"
+                            onConfirm={() => handleDelete(v)}
+                            okText="删除"
+                            cancelText="取消"
+                            okButtonProps={{ danger: true }}
+                          >
+                            <Button
+                              type="text"
+                              size="small"
+                              icon={<DeleteOutlined className="text-xs" />}
+                              className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity"
+                            />
+                          </Popconfirm>
+                        </div>
                       );
                     })
                   )}

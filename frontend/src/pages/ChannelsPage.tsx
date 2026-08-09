@@ -248,9 +248,19 @@ export default function ChannelsPage() {
               接入飞书等 IM 渠道，让用户在 IM 中直接与 Agent 对话
             </Text>
           </div>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
-            添加渠道
-          </Button>
+          <Space>
+            <Button
+              icon={<LinkOutlined />}
+              href="https://open.feishu.cn/page/openclaw?form=multiAgent"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              创建飞书机器人
+            </Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
+              添加渠道
+            </Button>
+          </Space>
         </div>
 
         {/* Empty state */}
