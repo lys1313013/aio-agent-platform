@@ -405,10 +405,10 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
   // Render overview panel
   const renderOverviewPanel = () => (
     <>
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
+      <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
         <div className="flex items-center gap-2">
           <DashboardOutlined className="text-primary" />
-          <Text strong className="text-sm">概览</Text>
+          <Text strong>智能体概览</Text>
         </div>
         <button
           onClick={closePanel}
@@ -418,170 +418,100 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
+      <div className="flex-1 overflow-y-auto p-4">
         {loading && !agent ? (
           <div className="flex items-center justify-center py-16">
             <Spin />
           </div>
-        ) : (
-          <>
-            {/* Stats cards */}
-            <div className="grid grid-cols-3 gap-2 mt-3">
-              <div className="rounded-lg bg-muted/50 p-3 text-center">
-                <div className="text-lg font-bold text-foreground">
-                  {agentStats?.total_sessions ?? 0}
+        ) : agent ? (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-border/60 bg-gradient-to-br from-primary/[0.08] to-transparent p-4">
+              <div className="flex items-start gap-3">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-2xl">
+                  {getAgentIcon(agent.icon)}
                 </div>
-                <div className="text-xs text-muted-foreground">会话数</div>
-              </div>
-              <div className="rounded-lg bg-muted/50 p-3 text-center">
-                <div className="text-lg font-bold text-foreground">
-                  {agentStats?.total_messages ?? 0}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <Text strong className="truncate text-base">{agent.name}</Text>
+                    <span
+                      className={cn(
+                        'h-2 w-2 shrink-0 rounded-full',
+                        agent.is_active ? 'bg-emerald-500' : 'bg-muted-foreground/40',
+                      )}
+                    />
+                  </div>
+                  <Text type="secondary" className="mt-0.5 block truncate text-xs">
+                    {agent.model_name || '全局默认模型'}
+                  </Text>
+                  {agent.description && (
+                    <Text type="secondary" className="mt-2 block line-clamp-2 text-xs leading-5">
+                      {agent.description}
+                    </Text>
+                  )}
                 </div>
-                <div className="text-xs text-muted-foreground">消息数</div>
-              </div>
-              <div className="rounded-lg bg-muted/50 p-3 text-center">
-                <div className="text-lg font-bold text-foreground">
-                  {agentStats?.last_active_at ? formatRelativeTime(agentStats.last_active_at) : '-'}
-                </div>
-                <div className="text-xs text-muted-foreground">最后活跃</div>
               </div>
             </div>
 
-            {/* Basic info */}
-            {agent && (
-              <div className="mt-4 space-y-3">
-                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                  基本信息
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Text type="secondary" className="text-xs">名称</Text>
-                    <Text className="text-xs">{agent.name}</Text>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Text type="secondary" className="text-xs">模型</Text>
-                    <Tag
-                      className="text-xs cursor-pointer"
-                      onClick={() => setActiveSection('prompt')}
-                    >
-                      {agent.model_name || '全局默认'}
-                    </Tag>
-                  </div>
-                  {agent.description && (
-                    <div className="flex items-start justify-between gap-2">
-                      <Text type="secondary" className="text-xs flex-shrink-0">描述</Text>
-                      <Text className="text-xs text-right">{agent.description}</Text>
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between">
-                    <Text type="secondary" className="text-xs">状态</Text>
-                    <Tag color={agent.is_active ? 'green' : 'red'} className="text-xs">
-                      {agent.is_active ? '启用' : '禁用'}
-                    </Tag>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Text type="secondary" className="text-xs">记忆提取</Text>
-                    <Tag
-                      color={agent.enable_memory_extraction !== false ? 'green' : 'default'}
-                      className="text-xs cursor-pointer"
-                      onClick={() => setActiveSection('prompt')}
-                    >
-                      {agent.enable_memory_extraction !== false ? '已开启' : '已关闭'}
-                    </Tag>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Text type="secondary" className="text-xs">LLM 重试</Text>
-                    <Tag
-                      color={agent.enable_retry !== false ? 'green' : 'default'}
-                      className="text-xs cursor-pointer"
-                      onClick={() => setActiveSection('prompt')}
-                    >
-                      {agent.enable_retry !== false ? '已开启' : '已关闭'}
-                    </Tag>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Text type="secondary" className="text-xs">自动标题</Text>
-                    <Tag
-                      color={agent.enable_auto_title !== false ? 'green' : 'default'}
-                      className="text-xs cursor-pointer"
-                      onClick={() => setActiveSection('prompt')}
-                    >
-                      {agent.enable_auto_title !== false ? '已开启' : '已关闭'}
-                    </Tag>
-                  </div>
-                </div>
-
-                <div className="border-t border-border/50 pt-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Text type="secondary" className="text-xs">子智能体</Text>
-                    <Tag
-                      color="cyan"
-                      className="text-xs cursor-pointer"
-                      onClick={() => setActiveSection('children')}
-                    >
-                      {agent.children_count} 个
-                    </Tag>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Text type="secondary" className="text-xs">绑定技能</Text>
-                    <Tag
-                      color="purple"
-                      className="text-xs cursor-pointer"
-                      onClick={() => setActiveSection('skills')}
-                    >
-                      {agent.skill_ids?.length ?? 0} 个
-                    </Tag>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Text type="secondary" className="text-xs">启用工具</Text>
-                    <Tag
-                      color="blue"
-                      className="text-xs cursor-pointer"
-                      onClick={() => setActiveSection('tools')}
-                    >
-                      {(() => {
-                        const builtinNames = new Set(
-                          allTools.filter((t) => t.category !== 'mcp').map((t) => t.name),
-                        );
-                        return (agent.enabled_tools || []).filter((t) => builtinNames.has(t)).length;
-                      })()} 个
-                    </Tag>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Text type="secondary" className="text-xs">MCP 服务</Text>
-                    <Tag
-                      color="geekblue"
-                      className="text-xs cursor-pointer"
-                      onClick={() => setActiveSection('mcp')}
-                    >
-                      {agent.mcp_server_ids?.length ?? 0} 个
-                    </Tag>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Text type="secondary" className="text-xs">知识库</Text>
-                    <Tag
-                      color="purple"
-                      className="text-xs cursor-pointer"
-                      onClick={() => setActiveSection('knowledge')}
-                    >
-                      {agent.knowledge_base_ids?.length ?? 0} 个
-                    </Tag>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Text type="secondary" className="text-xs">图谱知识库</Text>
-                    <Tag
-                      color="cyan"
-                      className="text-xs cursor-pointer"
-                      onClick={() => setActiveSection('graph-knowledge')}
-                    >
-                      {agent.graph_knowledge_base_ids?.length ?? 0} 个
-                    </Tag>
-                  </div>
-                </div>
+            <div className="grid grid-cols-3 divide-x divide-border/60 rounded-xl border border-border/60 bg-background py-3">
+              <div className="text-center">
+                <div className="text-base font-semibold tabular-nums text-foreground">{agentStats?.total_sessions ?? 0}</div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">会话</div>
               </div>
-            )}
-          </>
+              <div className="text-center">
+                <div className="text-base font-semibold tabular-nums text-foreground">{agentStats?.total_messages ?? 0}</div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">消息</div>
+              </div>
+              <div className="text-center">
+                <div className="truncate px-1 text-sm font-semibold text-foreground">
+                  {agentStats?.last_active_at ? formatRelativeTime(agentStats.last_active_at) : '-'}
+                </div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">活跃</div>
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 px-1 text-xs font-medium text-muted-foreground">配置</div>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { key: 'children' as SectionKey, label: '子智能体', value: agent.children_count ?? 0, icon: <ApartmentOutlined /> },
+                  { key: 'skills' as SectionKey, label: '技能', value: agent.skill_ids?.length ?? 0, icon: <ThunderboltOutlined /> },
+                  { key: 'tools' as SectionKey, label: '工具', value: (agent.enabled_tools || []).filter((tool) => allTools.some((item) => item.category !== 'mcp' && item.name === tool)).length, icon: <ToolOutlined /> },
+                  { key: 'mcp' as SectionKey, label: 'MCP', value: agent.mcp_server_ids?.length ?? 0, icon: <DisconnectOutlined /> },
+                  { key: 'knowledge' as SectionKey, label: '知识库', value: agent.knowledge_base_ids?.length ?? 0, icon: <DatabaseOutlined /> },
+                  { key: 'graph-knowledge' as SectionKey, label: '知识图谱', value: agent.graph_knowledge_base_ids?.length ?? 0, icon: <ApartmentOutlined /> },
+                ].map((item) => (
+                  <button
+                    key={item.key}
+                    onClick={() => setActiveSection(item.key)}
+                    className="group flex items-center gap-2.5 rounded-xl border border-border/60 bg-background px-3 py-2.5 text-left transition hover:border-primary/30 hover:bg-primary/[0.04]"
+                  >
+                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-muted text-xs text-muted-foreground transition group-hover:bg-primary/10 group-hover:text-primary">
+                      {item.icon}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-xs text-foreground">{item.label}</span>
+                    <span className="text-xs font-semibold tabular-nums text-muted-foreground">{item.value}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <button
+              onClick={() => setActiveSection('prompt')}
+              className="flex w-full items-center justify-between rounded-xl bg-muted/45 px-3 py-2.5 text-xs transition hover:bg-muted"
+            >
+              <span className="text-muted-foreground">运行设置</span>
+              <span className="flex items-center gap-2 text-foreground">
+                {agent.enable_memory_extraction !== false && <span>记忆</span>}
+                {agent.enable_retry !== false && <span>重试</span>}
+                {agent.enable_auto_title !== false && <span>标题</span>}
+                <span className="text-muted-foreground">›</span>
+              </span>
+            </button>
+          </div>
+        ) : (
+          <div className="py-16 text-center text-xs text-muted-foreground">
+            暂无智能体信息
+          </div>
         )}
       </div>
     </>
@@ -590,10 +520,15 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
   // Render history panel
   const renderHistoryPanel = () => (
     <>
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
+      <div className="flex items-center justify-between border-b border-border/50 bg-card px-4 py-3.5">
         <div className="flex items-center gap-2">
-          <HistoryOutlined className="text-primary" />
-          <Text strong className="text-sm">对话历史</Text>
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <HistoryOutlined />
+          </span>
+          <div>
+            <Text strong className="block text-sm">对话历史</Text>
+            <Text type="secondary" className="block text-[10px]">查找和管理历史会话</Text>
+          </div>
         </div>
         <button
           onClick={closePanel}
@@ -603,7 +538,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
         </button>
       </div>
 
-      <div className="px-3 py-2">
+      <div className="bg-muted/20 px-3 py-2.5">
         <div className="relative">
           <SearchOutlined className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground/60" />
           <input
@@ -752,14 +687,14 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
       );
     }
 
-    const sectionLabels: Record<AdminSectionKey, { icon: React.ReactNode; label: string }> = {
-      prompt: { icon: <FileTextOutlined />, label: '系统提示词' },
-      tools: { icon: <ToolOutlined />, label: '工具配置' },
-      mcp: { icon: <DisconnectOutlined />, label: 'MCP 服务' },
-      knowledge: { icon: <DatabaseOutlined />, label: '知识库' },
-      'graph-knowledge': { icon: <ApartmentOutlined />, label: '图谱知识库' },
-      skills: { icon: <ThunderboltOutlined />, label: '技能配置' },
-      children: { icon: <ApartmentOutlined />, label: '子智能体' },
+    const sectionLabels: Record<AdminSectionKey, { icon: React.ReactNode; label: string; description: string }> = {
+      prompt: { icon: <FileTextOutlined />, label: '系统提示词', description: '模型与对话行为' },
+      tools: { icon: <ToolOutlined />, label: '工具配置', description: '可调用的本地工具' },
+      mcp: { icon: <DisconnectOutlined />, label: 'MCP 服务', description: '外部服务工具' },
+      knowledge: { icon: <DatabaseOutlined />, label: '知识库', description: '检索增强内容' },
+      'graph-knowledge': { icon: <ApartmentOutlined />, label: '图谱知识库', description: '关系与实体检索' },
+      skills: { icon: <ThunderboltOutlined />, label: '技能配置', description: '可复用的能力流程' },
+      children: { icon: <ApartmentOutlined />, label: '子智能体', description: '任务委派与协作' },
     };
 
     const sectionInfo = sectionLabels[activeSection as AdminSectionKey];
@@ -767,10 +702,15 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
 
     return (
       <>
-        <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center justify-between border-b border-border/50 bg-card px-4 py-3.5">
           <div className="flex items-center gap-2">
-            <span className="text-primary">{sectionInfo.icon}</span>
-            <Text strong className="text-sm">{sectionInfo.label}</Text>
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              {sectionInfo.icon}
+            </span>
+            <div>
+              <Text strong className="block text-sm">{sectionInfo.label}</Text>
+              <Text type="secondary" className="block text-[10px]">{sectionInfo.description}</Text>
+            </div>
           </div>
           <button
             onClick={closePanel}
@@ -780,12 +720,12 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-4 pb-4">
+        <div className="agent-config-editor flex-1 overflow-y-auto bg-muted/20 p-3">
           {activeSection === 'prompt' && (
-            <div>
+            <div className="agent-config-panel">
               {/* Model selection */}
               <Text type="secondary" className="text-xs block mb-2">
-                模型（留空使用全局默认）
+                模型 <span className="font-normal text-muted-foreground/70">· 默认使用全局模型</span>
               </Text>
               <Select
                 value={selectedModelId || undefined}
@@ -810,7 +750,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
               {/* Temperature control */}
               <div className="mt-3">
                 <Text type="secondary" className="text-xs block mb-2">
-                  推理温度（留空使用全局默认 0.7）
+                  推理温度 <span className="font-normal text-muted-foreground/70">· 默认 0.7</span>
                 </Text>
                 <InputNumber
                   min={0}
@@ -838,7 +778,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
               {/* Max iterations control */}
               <div className="mt-3">
                 <Text type="secondary" className="text-xs block mb-2">
-                  最大迭代次数（单轮对话内工具调用循环上限，留空使用全局默认 100，上限 500）
+                  最大迭代次数 <span className="font-normal text-muted-foreground/70">· 默认 100，最高 500</span>
                 </Text>
                 <InputNumber
                   min={1}
@@ -867,7 +807,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
 
               {/* System prompt */}
               <Text type="secondary" className="text-xs block mb-2">
-                系统提示词（留空使用默认模板）
+                系统提示词 <span className="font-normal text-muted-foreground/70">· 可从模板开始</span>
               </Text>
               <Select
                 placeholder="从模板加载提示词..."
@@ -896,7 +836,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
               {/* Welcome message */}
               <div className="mt-4 pt-4 border-t border-border/50">
                 <Text type="secondary" className="text-xs block mb-2">
-                  欢迎语（新会话开始时展示）
+                  欢迎语
                 </Text>
                 <TextArea
                   value={welcomeMessage}
@@ -911,7 +851,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
               <div className="mt-4 pt-4 border-t border-border/50">
                 <div className="flex items-center justify-between mb-2">
                   <Text type="secondary" className="text-xs">
-                    快捷提问（欢迎页引导用户开始对话）
+                    快捷提问
                   </Text>
                   <Button
                     type="link"
@@ -1105,9 +1045,9 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
 
             return (
             <>
-            <div>
+            <div className="agent-config-panel">
               <Text type="secondary" className="text-xs block mb-2">
-                选择该智能体可使用的工具。知识库检索和委派任务工具会根据知识库绑定和子智能体配置自动注入，无需手动选择。
+                选择智能体可调用的工具，系统工具会自动注入。
               </Text>
 
               {/* Selected tools display */}
@@ -1533,9 +1473,9 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
           })()}
 
           {activeSection === 'mcp' && (
-            <div>
+            <div className="agent-config-panel">
               <Text type="secondary" className="text-xs block mb-3">
-                勾选该智能体可使用的 MCP 工具。支持逐个选择或按服务器批量选择。
+                按服务或单独选择 MCP 工具。
               </Text>
 
               {mcpServers.length === 0 ? (
@@ -1675,9 +1615,9 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
           )}
 
           {activeSection === 'knowledge' && (
-            <div>
+            <div className="agent-config-panel">
               <Text type="secondary" className="text-xs block mb-2">
-                选择该智能体可检索的知识库。绑定后，Agent 可自动调用知识库检索工具获取相关信息。
+                选择对话中可检索的知识库。
               </Text>
 
               {knowledgeBases.length === 0 ? (
@@ -1749,10 +1689,9 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
           )}
 
           {activeSection === 'graph-knowledge' && (
-            <div>
+            <div className="agent-config-panel">
               <Text type="secondary" className="text-xs block mb-2">
-                选择该智能体可检索的图谱知识库。绑定后，Agent 可自动调用图谱检索工具，
-                沿实体关系链回答关系型与多跳问题。
+                选择用于关系检索和多跳问题的知识图谱。
               </Text>
 
               {graphKnowledgeBases.length === 0 ? (
@@ -1829,9 +1768,9 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
 
           {activeSection === 'skills' && (
             <>
-            <div>
+            <div className="agent-config-panel">
               <Text type="secondary" className="text-xs block mb-2">
-                选择该智能体可使用的技能。Agent 会在对话中自动匹配并调用相关技能。
+                绑定对话中可自动匹配的技能。
               </Text>
 
               {/* Selected skills */}
@@ -2129,9 +2068,9 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
           )}
 
           {activeSection === 'children' && (
-            <div>
+            <div className="agent-config-panel">
               <Text type="secondary" className="text-xs block mb-3">
-                管理当前智能体的子级智能体。子智能体可被委派任务，实现多智能体协作。
+                添加可接收任务委派的子智能体。
               </Text>
 
               {/* Button to open child agent selection modal */}
@@ -2530,7 +2469,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
       ref={sidebarRef}
       className={cn(
         'flex flex-shrink-0 border-r border-border bg-card overflow-hidden transition-all duration-200 ease-in-out',
-        sidebarExpanded && activeSection ? 'w-[340px]' : 'w-11',
+        sidebarExpanded && activeSection ? 'w-[380px]' : 'w-11',
       )}
     >
       {/* Icon rail */}
@@ -2913,13 +2852,14 @@ function SaveButtonRow({
   onSave: () => void;
 }) {
   return (
-    <div className="flex items-center gap-2 mt-4">
+    <div className="sticky bottom-0 z-10 -mx-3 -mb-3 mt-4 flex items-center gap-2 border-t border-border/60 bg-card/95 p-3 backdrop-blur">
       <Button
         type="primary"
-        size="small"
+        size="middle"
         icon={<SaveOutlined />}
         loading={saving}
         onClick={onSave}
+        className="flex-1 !rounded-lg"
       >
         保存
       </Button>

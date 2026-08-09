@@ -2501,12 +2501,20 @@ export interface ObsQuality {
 
 export type ObsWindow = '1h' | '24h' | '7d';
 
+export interface ObsRangeQuery {
+  window: ObsWindow;
+  start?: string;
+  end?: string;
+}
+
 export const observabilityApi = {
-  overview(window: ObsWindow) {
-    return request<ObsOverview>(`/observability/overview?window=${window}`);
+  overview(range: ObsRangeQuery) {
+    return request<ObsOverview>(`/observability/overview${qs(range)}`);
   },
   traces(q: {
     window?: ObsWindow;
+    start?: string;
+    end?: string;
     page?: number;
     page_size?: number;
     status?: string;
@@ -2518,18 +2526,18 @@ export const observabilityApi = {
   trace(id: string) {
     return request<ObsTraceDetail>(`/observability/traces/${id}`);
   },
-  stats(q: { window?: ObsWindow; by?: 'model' | 'agent' | 'user' | 'tenant'; metric?: string }) {
+  stats(q: { window?: ObsWindow; start?: string; end?: string; by?: 'model' | 'agent' | 'user' | 'tenant'; metric?: string }) {
     return request<ObsDistributionItem[]>(`/observability/stats${qs(q)}`);
   },
-  toolRanking(q: { window?: ObsWindow; metric?: string; top?: number }) {
+  toolRanking(q: { window?: ObsWindow; start?: string; end?: string; metric?: string; top?: number }) {
     return request<ObsToolRankItem[]>(`/observability/tool-ranking${qs(q)}`);
   },
-  toolTrend(tool: string, granularity: 'minute' | 'hour' | 'day') {
+  toolTrend(tool: string, granularity: 'minute' | 'hour' | 'day', range: ObsRangeQuery) {
     return request<ObsToolTrendPoint[]>(
-      `/observability/tools/${encodeURIComponent(tool)}/trend?granularity=${granularity}`,
+      `/observability/tools/${encodeURIComponent(tool)}/trend${qs({ granularity, ...range })}`,
     );
   },
-  quality(window: ObsWindow) {
-    return request<ObsQuality>(`/observability/quality?window=${window}`);
+  quality(range: ObsRangeQuery) {
+    return request<ObsQuality>(`/observability/quality${qs(range)}`);
   },
 };

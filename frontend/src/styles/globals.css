@@ -2,6 +2,29 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+  .agent-config-panel {
+    @apply rounded-xl border border-border/70 bg-card p-3 shadow-sm;
+  }
+
+  .agent-config-editor .ant-select-selector,
+  .agent-config-editor .ant-input,
+  .agent-config-editor .ant-input-number,
+  .agent-config-editor .ant-btn-default {
+    border-radius: 10px !important;
+  }
+
+  .agent-config-editor .ant-select-single.ant-select-sm .ant-select-selector,
+  .agent-config-editor .ant-input-number-sm,
+  .agent-config-editor .ant-input-sm {
+    min-height: 34px;
+  }
+
+  .agent-config-editor .ant-divider-horizontal {
+    margin: 16px 0;
+  }
+}
+
 @layer utilities {
   /* Brand gradient driven by the active skin */
   .bg-brand-gradient {

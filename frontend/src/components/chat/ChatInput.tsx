@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type FormEvent, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
-import { SendOutlined, StopOutlined, PictureOutlined, FileOutlined, CloseOutlined, LoadingOutlined, FileTextOutlined, FolderOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { ArrowUpOutlined, StopOutlined, PaperClipOutlined, CloseOutlined, LoadingOutlined, FileTextOutlined, FolderOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { Input, Button, App, Image, Tooltip, Select } from 'antd';
 import { chatApi } from '@/lib/api';
 import { useChatStore } from '@/stores/chatStore';
@@ -72,8 +72,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
   const [commandIndex, setCommandIndex] = useState(0);
   const [commandDismissed, setCommandDismissed] = useState(false);
   const textareaRef = useRef<any>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
   const { message } = App.useApp();
   const { workspaces, selectedWorkspaceId, isWorkspacesLoading, setSelectedWorkspace, loadWorkspaces } = useChatStore();
 
@@ -107,8 +106,6 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
   useEffect(() => {
     loadWorkspaces();
   }, [loadWorkspaces]);
-
-  const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId);
 
   const readAsDataURL = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -204,6 +201,15 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
       }
     }
   }, [sessionId, onEnsureSession, message]);
+
+  const handleAttachmentFiles = (files: FileList | File[]) => {
+    const selectedFiles = Array.from(files);
+    const images = selectedFiles.filter((file) => ALLOWED_IMAGE_TYPES.includes(file.type));
+    const otherFiles = selectedFiles.filter((file) => !ALLOWED_IMAGE_TYPES.includes(file.type));
+
+    if (images.length > 0) handleImageFiles(images);
+    if (otherFiles.length > 0) handleFileUpload(otherFiles);
+  };
 
   const removeFileAttachment = (localId: string) => {
     setPendingFiles((prev) => prev.filter((p) => p.localId !== localId));
@@ -333,9 +339,54 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
 
   const canSend = input.trim() || pending.some((p) => p.status === 'done') || pendingFiles.some((p) => p.status === 'done');
 
+  const renderSendActions = (compact: boolean) => {
+    const buttonSize = compact ? 34 : 36;
+    const buttonClass = compact ? 'flex-shrink-0' : 'flex-shrink-0 !rounded-full !border-0 shadow-sm';
+
+    if (isStreaming) {
+      return (
+        <>
+          <Tooltip title="加入队列 (Enter)">
+            <Button
+              type="primary"
+              htmlType="submit"
+              icon={<ArrowUpOutlined />}
+              disabled={disabled || !canSend}
+              className={buttonClass}
+              style={{ height: buttonSize, width: buttonSize }}
+            />
+          </Tooltip>
+          <Tooltip title="停止生成">
+            <Button
+              type="primary"
+              danger
+              icon={<StopOutlined />}
+              onClick={onStop}
+              className={buttonClass}
+              style={{ height: buttonSize, width: buttonSize }}
+            />
+          </Tooltip>
+        </>
+      );
+    }
+
+    return (
+      <Tooltip title="发送消息">
+        <Button
+          type="primary"
+          htmlType="submit"
+          icon={<ArrowUpOutlined />}
+          disabled={disabled || !canSend}
+          className={buttonClass}
+          style={{ height: buttonSize, width: buttonSize }}
+        />
+      </Tooltip>
+    );
+  };
+
   return (
     <div
-      className={`border-t border-border ${simple ? 'p-2' : 'p-4'} ${isDragging ? 'bg-primary/5' : ''}`}
+      className={`border-t border-border ${simple ? 'p-2' : 'bg-muted/20 p-3'} ${isDragging ? 'bg-primary/5' : ''}`}
       onDragOver={simple ? undefined : handleDragOver}
       onDragLeave={simple ? undefined : handleDragLeave}
       onDrop={simple ? undefined : handleDrop}
@@ -359,29 +410,16 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
 
       {/* Hidden inputs */}
       {!simple && (
-        <>
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/jpeg,image/png,image/gif,image/webp"
-            multiple
-            hidden
-            onChange={(e) => {
-              if (e.target.files) handleImageFiles(e.target.files);
-              e.target.value = '';
-            }}
-          />
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            hidden
-            onChange={(e) => {
-              if (e.target.files) handleFileUpload(e.target.files);
-              e.target.value = '';
-            }}
-          />
-        </>
+        <input
+          ref={attachmentInputRef}
+          type="file"
+          multiple
+          hidden
+          onChange={(e) => {
+            if (e.target.files) handleAttachmentFiles(e.target.files);
+            e.target.value = '';
+          }}
+        />
       )}
 
       {/* Image previews */}
@@ -523,7 +561,12 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
       )}
 
       {/* Input form */}
-      <form onSubmit={handleSubmit} className={`relative mx-auto flex items-end ${simple ? 'max-w-none gap-2' : 'max-w-3xl gap-3'}`}>
+      <form
+        onSubmit={handleSubmit}
+        className={simple
+          ? 'relative mx-auto flex max-w-none items-end gap-2'
+          : 'relative mx-auto flex max-w-3xl flex-col rounded-2xl border border-border/80 bg-background p-2 shadow-sm transition focus-within:border-primary/35 focus-within:shadow-[0_4px_20px_rgba(0,0,0,0.06)]'}
+      >
         {commandMenuOpen && commandItems.length > 0 && (
           <CommandMenu
             query={input.slice(1)}
@@ -531,28 +574,6 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
             onSelect={selectCommand}
             onClose={() => setCommandDismissed(true)}
           />
-        )}
-        {!simple && (
-          <>
-            <Button
-              type="text"
-              icon={<PictureOutlined />}
-              onClick={() => imageInputRef.current?.click()}
-              disabled={disabled || totalPending() >= MAX_ATTACHMENTS}
-              className="flex-shrink-0"
-              style={{ height: simple ? 34 : 44, width: simple ? 34 : 44 }}
-              title="上传图片"
-            />
-            <Button
-              type="text"
-              icon={<FileOutlined />}
-              onClick={() => fileInputRef.current?.click()}
-              disabled={disabled || totalPending() >= MAX_ATTACHMENTS}
-              className="flex-shrink-0"
-              style={{ height: simple ? 34 : 44, width: simple ? 34 : 44 }}
-              title="上传文件"
-            />
-          </>
         )}
         <TextArea
           ref={textareaRef}
@@ -564,72 +585,57 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
             simple
               ? '输入消息... (Enter 发送, Shift+Enter 换行)'
               : isStreaming
-                ? '回复中，Enter 将消息加入队列，可随时继续输入...'
-                : '输入消息... (Enter 发送, Shift+Enter 换行, 支持拖拽/粘贴图片和文件)'
+                ? '继续输入，Enter 加入队列'
+                : '输入消息，Enter 发送'
           }
           autoSize={{ minRows: 1, maxRows: simple ? 4 : 6 }}
           disabled={disabled}
+          variant={simple ? 'outlined' : 'borderless'}
+          className={simple ? undefined : '!px-2 !py-1.5 !text-sm !shadow-none'}
         />
-        {isStreaming ? (
-          <>
-            <Tooltip title="加入队列 (Enter)">
-              <Button
-                type="primary"
-                htmlType="submit"
-                icon={<SendOutlined />}
-                disabled={disabled || !canSend}
-                className="flex-shrink-0"
-                style={{ height: simple ? 34 : 44, width: simple ? 34 : 44 }}
-              />
-            </Tooltip>
-            <Tooltip title="停止生成">
-              <Button
-                type="primary"
-                danger
-                icon={<StopOutlined />}
-                onClick={onStop}
-                className="flex-shrink-0"
-                style={{ height: simple ? 34 : 44, width: simple ? 34 : 44 }}
-              />
-            </Tooltip>
-          </>
+
+        {simple ? (
+          renderSendActions(true)
         ) : (
-          <Button
-            type="primary"
-            htmlType="submit"
-            icon={<SendOutlined />}
-            disabled={disabled || !canSend}
-            className="flex-shrink-0"
-            style={{ height: simple ? 34 : 44, width: simple ? 34 : 44 }}
-          />
+          <div className="flex w-full items-center justify-between gap-3 pt-1">
+            <div className="flex min-w-0 items-center gap-1">
+              <Tooltip title="添加图片或文件">
+                <Button
+                  type="text"
+                  icon={<PaperClipOutlined />}
+                  onClick={() => attachmentInputRef.current?.click()}
+                  disabled={disabled || totalPending() >= MAX_ATTACHMENTS}
+                  className="flex-shrink-0 !rounded-xl text-muted-foreground"
+                  style={{ height: 34, width: 34 }}
+                  aria-label="添加附件"
+                />
+              </Tooltip>
+              <Tooltip title="附件和生成的文件会保存在所选工作区">
+                <div className="flex min-w-0 items-center gap-0.5 text-muted-foreground">
+                  <FolderOutlined className="ml-1 flex-shrink-0 text-xs" />
+                  <Select
+                    size="small"
+                    value={selectedWorkspaceId}
+                    onChange={setSelectedWorkspace}
+                    loading={isWorkspacesLoading}
+                    variant="borderless"
+                    popupMatchSelectWidth={false}
+                    style={{ minWidth: 124 }}
+                    options={workspaces.map((ws) => ({
+                      value: ws.id,
+                      label: ws.is_default ? `${ws.name} · 默认` : ws.name,
+                    }))}
+                    placeholder="选择工作区"
+                  />
+                </div>
+              </Tooltip>
+            </div>
+            <div className="flex flex-shrink-0 items-center gap-1.5">
+              {renderSendActions(false)}
+            </div>
+          </div>
         )}
       </form>
-
-      {/* Workspace selector */}
-      {!simple && (
-        <div className="mx-auto max-w-3xl mt-2 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <FolderOutlined className="text-xs text-muted-foreground" />
-            <Select
-              size="small"
-              value={selectedWorkspaceId}
-              onChange={setSelectedWorkspace}
-              loading={isWorkspacesLoading}
-              style={{ minWidth: 160 }}
-              options={workspaces.map((ws) => ({
-                value: ws.id,
-                label: ws.is_default ? `${ws.name} (默认)` : ws.name,
-              }))}
-              placeholder="选择工作区"
-            />
-            {selectedWorkspace && (
-              <span className="text-xs text-muted-foreground">
-                文件将保存到 /workspace/{selectedWorkspace.slug}/
-              </span>
-            )}
-          </div>
-        </div>
-      )}
 
       {!simple && isDragging && (
         <div className="fixed inset-0 bg-primary/10 border-2 border-dashed border-primary pointer-events-none z-50 flex items-center justify-center">

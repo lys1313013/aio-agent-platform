@@ -19,7 +19,6 @@ import {
   Spin,
   Table,
   Tag,
-  Typography,
   Upload,
   message,
 } from 'antd';
@@ -27,8 +26,6 @@ import type { ColumnsType } from 'antd/es/table';
 import { workspacesApi } from '@/lib/api';
 import type { Workspace, WorkspaceFileEntry } from '@/lib/api';
 import { cn } from '@/lib/utils';
-
-const { Text } = Typography;
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -222,27 +219,24 @@ export default function WorkspacesPage() {
   ];
 
   return (
-    <div className="flex-1 overflow-hidden flex flex-col">
-      <div className="w-full px-6 py-8 flex flex-col flex-1 overflow-hidden">
+    <div className="flex flex-1 flex-col overflow-hidden bg-muted/15">
+      <div className="flex w-full flex-1 flex-col overflow-hidden px-6 py-5">
         {/* Header */}
-        <div className="mb-6 flex items-start justify-between flex-shrink-0">
-          <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
-              <FolderOpenOutlined className="text-primary" />
-              工作区文件
-            </h1>
-            <Text type="secondary">
-              浏览沙箱工作目录 /workspace 下的文件。沙箱运行时显示实时内容，否则显示最近同步的存储快照。
-            </Text>
-          </div>
+        <div className="mb-4 flex flex-shrink-0 items-center justify-between">
+          <h1 className="flex items-center gap-2 text-xl font-semibold">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <FolderOpenOutlined />
+            </span>
+            工作区文件
+          </h1>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
             新建工作区
           </Button>
         </div>
 
-        <div className="flex gap-4 flex-1 overflow-hidden">
+        <div className="flex flex-1 gap-3 overflow-hidden">
           {/* Workspace list */}
-          <div className="w-64 flex-shrink-0 overflow-y-auto rounded-lg border border-border bg-card">
+          <div className="w-64 flex-shrink-0 overflow-y-auto rounded-xl border border-border/70 bg-card p-2 shadow-sm">
             {loadingWs ? (
               <div className="flex justify-center py-10">
                 <Spin />
@@ -255,17 +249,27 @@ export default function WorkspacesPage() {
                   key={ws.id}
                   onClick={() => handleSelectWorkspace(ws.id)}
                   className={cn(
-                    'group flex cursor-pointer items-center justify-between px-4 py-3 border-b border-border last:border-b-0 transition',
-                    ws.id === selectedId ? 'bg-muted' : 'hover:bg-muted/50',
+                    'group mb-1 flex cursor-pointer items-center justify-between rounded-lg px-3 py-2.5 transition last:mb-0',
+                    ws.id === selectedId
+                      ? 'bg-primary/[0.08] ring-1 ring-primary/15'
+                      : 'hover:bg-muted/60',
                   )}
                 >
-                  <div className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <span className={cn(
+                      'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                      ws.id === selectedId ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground',
+                    )}>
+                      <FolderOutlined />
+                    </span>
+                    <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="truncate text-sm font-medium text-foreground">{ws.name}</span>
-                      {ws.is_default && <Tag color="blue">默认</Tag>}
+                      {ws.is_default && <Tag variant="filled" color="blue" className="!m-0 text-[10px]">默认</Tag>}
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {ws.file_count} 个文件 · {formatBytes(ws.total_size_bytes)}
+                    </div>
                     </div>
                   </div>
                   {!ws.is_default && (
@@ -292,11 +296,11 @@ export default function WorkspacesPage() {
           </div>
 
           {/* File browser */}
-          <div className="flex-1 overflow-hidden rounded-lg border border-border bg-card flex flex-col">
+          <div className="flex flex-1 flex-col overflow-hidden rounded-xl border border-border/70 bg-card shadow-sm">
             {selectedWorkspace ? (
               <>
                 {/* Toolbar */}
-                <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5 flex-shrink-0">
+                <div className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-border/70 px-4 py-3">
                   <div className="flex items-center gap-1 text-sm min-w-0">
                     <a
                       className={cn('flex items-center gap-1', !currentPath && 'text-muted-foreground')}

@@ -6,7 +6,7 @@ Queries the observability detail/pre-aggregated tables written by
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -43,14 +43,23 @@ def _require_admin(user: User) -> None:
 
 def _resolve_range(
     window: str = "24h",
-    start: date | None = None,
-    end: date | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
 ) -> tuple[datetime, datetime]:
-    if start and end:
-        return (
-            datetime.combine(start, time.min, tzinfo=UTC),
-            datetime.combine(end, time.max, tzinfo=UTC),
+    if (start is None) != (end is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="start and end must be provided together",
         )
+    if start is not None and end is not None:
+        start = start.replace(tzinfo=UTC) if start.tzinfo is None else start.astimezone(UTC)
+        end = end.replace(tzinfo=UTC) if end.tzinfo is None else end.astimezone(UTC)
+        if start >= end:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="start must be earlier than end",
+            )
+        return start, end
     now = datetime.now(UTC)
     if window == "1h":
         return now - timedelta(hours=1), now
@@ -185,9 +194,11 @@ async def get_overview(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     window: str = Query(default="24h", pattern="^(1h|24h|7d)$"),
+    start_at: datetime | None = Query(default=None, alias="start"),
+    end_at: datetime | None = Query(default=None, alias="end"),
 ) -> OverviewOut:
     _require_admin(user)
-    start, end = _resolve_range(window)
+    start, end = _resolve_range(window, start_at, end_at)
 
     def _in_range(col):
         return col >= start, col <= end
@@ -354,9 +365,11 @@ async def list_traces(
     agent_id: UUID | None = None,
     session_id: UUID | None = None,
     window: str = Query(default="24h", pattern="^(1h|24h|7d)$"),
+    start_at: datetime | None = Query(default=None, alias="start"),
+    end_at: datetime | None = Query(default=None, alias="end"),
 ) -> TracePage:
     _require_admin(user)
-    start, end = _resolve_range(window)
+    start, end = _resolve_range(window, start_at, end_at)
 
     conds = [
         AgentTraceLog.created_at >= start,
@@ -429,18 +442,16 @@ async def get_trace(
         )).scalars().all()
     )
 
-    def _as_dict(obj, exclude: set[str] | None = None) -> dict:
+    def _as_dict(obj) -> dict:
         d = {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
-        for k in ("id", "created_at", "user_id", "tenant_id", "session_id", "agent_id", "model_id"):
-            d.pop(k, None)
-        if exclude:
-            for k in exclude:
-                d.pop(k, None)
+        # The drawer needs timestamps and relationship ids to explain a trace.
+        # Only the internal row primary key is presentation noise.
+        d.pop("id", None)
         return d
 
     return {
         "trace": _as_dict(trace),
-        "llm_calls": [_as_dict(c, exclude={"model_id"}) for c in llm_calls],
+        "llm_calls": [_as_dict(c) for c in llm_calls],
         "tool_calls": [_as_dict(t) for t in tool_calls],
     }
 
@@ -453,11 +464,13 @@ async def get_stats(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     by: Literal["model", "agent", "user", "tenant"] = Query(default="model"),
-    metric: Literal["tokens", "duration", "error"] = Query(default="tokens"),
+    metric: Literal["tokens", "duration", "error", "count"] = Query(default="tokens"),
     window: str = Query(default="7d", pattern="^(1h|24h|7d)$"),
+    start_at: datetime | None = Query(default=None, alias="start"),
+    end_at: datetime | None = Query(default=None, alias="end"),
 ) -> list[DistributionItem]:
     _require_admin(user)
-    start, end = _resolve_range(window)
+    start, end = _resolve_range(window, start_at, end_at)
 
     if by == "model":
         rows = (
@@ -579,9 +592,11 @@ async def get_tool_ranking(
     metric: Literal["duration", "error", "count", "tokens"] = Query(default="count"),
     top: int = Query(default=20, ge=1, le=100),
     window: str = Query(default="7d", pattern="^(1h|24h|7d)$"),
+    start_at: datetime | None = Query(default=None, alias="start"),
+    end_at: datetime | None = Query(default=None, alias="end"),
 ) -> list[ToolRankItem]:
     _require_admin(user)
-    start, end = _resolve_range(window)
+    start, end = _resolve_range(window, start_at, end_at)
     conds = [
         ToolCallLog.created_at >= start,
         ToolCallLog.created_at <= end,
@@ -597,6 +612,7 @@ async def get_tool_ranking(
                     func.sum(case((ToolCallLog.is_error.is_(True), 1), else_=0)), 0,
                 ),
                 func.avg(ToolCallLog.duration_ms),
+                func.percentile_cont(0.95).within_group(ToolCallLog.duration_ms),
                 func.coalesce(func.sum(ToolCallLog.est_injected_tokens), 0),
             )
             .where(*conds)
@@ -615,8 +631,8 @@ async def get_tool_ranking(
                 error_count=err,
                 error_rate=round(err / total * 100, 2) if total else 0.0,
                 avg_duration_ms=round(r[3], 1) if r[3] is not None else None,
-                p95_duration_ms=None,
-                total_injected_tokens=int(r[4]),
+                p95_duration_ms=round(r[4], 1) if r[4] is not None else None,
+                total_injected_tokens=int(r[5]),
             )
         )
 
@@ -637,16 +653,20 @@ async def get_tool_trend(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     granularity: Literal["minute", "hour", "day"] = Query(default="hour"),
-    start: date | None = None,
-    end: date | None = None,
+    window: str = Query(default="24h", pattern="^(1h|24h|7d)$"),
+    start_at: datetime | None = Query(default=None, alias="start"),
+    end_at: datetime | None = Query(default=None, alias="end"),
 ) -> list[ToolTrendPoint]:
     _require_admin(user)
-    s, e = _resolve_range("24h", start, end)
-    bucket = {
-        "minute": func.date_trunc("minute", ToolCallLog.created_at),
-        "hour": func.date_trunc("hour", ToolCallLog.created_at),
-        "day": func.date_trunc("day", ToolCallLog.created_at),
-    }[granularity]
+    s, e = _resolve_range(window, start_at, end_at)
+    # Use UTC wall-clock buckets consistently with the overview endpoint.
+    bucket = func.timezone(
+        "UTC",
+        func.date_trunc(
+            granularity,
+            func.timezone("UTC", ToolCallLog.created_at),
+        ),
+    )
 
     rows = (
         await db.execute(
@@ -666,9 +686,22 @@ async def get_tool_trend(
             .order_by(bucket)
         )
     ).all()
+    count_map = {r[0]: float(r[1]) for r in rows}
+    error_map = {r[0]: float(r[2]) for r in rows}
+    step = {
+        "minute": timedelta(minutes=1),
+        "hour": timedelta(hours=1),
+        "day": timedelta(days=1),
+    }[granularity]
+    count_series = _fill_series(s, e, step, count_map)
+    error_series = _fill_series(s, e, step, error_map)
     return [
-        ToolTrendPoint(ts=r[0].isoformat(), request_count=int(r[1]), error_count=int(r[2]))
-        for r in rows
+        ToolTrendPoint(
+            ts=point["ts"],
+            request_count=int(point["value"]),
+            error_count=int(error_series[index]["value"]),
+        )
+        for index, point in enumerate(count_series)
     ]
 
 
@@ -680,9 +713,11 @@ async def get_quality(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     window: str = Query(default="7d", pattern="^(1h|24h|7d)$"),
+    start_at: datetime | None = Query(default=None, alias="start"),
+    end_at: datetime | None = Query(default=None, alias="end"),
 ) -> QualityOut:
     _require_admin(user)
-    start, end = _resolve_range(window)
+    start, end = _resolve_range(window, start_at, end_at)
 
     row = (
         await db.execute(
@@ -712,11 +747,11 @@ async def get_quality(
     ).one()
     count, completed, errors, interrupted, avg_dur, total_tok, llm_calls, tool_calls, comp, saved = row
 
-    day_expr = func.date_trunc("day", AgentTraceLog.created_at)
+    bucket_expr = _bucket_expr(AgentTraceLog.created_at, window)
     daily_rows = (
         await db.execute(
             select(
-                day_expr,
+                bucket_expr,
                 func.count(),
                 func.coalesce(
                     func.sum(case((AgentTraceLog.status == "completed", 1), else_=0)), 0,
@@ -729,8 +764,8 @@ async def get_quality(
                 func.coalesce(func.sum(AgentTraceLog.saved_tokens), 0),
             )
             .where(AgentTraceLog.created_at >= start, AgentTraceLog.created_at <= end)
-            .group_by(day_expr)
-            .order_by(day_expr)
+            .group_by(bucket_expr)
+            .order_by(bucket_expr)
         )
     ).all()
 
