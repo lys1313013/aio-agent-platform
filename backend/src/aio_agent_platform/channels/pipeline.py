@@ -532,20 +532,21 @@ class ChannelInboundPipeline:
         self, db: AsyncSession, agent_model_id: UUID | None
     ) -> tuple[bool, str]:
         """Resolve (is_multimodal, provider_type_for_content) for the agent's model."""
+        tenant_id = self.channel.tenant_id
         provider_type_for_content = "openai"
         model = None
         if agent_model_id:
             result = await db.execute(
                 select(LLMModel)
                 .options(selectinload(LLMModel.provider))
-                .where(LLMModel.id == agent_model_id)
+                .where(LLMModel.id == agent_model_id, LLMModel.tenant_id == tenant_id)
             )
             model = result.scalar_one_or_none()
         if model is None:
             result = await db.execute(
                 select(LLMModel)
                 .options(selectinload(LLMModel.provider))
-                .where(LLMModel.is_default, LLMModel.is_active)
+                .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == tenant_id)
                 .limit(1)
             )
             model = result.scalar_one_or_none()
@@ -634,6 +635,7 @@ class ChannelInboundPipeline:
             agent_temperature=agent.temperature,
             agent_max_iterations=agent.max_iterations,
             agent_enable_retry=agent.enable_retry if agent.enable_retry is not None else True,
+            tenant_id=agent.tenant_id,
             workspace_id=workspace_id,
             workspace_slug=workspace_slug,
         )
@@ -666,7 +668,7 @@ class ChannelInboundPipeline:
             select(func.count(Message.id)).where(Message.session_id == ctx.session_id)
         )
         if not prior_msg_count and (agent.enable_auto_title if agent else True):
-            title_task = asyncio.create_task(generate_session_title(event.text))
+            title_task = asyncio.create_task(generate_session_title(event.text, self.channel.tenant_id))
 
         # Persist the user message up front so it survives agent failures.
         db.add(Message(

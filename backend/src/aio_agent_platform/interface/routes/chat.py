@@ -468,14 +468,16 @@ async def chat(
     _resolved_model = None
     if agent_model_id:
         model_result = await db.execute(
-            select(LLMModel).options(selectinload(LLMModel.provider)).where(LLMModel.id == agent_model_id)
+            select(LLMModel).options(selectinload(LLMModel.provider)).where(
+                LLMModel.id == agent_model_id, LLMModel.tenant_id == user.tenant_id
+            )
         )
         _resolved_model = model_result.scalar_one_or_none()
     if not _resolved_model:
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default, LLMModel.is_active)
+            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == user.tenant_id)
             .limit(1)
         )
         _resolved_model = result.scalar_one_or_none()
@@ -515,6 +517,7 @@ async def chat(
         agent_temperature=agent_temperature,
         agent_max_iterations=agent_max_iterations,
         agent_enable_retry=agent_enable_retry,
+        tenant_id=user.tenant_id,
         delegation=delegation,
         workspace_id=workspace_id,
         workspace_slug=workspace_slug,
@@ -574,7 +577,7 @@ async def chat(
         )
     )
     if not prior_msg_count and (agent.enable_auto_title if agent else True):
-        title_task = asyncio.create_task(generate_session_title(req.message))
+        title_task = asyncio.create_task(generate_session_title(req.message, user.tenant_id))
 
     # Run agent loop with overflow retry
     final_output = ""
@@ -908,14 +911,16 @@ async def chat_stream(
     _resolved_model = None
     if agent_model_id:
         model_result = await db.execute(
-            select(LLMModel).options(selectinload(LLMModel.provider)).where(LLMModel.id == agent_model_id)
+            select(LLMModel).options(selectinload(LLMModel.provider)).where(
+                LLMModel.id == agent_model_id, LLMModel.tenant_id == user.tenant_id
+            )
         )
         _resolved_model = model_result.scalar_one_or_none()
     if not _resolved_model:
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default, LLMModel.is_active)
+            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == user.tenant_id)
             .limit(1)
         )
         _resolved_model = result.scalar_one_or_none()
@@ -945,7 +950,7 @@ async def chat_stream(
         )
     )
     if not prior_msg_count and (agent.enable_auto_title if agent else True):
-        title_task = asyncio.create_task(generate_session_title(req.message))
+        title_task = asyncio.create_task(generate_session_title(req.message, user.tenant_id))
 
     async def event_generator():
         # Langfuse trace: wrap the entire chat flow
@@ -1049,6 +1054,7 @@ async def chat_stream(
                     agent_temperature=agent_temperature,
                     agent_max_iterations=agent_max_iterations,
                     agent_enable_retry=agent_enable_retry,
+                    tenant_id=user.tenant_id,
                     delegation=delegation,
                     event_queue=event_queue,
                     workspace_id=workspace_id,
@@ -1683,6 +1689,7 @@ async def chat_websocket(
                     agent_temperature=agent_temperature,
                     agent_max_iterations=agent_max_iterations,
                     agent_enable_retry=agent_enable_retry,
+                    tenant_id=websocket_user.tenant_id,
                     delegation=delegation,
                     workspace_id=workspace_id,
                     workspace_slug=workspace_slug,

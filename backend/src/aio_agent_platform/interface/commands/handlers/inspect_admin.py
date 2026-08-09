@@ -106,7 +106,7 @@ async def cmd_status(ctx: CommandContext) -> CommandResult:
 
     models = (
         await ctx.db.execute(
-            select(LLMModel).where(LLMModel.is_active).order_by(LLMModel.is_default.desc())
+            select(LLMModel).where(LLMModel.is_active, LLMModel.tenant_id == ctx.user.tenant_id).order_by(LLMModel.is_default.desc())
         )
     ).scalars().all()
     lines.append(f"- **在线模型**：{len(models)} 个")

@@ -268,6 +268,7 @@ async def build_system_prompt_with_memories(
     tools_list: list,
     agent: Agent | None = None,
     workspace_files: list | None = None,
+    tenant_id: UUID | None = None,
 ) -> str:
     """Build system prompt with L1/L2/L3 memories and relevant skills injected."""
     memory_top_k = await get_memory_top_k(db, user_id)
@@ -282,7 +283,18 @@ async def build_system_prompt_with_memories(
             db, user_id, user_message, top_k=3
         )
 
-    result = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
+    # Resolve tenant_id if not provided
+    if tenant_id is None:
+        from aio_agent_platform.db.models import User
+        result = await db.execute(select(User.tenant_id).where(User.id == user_id))
+        tenant_id = result.scalar_one_or_none()
+
+    result = await db.execute(
+        select(UserProfile).where(
+            UserProfile.user_id == user_id,
+            UserProfile.tenant_id == tenant_id,
+        )
+    )
     user_profile = result.scalar_one_or_none()
     user_portrait = user_profile.personal_portrait if user_profile else None
 
@@ -312,9 +324,10 @@ def resolve_provider_type(provider_type: str | None) -> str:
 
 async def resolve_model(
     db: AsyncSession,
+    tenant_id: UUID,
     model_id: UUID | None = None,
 ) -> LLMModel:
-    """Resolve an LLMModel from a specific id, else the system default.
+    """Resolve an LLMModel from a specific id, else the tenant default.
 
     Returns a model with its ``provider`` relationship loaded. Raises
     ``RuntimeError`` when no usable model exists (callers outside HTTP context
@@ -325,7 +338,7 @@ async def resolve_model(
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.id == model_id, LLMModel.is_active)
+            .where(LLMModel.id == model_id, LLMModel.is_active, LLMModel.tenant_id == tenant_id)
         )
         model_to_use = result.scalar_one_or_none()
 
@@ -333,7 +346,7 @@ async def resolve_model(
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default, LLMModel.is_active)
+            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == tenant_id)
             .limit(1)
         )
         model_to_use = result.scalar_one_or_none()
@@ -347,6 +360,7 @@ async def build_agent_loop(
     tool_executor: ToolExecutor,
     system_prompt: str,
     db: AsyncSession,
+    tenant_id: UUID,
     agent_model_id: UUID | None = None,
     agent_temperature: float | None = None,
     agent_max_iterations: int | None = None,
@@ -361,7 +375,7 @@ async def build_agent_loop(
 
     Raises HTTPException (or RuntimeError for non-HTTP callers) if no model is available.
     """
-    model_to_use = await resolve_model(db, agent_model_id)
+    model_to_use = await resolve_model(db, tenant_id, agent_model_id)
 
     provider = create_provider(
         provider=model_to_use.provider.provider_type,

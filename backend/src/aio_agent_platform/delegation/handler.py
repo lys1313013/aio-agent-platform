@@ -448,7 +448,15 @@ async def _build_child_system_prompt(
 
     # Load user portrait
     from aio_agent_platform.db import UserProfile
-    result = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
+    from aio_agent_platform.db.models import User
+    tenant_result = await db.execute(select(User.tenant_id).where(User.id == user_id))
+    tenant_id = tenant_result.scalar_one_or_none()
+    result = await db.execute(
+        select(UserProfile).where(
+            UserProfile.user_id == user_id,
+            UserProfile.tenant_id == tenant_id,
+        )
+    )
     user_profile = result.scalar_one_or_none()
     user_portrait = user_profile.personal_portrait if user_profile else None
 
@@ -472,7 +480,7 @@ async def _build_child_provider(db: AsyncSession, child_agent: Agent | DynamicSu
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.id == child_agent.model_id, LLMModel.is_active)
+            .where(LLMModel.id == child_agent.model_id, LLMModel.is_active, LLMModel.tenant_id == child_agent.tenant_id)
         )
         model_to_use = result.scalar_one_or_none()
 
@@ -480,7 +488,7 @@ async def _build_child_provider(db: AsyncSession, child_agent: Agent | DynamicSu
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default, LLMModel.is_active)
+            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == child_agent.tenant_id)
             .limit(1)
         )
         model_to_use = result.scalar_one_or_none()

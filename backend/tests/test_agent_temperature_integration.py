@@ -62,6 +62,7 @@ class TestAgentTemperatureIntegration:
                 tool_executor=mock_tool_executor,
                 system_prompt="test",
                 db=db_session,
+                tenant_id=provider.tenant_id,
                 agent_model_id=model.id,
                 agent_temperature=0.3,
             )
@@ -111,6 +112,7 @@ class TestAgentTemperatureIntegration:
                 tool_executor=mock_tool_executor,
                 system_prompt="test",
                 db=db_session,
+                tenant_id=provider.tenant_id,
                 agent_model_id=model.id,
                 agent_temperature=None,  # No override
             )

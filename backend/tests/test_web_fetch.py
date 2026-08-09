@@ -212,15 +212,36 @@ async def test_summary_replaces_truncation_when_enabled(monkeypatch):
     async def fake_fetch(url, s):
         return body
 
-    async def fake_summarize(text, max_chars):
+    async def fake_summarize(text, max_chars, tenant_id):
         return "页面核心内容摘要"
+
+    async def fake_execute(*args, **kwargs):
+        class FakeResult:
+            def scalar_one_or_none(self):
+                return "00000000-0000-0000-0000-000000000001"
+        return FakeResult()
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def execute(self, *args, **kwargs):
+            return await fake_execute(*args, **kwargs)
+
+    class FakeFactory:
+        def __call__(self):
+            return FakeSession()
 
     monkeypatch.setattr(fetcher, "_fetch", fake_fetch)
     monkeypatch.setattr(
         "aio_agent_platform.tools.web.summarize.summarize_content", fake_summarize
     )
+    monkeypatch.setattr(
+        "aio_agent_platform.tools.web.fetch.get_session_factory", FakeFactory
+    )
 
-    out = await fetcher.handle({"url": "http://example.com", "max_chars": 1000})
+    out = await fetcher.handle({"url": "http://example.com", "max_chars": 1000}, user_id="some-user-id")
     assert "页面核心内容摘要" in out
     assert "summarized by LLM" in out
     assert "truncated" not in out

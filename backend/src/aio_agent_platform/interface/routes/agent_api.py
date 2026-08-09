@@ -150,6 +150,7 @@ async def _build_agent_loop_for_version(
     system_prompt: str,
     db: AsyncSession,
     config_snapshot: dict,
+    tenant_id: UUID,
     workspace_id: UUID | None = None,
     workspace_slug: str | None = None,
 ) -> AgentLoop:
@@ -163,7 +164,7 @@ async def _build_agent_loop_for_version(
             result = await db.execute(
                 select(LLMModel)
                 .options(selectinload(LLMModel.provider))
-                .where(LLMModel.id == model_uuid, LLMModel.is_active)
+                .where(LLMModel.id == model_uuid, LLMModel.is_active, LLMModel.tenant_id == tenant_id)
             )
             model_to_use = result.scalar_one_or_none()
         except (ValueError, AttributeError):
@@ -173,7 +174,7 @@ async def _build_agent_loop_for_version(
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default, LLMModel.is_active)
+            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == tenant_id)
             .limit(1)
         )
         model_to_use = result.scalar_one_or_none()
@@ -502,7 +503,12 @@ async def _execute_agent_inner(
         db, user.id, req.user_input, top_k=memory_top_k
     )
     from aio_agent_platform.db import UserProfile
-    profile_result = await db.execute(select(UserProfile).where(UserProfile.user_id == user.id))
+    profile_result = await db.execute(
+        select(UserProfile).where(
+            UserProfile.user_id == user.id,
+            UserProfile.tenant_id == user.tenant_id,
+        )
+    )
     user_profile = profile_result.scalar_one_or_none()
     user_portrait = user_profile.personal_portrait if user_profile else None
 
@@ -525,6 +531,7 @@ async def _execute_agent_inner(
     # Build agent loop
     agent_loop = await _build_agent_loop_for_version(
         tool_executor, system_prompt, db, config_snapshot,
+        tenant_id=user.tenant_id,
         workspace_id=workspace_id,
         workspace_slug=workspace_slug,
     )
@@ -720,7 +727,10 @@ async def sse_chat(
             )
             from aio_agent_platform.db import UserProfile
             profile_result = await db_session.execute(
-                select(UserProfile).where(UserProfile.user_id == user.id)
+                select(UserProfile).where(
+                    UserProfile.user_id == user.id,
+                    UserProfile.tenant_id == user.tenant_id,
+                )
             )
             user_profile = profile_result.scalar_one_or_none()
             user_portrait = user_profile.personal_portrait if user_profile else None
@@ -744,6 +754,7 @@ async def sse_chat(
             # Build agent loop
             agent_loop = await _build_agent_loop_for_version(
                 tool_executor, system_prompt, db_session, config_snapshot,
+                tenant_id=user.tenant_id,
                 workspace_id=workspace_id,
                 workspace_slug=workspace_slug,
             )

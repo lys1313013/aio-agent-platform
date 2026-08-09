@@ -176,9 +176,50 @@ async def _run_manual_migrations(conn) -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )""",
         "CREATE INDEX IF NOT EXISTS idx_portrait_versions_user ON portrait_versions (user_id, created_at)",
+        # Portrait tenant isolation
+        "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS tenant_id UUID",
+        """UPDATE user_profiles up SET tenant_id = u.tenant_id
+           FROM users u WHERE up.user_id = u.id AND up.tenant_id IS NULL""",
+        """UPDATE user_profiles SET tenant_id = '00000000-0000-0000-0000-000000000001'
+           WHERE tenant_id IS NULL""",
+        "ALTER TABLE user_profiles ALTER COLUMN tenant_id SET NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_user_profiles_tenant ON user_profiles (tenant_id)",
+        "ALTER TABLE portrait_versions ADD COLUMN IF NOT EXISTS tenant_id UUID",
+        """UPDATE portrait_versions pv SET tenant_id = u.tenant_id
+           FROM users u WHERE pv.user_id = u.id AND pv.tenant_id IS NULL""",
+        """UPDATE portrait_versions SET tenant_id = '00000000-0000-0000-0000-000000000001'
+           WHERE tenant_id IS NULL""",
+        "ALTER TABLE portrait_versions ALTER COLUMN tenant_id SET NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_portrait_versions_tenant ON portrait_versions (tenant_id)",
+        # UserProfile: composite primary key (user_id, tenant_id) for multi-tenant profiles
+        """DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'user_profiles_pkey'
+                  AND conrelid = 'user_profiles'::regclass
+                  AND pg_get_constraintdef(oid) LIKE 'PRIMARY KEY (user_id)%'
+                  AND pg_get_constraintdef(oid) NOT LIKE '%tenant_id%'
+            ) THEN
+                ALTER TABLE user_profiles DROP CONSTRAINT user_profiles_pkey;
+                ALTER TABLE user_profiles ADD PRIMARY KEY (user_id, tenant_id);
+            END IF;
+        END $$""",
         # CronJob: agent_id and message columns
         "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS agent_id UUID",
         "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS message TEXT",
+        # LLM tenant isolation
+        "ALTER TABLE llm_providers ADD COLUMN IF NOT EXISTS tenant_id UUID",
+        """UPDATE llm_providers SET tenant_id = '00000000-0000-0000-0000-000000000001'
+           WHERE tenant_id IS NULL""",
+        "ALTER TABLE llm_providers ALTER COLUMN tenant_id SET NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_llm_providers_tenant ON llm_providers (tenant_id)",
+        "ALTER TABLE llm_models ADD COLUMN IF NOT EXISTS tenant_id UUID",
+        """UPDATE llm_models SET tenant_id = '00000000-0000-0000-0000-000000000001'
+           WHERE tenant_id IS NULL""",
+        "ALTER TABLE llm_models ALTER COLUMN tenant_id SET NOT NULL",
+        """CREATE INDEX IF NOT EXISTS idx_llm_models_tenant_default
+           ON llm_models (tenant_id, is_default) WHERE is_default""",
     ]
     for sql in migrations:
         await conn.execute(text(sql))

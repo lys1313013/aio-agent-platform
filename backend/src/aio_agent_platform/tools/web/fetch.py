@@ -7,8 +7,11 @@ import re
 import httpx
 from markdownify import markdownify as to_markdown
 from readability import Document
+from sqlalchemy import select
 
 from aio_agent_platform.core.config import WebSettings
+from aio_agent_platform.db.connection import get_session_factory
+from aio_agent_platform.db.models import User
 from aio_agent_platform.tools.web.cache import TTLCache
 from aio_agent_platform.tools.web.config import WebConfigService
 from aio_agent_platform.tools.web.ssrf import SSRFError, assert_public_url, ssrf_check_hook
@@ -30,7 +33,7 @@ class WebFetcher:
         self._config = config
         self._cache = TTLCache()
 
-    async def handle(self, args: dict, *_unused, **_kwargs) -> str:
+    async def handle(self, args: dict, user_id: str | None = None, *_unused, **_kwargs) -> str:
         s = await self._config.get()
         if not s.enabled:
             return _DISABLED_MSG
@@ -60,13 +63,20 @@ class WebFetcher:
 
         if len(body) > max_chars:
             summarized = False
-            if s.summary_enabled:
+            if s.summary_enabled and user_id:
                 from aio_agent_platform.tools.web.summarize import summarize_content
 
-                summary = await summarize_content(body, max_chars)
-                if summary:
-                    body = summary + "\n\n[summarized by LLM from a longer page]"
-                    summarized = True
+                factory = get_session_factory()
+                async with factory() as db:
+                    tenant_result = await db.execute(
+                        select(User.tenant_id).where(User.id == user_id)
+                    )
+                    tenant_id = tenant_result.scalar_one_or_none()
+                if tenant_id:
+                    summary = await summarize_content(body, max_chars, tenant_id)
+                    if summary:
+                        body = summary + "\n\n[summarized by LLM from a longer page]"
+                        summarized = True
             if not summarized:
                 body = body[:max_chars] + f"\n\n... [truncated, {len(body)} chars total]"
 

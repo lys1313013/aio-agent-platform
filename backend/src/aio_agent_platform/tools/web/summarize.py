@@ -7,6 +7,8 @@ back to plain truncation.
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -26,15 +28,15 @@ _PROMPT = """请把以下网页正文压缩为不超过 {max_chars} 字符的中
 {text}"""
 
 
-async def summarize_content(text: str, max_chars: int) -> str | None:
-    """Summarize text to fit max_chars using the default LLM. None on failure."""
+async def summarize_content(text: str, max_chars: int, tenant_id: UUID) -> str | None:
+    """Summarize text to fit max_chars using the tenant's default LLM. None on failure."""
     try:
         factory = get_session_factory()
         async with factory() as db:
             result = await db.execute(
                 select(LLMModel)
                 .options(selectinload(LLMModel.provider))
-                .where(LLMModel.is_default, LLMModel.is_active)
+                .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == tenant_id)
                 .limit(1)
             )
             model = result.scalar_one_or_none()

@@ -89,14 +89,14 @@ async def resolve_bubble_provider(db: AsyncSession, agent):
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.id == agent.model_id, LLMModel.is_active)
+            .where(LLMModel.id == agent.model_id, LLMModel.is_active, LLMModel.tenant_id == agent.tenant_id)
         )
         model = result.scalar_one_or_none()
     if not model:
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default, LLMModel.is_active)
+            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == agent.tenant_id)
             .limit(1)
         )
         model = result.scalar_one_or_none()

@@ -235,6 +235,12 @@ class UserProfile(Base):
         primary_key=True,
         comment="关联用户ID",
     )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=DEFAULT_TENANT_ID,
+        comment="所属租户ID",
+    )
     display_name: Mapped[str | None] = mapped_column(String(128), comment="显示名称")
     personal_portrait: Mapped[str | None] = mapped_column(Text, comment="个人画像 Markdown")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="创建时间")
@@ -248,7 +254,10 @@ class UserProfile(Base):
         foreign_keys="[UserProfile.user_id]",
     )
 
-    __table_args__ = ({"comment": "用户档案表"},)
+    __table_args__ = (
+        Index("idx_user_profiles_tenant", "tenant_id"),
+        {"comment": "用户档案表"},
+    )
 
 
 class PortraitVersion(Base):
@@ -261,12 +270,19 @@ class PortraitVersion(Base):
         nullable=False,
         comment="关联用户ID",
     )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=False,
+        default=DEFAULT_TENANT_ID,
+        comment="所属租户ID",
+    )
     content: Mapped[str | None] = mapped_column(Text, comment="画像内容快照")
     source: Mapped[str] = mapped_column(String(16), default="manual", comment="来源: manual/ai")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="创建时间")
 
     __table_args__ = (
         Index("idx_portrait_versions_user", "user_id", "created_at"),
+        Index("idx_portrait_versions_tenant", "tenant_id"),
         {"comment": "个人画像历史版本表"},
     )
 
@@ -302,6 +318,9 @@ class LLMProvider(Base):
     __tablename__ = "llm_providers"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=DEFAULT_TENANT_ID, comment="所属租户ID"
+    )
     name: Mapped[str] = mapped_column(String(128), nullable=False, comment="显示名称")
     provider_type: Mapped[str] = mapped_column(String(32), nullable=False, comment="提供商类型: openai/anthropic")
     base_url: Mapped[str | None] = mapped_column(String(512), comment="API基础地址")
@@ -319,13 +338,19 @@ class LLMProvider(Base):
         foreign_keys="[LLMModel.provider_id]",
     )
 
-    __table_args__ = ({"comment": "LLM提供商表"},)
+    __table_args__ = (
+        Index("idx_llm_providers_tenant", "tenant_id"),
+        {"comment": "LLM提供商表"},
+    )
 
 
 class LLMModel(Base):
     __tablename__ = "llm_models"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=DEFAULT_TENANT_ID, comment="所属租户ID"
+    )
     provider_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         nullable=False,
@@ -350,7 +375,7 @@ class LLMModel(Base):
     )
 
     __table_args__ = (
-        Index("idx_llm_models_default", "is_default", postgresql_where=text("true")),
+        Index("idx_llm_models_tenant_default", "tenant_id", "is_default", postgresql_where=text("is_default")),
         {"comment": "LLM模型表"},
     )
 

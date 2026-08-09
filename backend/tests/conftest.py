@@ -75,6 +75,9 @@ async def engine():
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pg_trgm"'))
         await conn.run_sync(Base.metadata.create_all)
+        # Apply manual column migrations (create_all won't alter existing tables)
+        from aio_agent_platform.db.connection import _run_manual_migrations
+        await _run_manual_migrations(conn)
     yield engine
     await engine.dispose()
 

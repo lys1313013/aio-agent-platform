@@ -33,7 +33,7 @@ async def list_models(
     result = await db.execute(
         select(LLMModel)
         .options(selectinload(LLMModel.provider))
-        .where(LLMModel.is_active)
+        .where(LLMModel.is_active, LLMModel.tenant_id == user.tenant_id)
         .order_by(LLMModel.is_default.desc(), LLMModel.name)
     )
     models = list(result.scalars().all())

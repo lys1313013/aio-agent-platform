@@ -158,7 +158,7 @@ async def admin_create_agent(
 ) -> dict:
     if req.model_id:
         result = await db.execute(
-            select(LLMModel).where(LLMModel.id == req.model_id)
+            select(LLMModel).where(LLMModel.id == req.model_id, LLMModel.tenant_id == user.tenant_id)
         )
         if not result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="模型不存在")
@@ -270,7 +270,7 @@ async def admin_update_agent(
     if req.is_set("model_id"):
         if req.model_id is not None:
             model_result = await db.execute(
-                select(LLMModel).where(LLMModel.id == req.model_id)
+                select(LLMModel).where(LLMModel.id == req.model_id, LLMModel.tenant_id == user.tenant_id)
             )
             if not model_result.scalar_one_or_none():
                 raise HTTPException(status_code=404, detail="模型不存在")

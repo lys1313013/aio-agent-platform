@@ -180,7 +180,7 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
         if ctx.session is None:
             return CommandResult(content="当前没有会话，请先开始对话。")
         model = await ctx.db.scalar(
-            select(LLMModel).where(LLMModel.is_active, LLMModel.name == name)
+            select(LLMModel).where(LLMModel.is_active, LLMModel.name == name, LLMModel.tenant_id == ctx.user.tenant_id)
         )
         if model is None:
             return CommandResult(content=f"模型 `{name}` 不存在或未启用。\n输入 /model 查看可用模型。")
@@ -194,7 +194,7 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
     result = await ctx.db.execute(
         select(LLMModel)
         .options(selectinload(LLMModel.provider))
-        .where(LLMModel.is_active)
+        .where(LLMModel.is_active, LLMModel.tenant_id == ctx.user.tenant_id)
         .order_by(LLMModel.is_default.desc(), LLMModel.name)
     )
     models = list(result.scalars().all())

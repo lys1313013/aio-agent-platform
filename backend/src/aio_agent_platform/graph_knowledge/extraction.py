@@ -60,8 +60,8 @@ def normalize_name(name: str) -> str:
     return re.sub(r"\s+", " ", name or "").strip().lower()
 
 
-async def _get_default_provider():
-    """Load the default LLM provider (mirrors memory auto-extraction). Returns None if unavailable."""
+async def _get_default_provider(tenant_id: UUID):
+    """Load the tenant's default LLM provider. Returns None if unavailable."""
     try:
         from sqlalchemy.orm import selectinload
 
@@ -73,7 +73,7 @@ async def _get_default_provider():
             result = await db.execute(
                 select(LLMModel)
                 .options(selectinload(LLMModel.provider))
-                .where(LLMModel.is_default, LLMModel.is_active)
+                .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == tenant_id)
                 .limit(1)
             )
             model = result.scalar_one_or_none()
@@ -218,7 +218,20 @@ async def _execute_job(db, job: GraphExtractionJob) -> None:
     current_user_id.set(str(job.created_by))
     await db.execute(select(func.set_config("app.current_user_id", str(job.created_by), True)))
 
-    provider, llm_message_cls = await _get_default_provider()
+    # Resolve tenant from the knowledge base
+    from aio_agent_platform.db.models import GraphKnowledgeBase
+    kb_result = await db.execute(
+        select(GraphKnowledgeBase.tenant_id).where(GraphKnowledgeBase.id == job.knowledge_base_id)
+    )
+    tenant_id = kb_result.scalar_one_or_none()
+    if tenant_id is None:
+        job.status = "failed"
+        job.error = "知识库不存在"
+        job.finished_at = datetime.now(UTC)
+        await db.commit()
+        return
+
+    provider, llm_message_cls = await _get_default_provider(tenant_id)
     if provider is None:
         job.status = "failed"
         job.error = "没有可用的默认模型，请先在模型管理中配置"

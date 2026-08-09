@@ -296,16 +296,21 @@ class MemoryService:
             from sqlalchemy.orm import selectinload
 
             from aio_agent_platform.db.connection import get_session_factory as _get_session_factory
-            from aio_agent_platform.db.models import LLMModel
+            from aio_agent_platform.db.models import LLMModel, User
             from aio_agent_platform.llm import LLMMessage, create_provider
 
-            # Query default model from DB
+            # Resolve tenant from user_id, then query tenant's default model
             _factory = _get_session_factory()
             async with _factory() as _db:
+                _user_result = await _db.execute(select(User.tenant_id).where(User.id == user_id))
+                _tenant_id = _user_result.scalar_one_or_none()
+                if _tenant_id is None:
+                    logger.warning("用户不存在，跳过记忆提取", user_id=str(user_id))
+                    return []
                 _result = await _db.execute(
                     select(LLMModel)
                     .options(selectinload(LLMModel.provider))
-                    .where(LLMModel.is_default, LLMModel.is_active)
+                    .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == _tenant_id)
                     .limit(1)
                 )
                 _model = _result.scalar_one_or_none()

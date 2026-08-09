@@ -81,11 +81,11 @@ class ModelUpdate(BaseModel):
 
 @router.get("/providers", response_model=list[ProviderOut])
 async def list_providers(
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
     result = await db.execute(
-        select(LLMProvider).order_by(LLMProvider.created_at)
+        select(LLMProvider).where(LLMProvider.tenant_id == admin.tenant_id).order_by(LLMProvider.created_at)
     )
     providers = result.scalars().all()
     return [
@@ -104,10 +104,11 @@ async def list_providers(
 @router.post("/providers", response_model=ProviderOut)
 async def create_provider(
     req: ProviderCreate,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     provider = LLMProvider(
+        tenant_id=admin.tenant_id,
         name=req.name,
         provider_type=req.provider_type,
         base_url=req.base_url,
@@ -129,11 +130,11 @@ async def create_provider(
 async def update_provider(
     provider_id: UUID,
     req: ProviderUpdate,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     result = await db.execute(
-        select(LLMProvider).where(LLMProvider.id == provider_id)
+        select(LLMProvider).where(LLMProvider.id == provider_id, LLMProvider.tenant_id == admin.tenant_id)
     )
     provider = result.scalar_one_or_none()
     if not provider:
@@ -164,11 +165,11 @@ async def update_provider(
 @router.delete("/providers/{provider_id}")
 async def delete_provider(
     provider_id: UUID,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     result = await db.execute(
-        select(LLMProvider).where(LLMProvider.id == provider_id)
+        select(LLMProvider).where(LLMProvider.id == provider_id, LLMProvider.tenant_id == admin.tenant_id)
     )
     provider = result.scalar_one_or_none()
     if not provider:
@@ -194,12 +195,12 @@ class BatchModelCreate(BaseModel):
 @router.post("/providers/{provider_id}/fetch-models", response_model=FetchModelsOut)
 async def fetch_remote_models(
     provider_id: UUID,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Fetch available models from the provider's /v1/models endpoint."""
     result = await db.execute(
-        select(LLMProvider).where(LLMProvider.id == provider_id)
+        select(LLMProvider).where(LLMProvider.id == provider_id, LLMProvider.tenant_id == admin.tenant_id)
     )
     provider = result.scalar_one_or_none()
     if not provider:
@@ -250,12 +251,12 @@ async def fetch_remote_models(
 @router.post("/batch-create", response_model=list[ModelOut])
 async def batch_create_models(
     req: BatchModelCreate,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
     """Batch import models for a provider."""
     result = await db.execute(
-        select(LLMProvider).where(LLMProvider.id == req.provider_id)
+        select(LLMProvider).where(LLMProvider.id == req.provider_id, LLMProvider.tenant_id == admin.tenant_id)
     )
     provider = result.scalar_one_or_none()
     if not provider:
@@ -272,6 +273,7 @@ async def batch_create_models(
         if model_name in existing_names:
             continue
         model = LLMModel(
+            tenant_id=admin.tenant_id,
             provider_id=req.provider_id,
             name=model_name,
             model_name=model_name,
@@ -284,7 +286,7 @@ async def batch_create_models(
 
         # If no default model exists, set the first one as default
         default_result = await db.execute(
-            select(LLMModel).where(LLMModel.is_default)
+            select(LLMModel).where(LLMModel.is_default, LLMModel.tenant_id == admin.tenant_id)
         )
         if not default_result.scalar_one_or_none() and created:
             created[0].is_default = True
@@ -310,12 +312,13 @@ async def batch_create_models(
 
 @router.get("", response_model=list[ModelOut])
 async def list_models(
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
     result = await db.execute(
         select(LLMModel)
         .options(selectinload(LLMModel.provider))
+        .where(LLMModel.tenant_id == admin.tenant_id)
         .order_by(LLMModel.created_at)
     )
     models = result.scalars().all()
@@ -337,18 +340,19 @@ async def list_models(
 @router.post("", response_model=ModelOut)
 async def create_model(
     req: ModelCreate,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     # Verify provider exists
     result = await db.execute(
-        select(LLMProvider).where(LLMProvider.id == req.provider_id)
+        select(LLMProvider).where(LLMProvider.id == req.provider_id, LLMProvider.tenant_id == admin.tenant_id)
     )
     provider = result.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=404, detail="供应商不存在")
 
     model = LLMModel(
+        tenant_id=admin.tenant_id,
         provider_id=req.provider_id,
         name=req.name,
         model_name=req.model_name,
@@ -359,7 +363,7 @@ async def create_model(
 
     # If this is the first model, make it default
     count_result = await db.execute(
-        select(LLMModel).where(LLMModel.is_default)
+        select(LLMModel).where(LLMModel.is_default, LLMModel.tenant_id == admin.tenant_id)
     )
     if not count_result.scalar_one_or_none():
         model.is_default = True
@@ -381,13 +385,13 @@ async def create_model(
 async def update_model(
     model_id: UUID,
     req: ModelUpdate,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     result = await db.execute(
         select(LLMModel)
         .options(selectinload(LLMModel.provider))
-        .where(LLMModel.id == model_id)
+        .where(LLMModel.id == model_id, LLMModel.tenant_id == admin.tenant_id)
     )
     model = result.scalar_one_or_none()
     if not model:
@@ -395,7 +399,7 @@ async def update_model(
 
     if req.provider_id is not None:
         prov_result = await db.execute(
-            select(LLMProvider).where(LLMProvider.id == req.provider_id)
+            select(LLMProvider).where(LLMProvider.id == req.provider_id, LLMProvider.tenant_id == admin.tenant_id)
         )
         if not prov_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="供应商不存在")
@@ -416,7 +420,7 @@ async def update_model(
         provider_name = model.provider.name
     else:
         prov_result = await db.execute(
-            select(LLMProvider).where(LLMProvider.id == model.provider_id)
+            select(LLMProvider).where(LLMProvider.id == model.provider_id, LLMProvider.tenant_id == admin.tenant_id)
         )
         prov = prov_result.scalar_one_or_none()
         if prov:
@@ -437,11 +441,11 @@ async def update_model(
 @router.delete("/{model_id}")
 async def delete_model(
     model_id: UUID,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     result = await db.execute(
-        select(LLMModel).where(LLMModel.id == model_id)
+        select(LLMModel).where(LLMModel.id == model_id, LLMModel.tenant_id == admin.tenant_id)
     )
     model = result.scalar_one_or_none()
     if not model:
@@ -455,7 +459,7 @@ async def delete_model(
     if was_default:
         fallback = await db.execute(
             select(LLMModel)
-            .where(LLMModel.is_active)
+            .where(LLMModel.is_active, LLMModel.tenant_id == admin.tenant_id)
             .limit(1)
         )
         fallback_model = fallback.scalar_one_or_none()
@@ -469,21 +473,21 @@ async def delete_model(
 @router.put("/{model_id}/default", response_model=ModelOut)
 async def set_default_model(
     model_id: UUID,
-    _admin: AdminUser,
+    admin: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     result = await db.execute(
         select(LLMModel)
         .options(selectinload(LLMModel.provider))
-        .where(LLMModel.id == model_id)
+        .where(LLMModel.id == model_id, LLMModel.tenant_id == admin.tenant_id)
     )
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
 
-    # Clear all defaults, set this one
+    # Clear all defaults for this tenant, set this one
     await db.execute(
-        update(LLMModel).where(LLMModel.is_default).values(is_default=False)
+        update(LLMModel).where(LLMModel.is_default, LLMModel.tenant_id == admin.tenant_id).values(is_default=False)
     )
     model.is_default = True
     await db.flush()
@@ -493,7 +497,7 @@ async def set_default_model(
         provider_name = model.provider.name
     else:
         prov_result = await db.execute(
-            select(LLMProvider).where(LLMProvider.id == model.provider_id)
+            select(LLMProvider).where(LLMProvider.id == model.provider_id, LLMProvider.tenant_id == admin.tenant_id)
         )
         prov = prov_result.scalar_one_or_none()
         if prov:

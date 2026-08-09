@@ -92,7 +92,7 @@ def _fallback_title(message: str, max_len: int = 20) -> str:
     return text[:max_len] or "新对话"
 
 
-async def generate_session_title(message: str) -> str:
+async def generate_session_title(message: str, tenant_id: UUID) -> str:
     """Generate a session title from the first user message.
 
     Never returns None — on any failure it falls back to a truncated prefix
@@ -110,14 +110,14 @@ async def generate_session_title(message: str) -> str:
                 result = await db.execute(
                     select(LLMModel)
                     .options(selectinload(LLMModel.provider))
-                    .where(LLMModel.id == config.model_id, LLMModel.is_active)
+                    .where(LLMModel.id == config.model_id, LLMModel.is_active, LLMModel.tenant_id == tenant_id)
                 )
                 model = result.scalar_one_or_none()
             if not model:
                 result = await db.execute(
                     select(LLMModel)
                     .options(selectinload(LLMModel.provider))
-                    .where(LLMModel.is_default, LLMModel.is_active)
+                    .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == tenant_id)
                     .limit(1)
                 )
                 model = result.scalar_one_or_none()

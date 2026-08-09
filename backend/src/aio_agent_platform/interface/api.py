@@ -434,6 +434,7 @@ async def lifespan(app: FastAPI):
             agent_temperature=agent.temperature,
             agent_max_iterations=agent.max_iterations,
             agent_enable_retry=agent.enable_retry if agent.enable_retry is not None else True,
+            tenant_id=agent.tenant_id,
         )
 
         # Create a session for this execution
