@@ -27,6 +27,7 @@ import {
   Tooltip,
   Radio,
   Alert,
+  Switch,
   Table,
 } from 'antd';
 import { channelsApi, agentsApi, toolsApi, usersApi } from '@/lib/api';
@@ -50,6 +51,14 @@ const MODE_META: Record<string, { label: string; color: string }> = {
   webhook: { label: 'Webhook', color: 'purple' },
 };
 
+type SecretField = 'app_secret' | 'encrypt_key' | 'verification_token';
+
+const SECRET_INPUT_PROPS = {
+  autoComplete: 'new-password',
+  'data-1p-ignore': 'true',
+  'data-lpignore': 'true',
+} as const;
+
 export default function ChannelsPage() {
   const { message } = App.useApp();
   const navigate = useNavigate();
@@ -67,6 +76,7 @@ export default function ChannelsPage() {
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
   const [mode, setMode] = useState<ChannelMode>('websocket');
+  const [secretsBeingEdited, setSecretsBeingEdited] = useState<Set<SecretField>>(new Set());
 
   const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
 
@@ -103,6 +113,7 @@ export default function ChannelsPage() {
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
 
   const openModal = (channel?: Channel) => {
+    setSecretsBeingEdited(new Set());
     if (channel) {
       setEditingChannel(channel);
       form.setFieldsValue({
@@ -114,6 +125,7 @@ export default function ChannelsPage() {
         encrypt_key: '',
         verification_token: '',
         mode: channel.mode,
+        enable_streaming: channel.enable_streaming,
         tool_blacklist: channel.tool_blacklist,
       });
       setMode(channel.mode);
@@ -123,11 +135,19 @@ export default function ChannelsPage() {
       form.setFieldsValue({
         channel_type: 'feishu',
         mode: 'websocket',
+        enable_streaming: true,
         tool_blacklist: [],
       });
       setMode('websocket');
     }
     setModalOpen(true);
+  };
+
+  const startEditingSecret = (field: SecretField) => {
+    // The input is deliberately not mounted before this explicit action. This
+    // prevents password managers from silently replacing a channel credential.
+    form.setFieldValue(field, '');
+    setSecretsBeingEdited((current) => new Set(current).add(field));
   };
 
   const handleSave = async () => {
@@ -141,11 +161,18 @@ export default function ChannelsPage() {
           agent_id: values.agent_id,
           app_id: values.app_id,
           mode: values.mode,
+          enable_streaming: values.enable_streaming,
           tool_blacklist: values.tool_blacklist ?? [],
         };
-        if (values.app_secret) payload.app_secret = values.app_secret;
-        if (values.encrypt_key) payload.encrypt_key = values.encrypt_key;
-        if (values.verification_token) payload.verification_token = values.verification_token;
+        if (secretsBeingEdited.has('app_secret') && values.app_secret) {
+          payload.app_secret = values.app_secret;
+        }
+        if (secretsBeingEdited.has('encrypt_key') && values.encrypt_key) {
+          payload.encrypt_key = values.encrypt_key;
+        }
+        if (secretsBeingEdited.has('verification_token') && values.verification_token) {
+          payload.verification_token = values.verification_token;
+        }
         await channelsApi.update(editingChannel.id, payload);
         message.success('渠道已更新；如修改了凭证或连接模式，需重新启用');
       } else {
@@ -158,6 +185,7 @@ export default function ChannelsPage() {
           encrypt_key: values.encrypt_key || null,
           verification_token: values.verification_token || null,
           mode: values.mode,
+          enable_streaming: values.enable_streaming,
           tool_blacklist: values.tool_blacklist ?? [],
         });
         message.success('渠道已创建');
@@ -354,6 +382,12 @@ export default function ChannelsPage() {
                       <Text type="secondary" className="w-20 shrink-0">App ID</Text>
                       <Text className="font-mono text-xs" code>{channel.app_id}</Text>
                     </div>
+                    <div className="flex items-center gap-2">
+                      <Text type="secondary" className="w-20 shrink-0">回复方式</Text>
+                      <Tag color={channel.enable_streaming ? 'cyan' : 'default'}>
+                        {channel.enable_streaming ? '流式' : '一次性'}
+                      </Tag>
+                    </div>
                     {channel.tool_blacklist.length > 0 && (
                       <div className="flex items-start gap-2">
                         <Text type="secondary" className="w-20 shrink-0">工具黑名单</Text>
@@ -391,7 +425,7 @@ export default function ChannelsPage() {
           okText="保存"
           cancelText="取消"
         >
-          <Form form={form} layout="vertical" className="mt-4">
+          <Form form={form} layout="vertical" className="mt-4" autoComplete="off">
             <Form.Item
               name="name"
               label="渠道名称"
@@ -425,6 +459,32 @@ export default function ChannelsPage() {
               </Form.Item>
             </div>
 
+            <Form.Item
+              name="enable_streaming"
+              label="流式回复"
+              valuePropName="checked"
+              tooltip="关闭后等待 Agent 完整生成，再一次性发送最终回复"
+            >
+              <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+            </Form.Item>
+
+            <Form.Item noStyle shouldUpdate={(prev, next) => prev.enable_streaming !== next.enable_streaming}>
+              {({ getFieldValue }) => getFieldValue('enable_streaming') ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  className="mb-4"
+                  message="飞书原生流式回复需要额外权限"
+                  description={
+                    <span>
+                      请在飞书开放平台开通并发布 <Text code>cardkit:card:write</Text>
+                      （创建与更新卡片）权限；未开通时将自动降级为一次性回复。
+                    </span>
+                  }
+                />
+              ) : null}
+            </Form.Item>
+
             <div className="flex gap-4">
               <Form.Item
                 name="app_id"
@@ -435,14 +495,25 @@ export default function ChannelsPage() {
                 <Input placeholder="cli_xxxxxxxx" />
               </Form.Item>
 
-              <Form.Item
-                name="app_secret"
-                label="App Secret"
-                rules={editingChannel ? [] : [{ required: true, message: '请输入 App Secret' }]}
-                className="flex-1"
-              >
-                <Input.Password placeholder={editingChannel ? '留空保持原值不变' : '输入 App Secret'} />
-              </Form.Item>
+              {editingChannel && !secretsBeingEdited.has('app_secret') ? (
+                <Form.Item label="App Secret" className="flex-1">
+                  <Space>
+                    <Text type="secondary">已保存，保持原值</Text>
+                    <Button type="link" className="px-0" onClick={() => startEditingSecret('app_secret')}>
+                      修改
+                    </Button>
+                  </Space>
+                </Form.Item>
+              ) : (
+                <Form.Item
+                  name="app_secret"
+                  label="App Secret"
+                  rules={[{ required: true, message: '请输入 App Secret' }]}
+                  className="flex-1"
+                >
+                  <Input.Password {...SECRET_INPUT_PROPS} placeholder="输入 App Secret" />
+                </Form.Item>
+              )}
             </div>
 
             <Form.Item
@@ -473,12 +544,34 @@ export default function ChannelsPage() {
 
             {mode === 'webhook' && (
               <div className="flex gap-4">
-                <Form.Item name="encrypt_key" label="Encrypt Key" className="flex-1">
-                  <Input.Password placeholder={editingChannel ? '留空保持原值不变' : '事件订阅 Encrypt Key'} />
-                </Form.Item>
-                <Form.Item name="verification_token" label="Verification Token" className="flex-1">
-                  <Input.Password placeholder={editingChannel ? '留空保持原值不变' : '事件订阅 Verification Token'} />
-                </Form.Item>
+                {editingChannel && !secretsBeingEdited.has('encrypt_key') ? (
+                  <Form.Item label="Encrypt Key" className="flex-1">
+                    <Space>
+                      <Text type="secondary">保持原值</Text>
+                      <Button type="link" className="px-0" onClick={() => startEditingSecret('encrypt_key')}>
+                        修改
+                      </Button>
+                    </Space>
+                  </Form.Item>
+                ) : (
+                  <Form.Item name="encrypt_key" label="Encrypt Key" className="flex-1">
+                    <Input.Password {...SECRET_INPUT_PROPS} placeholder="事件订阅 Encrypt Key" />
+                  </Form.Item>
+                )}
+                {editingChannel && !secretsBeingEdited.has('verification_token') ? (
+                  <Form.Item label="Verification Token" className="flex-1">
+                    <Space>
+                      <Text type="secondary">保持原值</Text>
+                      <Button type="link" className="px-0" onClick={() => startEditingSecret('verification_token')}>
+                        修改
+                      </Button>
+                    </Space>
+                  </Form.Item>
+                ) : (
+                  <Form.Item name="verification_token" label="Verification Token" className="flex-1">
+                    <Input.Password {...SECRET_INPUT_PROPS} placeholder="事件订阅 Verification Token" />
+                  </Form.Item>
+                )}
               </div>
             )}
 

@@ -397,6 +397,7 @@ export interface Channel {
   status: ChannelStatus;
   channel_key: string;
   tool_blacklist: string[];
+  enable_streaming: boolean;
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -413,6 +414,7 @@ export interface ChannelCreate {
   verification_token?: string | null;
   mode: ChannelMode;
   tool_blacklist?: string[];
+  enable_streaming?: boolean;
 }
 
 export interface ChannelUpdate {
@@ -424,6 +426,7 @@ export interface ChannelUpdate {
   verification_token?: string | null;
   mode?: ChannelMode;
   tool_blacklist?: string[];
+  enable_streaming?: boolean;
 }
 
 export interface ChannelBinding {

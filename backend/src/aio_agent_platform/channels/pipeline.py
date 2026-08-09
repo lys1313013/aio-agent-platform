@@ -18,7 +18,7 @@ import asyncio
 import base64
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
 import structlog
@@ -93,6 +93,180 @@ def _dedup(event_id: str) -> bool:
 
 # Feishu's per-message text limit is ~30KB; we use a conservative char cap.
 _MAX_CHARS_PER_MESSAGE = 3500
+
+# CardKit 单卡最多更新 10 次/秒；仅按官方上限合并，首个 delta 立即推送。
+_STREAM_UPDATE_INTERVAL_SECONDS = 0.1
+_STREAM_INITIAL_TEXT = ""
+
+
+@dataclass
+class _StreamingReply:
+    """Drive a channel's native streaming-message API with throttling."""
+
+    adapter: ChannelAdapter
+    event: InboundEvent
+    stream_id: str | None = None
+    sequence: int = 0
+    last_update_at: float = 0.0
+    rendered_text: str = ""
+    has_content: bool = False
+    stream_failed: bool = False
+    pending_text: str | None = None
+    flush_task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        try:
+            self.stream_id = await self.adapter.start_stream(
+                self.event, _STREAM_INITIAL_TEXT
+            )
+            self.rendered_text = _STREAM_INITIAL_TEXT
+        except Exception:
+            logger.warning("channel_stream_placeholder_failed", exc_info=True)
+            self.stream_id = None
+
+    def _next_sequence(self) -> int:
+        self.sequence += 1
+        return self.sequence
+
+    async def push(self, text: str) -> None:
+        """Queue accumulated output without blocking consumption of LLM tokens."""
+        if not text or self.stream_id is None or self.stream_failed:
+            return
+        self.pending_text = text[:_MAX_CHARS_PER_MESSAGE]
+        if self.flush_task is None or self.flush_task.done():
+            self.flush_task = asyncio.create_task(self._flush_pending())
+
+    async def _flush_pending(self) -> None:
+        """Coalesce deltas and push them independently of the model stream."""
+        stream_id = self.stream_id
+        if stream_id is None:
+            return
+        while self.pending_text is not None and not self.stream_failed:
+            visible = self.pending_text
+            self.pending_text = None
+            if visible == self.rendered_text:
+                continue
+
+            if self.has_content:
+                remaining = (
+                    _STREAM_UPDATE_INTERVAL_SECONDS
+                    - (time.monotonic() - self.last_update_at)
+                )
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+
+            # Record request start time. Network latency must not make the next
+            # request appear overdue and defeat the CardKit rate limiter.
+            self.last_update_at = time.monotonic()
+            try:
+                updated = await self.adapter.update_stream(
+                    stream_id, visible, self._next_sequence()
+                )
+            except Exception:
+                logger.warning("channel_stream_update_failed", exc_info=True)
+                updated = False
+            if not updated:
+                self.stream_failed = True
+                return
+            self.rendered_text = visible
+            self.has_content = True
+
+    async def finish(self, text: str) -> None:
+        """Force the final content to the streamed message, with safe fallback."""
+        final_text = text or "（无输出）"
+        chunks = _split_text(final_text, _MAX_CHARS_PER_MESSAGE)
+
+        if self.stream_id is None:
+            for chunk in chunks:
+                await self.adapter.send_markdown(self.event, chunk)
+            return
+
+        # Wait only at completion; CardKit network latency never blocks the
+        # AgentLoop while it is producing text deltas.
+        if self.flush_task is not None:
+            await self.flush_task
+
+        updated = not self.stream_failed
+        if updated and chunks[0] != self.rendered_text:
+            # Respect the same CardKit update window for the forced final flush.
+            if self.has_content:
+                remaining = (
+                    _STREAM_UPDATE_INTERVAL_SECONDS
+                    - (time.monotonic() - self.last_update_at)
+                )
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+            self.last_update_at = time.monotonic()
+            try:
+                updated = await self.adapter.update_stream(
+                    self.stream_id, chunks[0], self._next_sequence()
+                )
+            except Exception:
+                logger.warning("channel_stream_final_update_failed", exc_info=True)
+                updated = False
+
+        # Always try to close streaming mode. This removes the "[生成中...]"
+        # preview and restores forwarding/card interaction even after a failed push.
+        if self.last_update_at:
+            remaining = (
+                _STREAM_UPDATE_INTERVAL_SECONDS
+                - (time.monotonic() - self.last_update_at)
+            )
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+        try:
+            closed = await self.adapter.finish_stream(
+                self.stream_id, final_text, self._next_sequence()
+            )
+        except Exception:
+            logger.warning("channel_stream_close_failed", exc_info=True)
+            closed = False
+        if not closed:
+            logger.warning("channel_stream_not_closed", stream_id=self.stream_id)
+
+        if not updated:
+            for chunk in chunks:
+                await self.adapter.send_markdown(self.event, chunk)
+            return
+
+        for chunk in chunks[1:]:
+            await self.adapter.send_markdown(self.event, chunk)
+
+
+@dataclass
+class _BufferedEventLogger:
+    """Write replay events in order without blocking the AgentLoop."""
+
+    user_id: UUID
+    session_id: UUID
+    pending: list[dict] = field(default_factory=list)
+    flush_task: asyncio.Task[None] | None = None
+
+    def submit(self, event: dict) -> None:
+        event_type = event.get("type")
+        # Redis replay only needs the same concatenated content. Coalescing
+        # consecutive deltas avoids one Redis round trip per model token.
+        if (
+            event_type in {"text_delta", "thinking"}
+            and self.pending
+            and self.pending[-1].get("type") == event_type
+        ):
+            self.pending[-1]["content"] = (
+                self.pending[-1].get("content", "") + event.get("content", "")
+            )
+        else:
+            self.pending.append(event)
+        if self.flush_task is None or self.flush_task.done():
+            self.flush_task = asyncio.create_task(self._flush())
+
+    async def _flush(self) -> None:
+        while self.pending:
+            event = self.pending.pop(0)
+            await log_event(self.user_id, self.session_id, event)
+
+    async def drain(self) -> None:
+        if self.flush_task is not None:
+            await self.flush_task
 
 # --- Pending file/image attachments (Feishu file msg → next text msg) ---
 # 飞书文件消息与文字消息分离：文件到达先下载存储，缓存为「待处理附件」，
@@ -687,9 +861,16 @@ class ChannelInboundPipeline:
             agent_id=str(self.channel.agent_id),
         )
 
+        # 飞书通过 CardKit 原生流式卡片输出，不调用普通消息编辑接口。
+        # 卡片在进入 AgentLoop 前发出，让思考/调用工具期间也有即时反馈。
+        stream_reply = _StreamingReply(self.adapter, event)
+        if self.channel.enable_streaming:
+            await stream_reply.start()
+
         final_output = ""
         tool_calls_list: list[dict] = []
         tool_results_map: dict[str, dict] = {}
+        event_logger = _BufferedEventLogger(ctx.user_id, ctx.session_id)
 
         # 渠道上下文注入：让 send_file_to_user 工具知道发给哪个会话。
         channel_ctx_token = current_channel_send_ctx.set(
@@ -709,14 +890,15 @@ class ChannelInboundPipeline:
                 elif isinstance(step, str):
                     if step.startswith("reasoning:"):
                         # 推理过程实时广播（Web 端「重新连接」回放用）
-                        await log_event(ctx.user_id, ctx.session_id, {
+                        event_logger.submit({
                             "type": "thinking",
                             "content": step[len("reasoning:"):],
                         })
                     elif step.startswith("text_delta:"):
                         delta = step[len("text_delta:"):]
                         final_output += delta
-                        await log_event(ctx.user_id, ctx.session_id, {
+                        await stream_reply.push(final_output)
+                        event_logger.submit({
                             "type": "text_delta",
                             "content": delta,
                         })
@@ -733,7 +915,7 @@ class ChannelInboundPipeline:
                             "name": tool_name,
                             "arguments": tc_args,
                         })
-                        await log_event(ctx.user_id, ctx.session_id, {
+                        event_logger.submit({
                             "type": "tool_call",
                             "id": tc_id,
                             "name": tool_name,
@@ -753,7 +935,7 @@ class ChannelInboundPipeline:
                             "status": parts[3] if len(parts) > 3 else "",
                             "preview": preview,
                         }
-                        await log_event(ctx.user_id, ctx.session_id, {
+                        event_logger.submit({
                             "type": "tool_result",
                             "tool_call_id": tc_id,
                             "name": tc_name,
@@ -764,17 +946,15 @@ class ChannelInboundPipeline:
                             if tc["id"] in tool_results_map:
                                 tc["result"] = tool_results_map[tc["id"]]
 
-            if final_output:
-                await self._send_final(event, final_output)
-            else:
-                await self.adapter.send(event, "（无输出）")
+            await stream_reply.finish(final_output)
         except Exception as e:
             logger.exception("agent_loop_failed", channel_id=str(self.channel.id))
             try:
-                await self.adapter.send(event, f"❌ 执行出错：{e}")
+                await stream_reply.finish(f"❌ 执行出错：{e}")
             except Exception:
                 pass
-            await log_event(ctx.user_id, ctx.session_id, {"type": "error", "message": str(e)})
+            event_logger.submit({"type": "error", "message": str(e)})
+            await event_logger.drain()
             return
         finally:
             current_channel_send_ctx.reset(channel_ctx_token)
@@ -805,13 +985,14 @@ class ChannelInboundPipeline:
                 await db.commit()
 
         # 记录最终结果事件，Web 端「重新连接」据此收尾（message_id 供前端定位消息）。
-        await log_event(ctx.user_id, ctx.session_id, {"type": "text", "content": final_output})
-        await log_event(ctx.user_id, ctx.session_id, {
+        event_logger.submit({"type": "text", "content": final_output})
+        event_logger.submit({
             "type": "done",
             "message_id": str(assistant_msg.id),
             "content": final_output,
             "tool_calls": tool_calls_list,
         })
+        await event_logger.drain()
 
         # Fire-and-forget: memory extraction (skip for shadow accounts — they
         # don't write L2 long-term memory) and context summary update.
@@ -831,15 +1012,6 @@ class ChannelInboundPipeline:
         )
         background_tasks.add(summary_task)
         summary_task.add_done_callback(background_tasks.discard)
-
-    async def _send_final(self, event: InboundEvent, text: str) -> None:
-        """Send the final content, splitting into multiple messages if needed."""
-        if len(text) <= _MAX_CHARS_PER_MESSAGE:
-            await self.adapter.send_markdown(event, text)
-            return
-        for chunk in _split_text(text, _MAX_CHARS_PER_MESSAGE):
-            await self.adapter.send_markdown(event, chunk)
-
 
 # --- Utilities ---
 

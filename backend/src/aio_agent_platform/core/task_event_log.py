@@ -46,13 +46,16 @@ async def log_event(user_id: UUID, session_id: UUID, event: dict) -> None:
     """追加一条事件到会话流，续期 TTL。Redis 不可用时静默丢弃。"""
     try:
         client = _redis()
-        await client.xadd(
-            _stream_key(user_id, session_id),
+        key = _stream_key(user_id, session_id)
+        pipe = client.pipeline(transaction=False)
+        pipe.xadd(
+            key,
             {_FIELD: json.dumps(event, ensure_ascii=False)},
             maxlen=MAXLEN,
             approximate=True,
         )
-        await client.expire(_stream_key(user_id, session_id), TASK_TTL_SECONDS)
+        pipe.expire(key, TASK_TTL_SECONDS)
+        await pipe.execute()
     except Exception:
         logger.warning("task_event_log_write_failed", session_id=str(session_id))
 

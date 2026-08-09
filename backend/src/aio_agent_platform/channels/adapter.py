@@ -116,8 +116,22 @@ class ChannelAdapter:
         return await self.send(event, text)
 
     async def update(self, message_id: str, text: str) -> None:
-        """Update an already-sent message (used for streaming simulation)."""
+        """Update an already-sent message."""
         raise NotImplementedError
+
+    async def start_stream(self, event: InboundEvent, text: str) -> str | None:
+        """Create and send a native streaming message, returning its stream ID."""
+        return None
+
+    async def update_stream(self, stream_id: str, text: str, sequence: int) -> bool:
+        """Push the accumulated text to a native streaming message."""
+        return False
+
+    async def finish_stream(
+        self, stream_id: str, text: str, sequence: int
+    ) -> bool:
+        """Finalize a native streaming message and its preview/summary."""
+        return False
 
     async def send_file(self, event: InboundEvent, filename: str, data: bytes) -> str | None:
         """Send a file to the originating chat. Returns the message_id, or None

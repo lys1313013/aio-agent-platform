@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import structlog
@@ -14,6 +16,15 @@ logger = structlog.get_logger()
 _TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
 _SEND_MSG_URL = "https://open.feishu.cn/open-apis/im/v1/messages"
 _UPDATE_MSG_URL = "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}"
+_CARDKIT_CARDS_URL = "https://open.feishu.cn/open-apis/cardkit/v1/cards"
+_CARDKIT_CONTENT_URL = (
+    "https://open.feishu.cn/open-apis/cardkit/v1/cards/"
+    "{card_id}/elements/{element_id}/content"
+)
+_CARDKIT_SETTINGS_URL = (
+    "https://open.feishu.cn/open-apis/cardkit/v1/cards/{card_id}/settings"
+)
+_STREAM_ELEMENT_ID = "assistant_answer"
 _REACTIONS_URL = "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions"
 _RESOURCE_URL = (
     "https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{resource_key}"
@@ -148,6 +159,166 @@ class FeishuClient:
             content=_json.dumps(card, ensure_ascii=False),
             reply_to=reply_to,
         )
+
+    # --- CardKit 2.0 native streaming APIs ---
+
+    async def create_streaming_card(self, initial_text: str = "") -> str | None:
+        """Create a CardKit entity with native streaming mode enabled."""
+        token = await self.tenant_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        }
+        card = {
+            "schema": "2.0",
+            "config": {
+                "update_multi": True,
+                "streaming_mode": True,
+                "summary": {"content": "[生成中...]"},
+            },
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": initial_text,
+                        "element_id": _STREAM_ELEMENT_ID,
+                    }
+                ]
+            },
+        }
+        try:
+            resp = await self._http.post(
+                _CARDKIT_CARDS_URL,
+                headers=headers,
+                json={
+                    "type": "card_json",
+                    "data": json.dumps(card, ensure_ascii=False),
+                },
+            )
+            data = resp.json()
+        except (httpx.HTTPError, ValueError):
+            logger.warning("feishu_stream_card_create_http_error")
+            return None
+        if data.get("code") != 0:
+            logger.warning(
+                "feishu_stream_card_create_failed",
+                code=data.get("code"),
+                msg=data.get("msg"),
+            )
+            return None
+        return data.get("data", {}).get("card_id")
+
+    async def send_card_entity(
+        self,
+        receive_id: str,
+        card_id: str,
+        reply_to: str | None = None,
+        receive_id_type: str = "chat_id",
+    ) -> str | None:
+        """Send a previously created CardKit entity exactly once."""
+        content = json.dumps(
+            {"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False
+        )
+        return await self.send_message(
+            receive_id=receive_id,
+            receive_id_type=receive_id_type,
+            msg_type="interactive",
+            content=content,
+            reply_to=reply_to,
+        )
+
+    async def stream_card_text(
+        self, card_id: str, text: str, sequence: int
+    ) -> bool:
+        """Push full text through CardKit's dedicated streaming text API."""
+        token = await self.tenant_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        }
+        url = _CARDKIT_CONTENT_URL.format(
+            card_id=card_id, element_id=_STREAM_ELEMENT_ID
+        )
+        started_at = time.monotonic()
+        try:
+            resp = await self._http.put(
+                url,
+                headers=headers,
+                json={"content": text, "sequence": sequence, "uuid": str(uuid4())},
+            )
+            data = resp.json()
+        except (httpx.HTTPError, ValueError):
+            logger.warning(
+                "feishu_stream_card_update_http_error",
+                card_id=card_id,
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+            )
+            return False
+        duration_ms = round((time.monotonic() - started_at) * 1000)
+        if duration_ms >= 200:
+            logger.warning(
+                "feishu_stream_card_update_slow",
+                card_id=card_id,
+                sequence=sequence,
+                duration_ms=duration_ms,
+            )
+        else:
+            logger.debug(
+                "feishu_stream_card_update_completed",
+                card_id=card_id,
+                sequence=sequence,
+                duration_ms=duration_ms,
+            )
+        if data.get("code") != 0:
+            logger.warning(
+                "feishu_stream_card_update_failed",
+                card_id=card_id,
+                code=data.get("code"),
+                msg=data.get("msg"),
+            )
+            return False
+        return True
+
+    async def finish_streaming_card(
+        self, card_id: str, final_text: str, sequence: int
+    ) -> bool:
+        """Close streaming mode so the card can be forwarded and interacted with."""
+        token = await self.tenant_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        }
+        summary = " ".join(final_text.split())[:100] or "回答完成"
+        settings = {
+            "config": {
+                "streaming_mode": False,
+                "summary": {"content": summary},
+            }
+        }
+        url = _CARDKIT_SETTINGS_URL.format(card_id=card_id)
+        try:
+            resp = await self._http.patch(
+                url,
+                headers=headers,
+                json={
+                    "settings": json.dumps(settings, ensure_ascii=False),
+                    "sequence": sequence,
+                    "uuid": str(uuid4()),
+                },
+            )
+            data = resp.json()
+        except (httpx.HTTPError, ValueError):
+            logger.warning("feishu_stream_card_finish_http_error", card_id=card_id)
+            return False
+        if data.get("code") != 0:
+            logger.warning(
+                "feishu_stream_card_finish_failed",
+                card_id=card_id,
+                code=data.get("code"),
+                msg=data.get("msg"),
+            )
+            return False
+        return True
 
     async def upload_file(
         self, file_bytes: bytes, file_name: str, file_type: str | None = None

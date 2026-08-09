@@ -12,6 +12,7 @@
 - connection_manager: 渠道生命周期
 """
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -52,6 +53,9 @@ from aio_agent_platform.channels.feishu.webhook_transport import (
 )
 from aio_agent_platform.channels.feishu.ws_transport import FeishuWebSocketTransport
 from aio_agent_platform.channels.pipeline import (
+    _STREAM_INITIAL_TEXT,
+    _STREAM_UPDATE_INTERVAL_SECONDS,
+    _BufferedEventLogger,
     _build_image_data_uri,
     _collect_image_attachments,
     _dedup,
@@ -61,10 +65,16 @@ from aio_agent_platform.channels.pipeline import (
     _PendingAttachment,
     _pop_pending,
     _split_text,
+    _StreamingReply,
     _strip_internal_keys,
 )
 from aio_agent_platform.db import Session as ChatSession
 from aio_agent_platform.db.models import ChannelBinding, User
+from aio_agent_platform.interface.routes.channels import (
+    ChannelCreate,
+    ChannelUpdate,
+    _sensitive_config_changed,
+)
 
 BOT_APP_ID = "cli_bot_app_id"
 
@@ -346,6 +356,126 @@ def test_split_text_falls_back_to_space_then_hard_cut() -> None:
     assert chunks == ["x" * 10, "x" * 10, "x" * 5]
 
 
+async def test_streaming_reply_updates_first_delta_and_throttles() -> None:
+    adapter = AsyncMock()
+    adapter.start_stream.return_value = "card_1"
+    adapter.update_stream.return_value = True
+    event = _make_event_obj()
+    stream = _StreamingReply(adapter, event)
+
+    await stream.start()
+    await stream.push("你")
+    await stream.push("你好")
+    assert stream.flush_task is not None
+    await stream.flush_task
+
+    adapter.start_stream.assert_awaited_once_with(event, _STREAM_INITIAL_TEXT)
+    # 同一事件循环内到达的 delta 被合并，只推送最新的完整文本。
+    adapter.update_stream.assert_awaited_once_with("card_1", "你好", 1)
+
+    stream.last_update_at -= _STREAM_UPDATE_INTERVAL_SECONDS
+    await stream.push("你好啊")
+    assert stream.flush_task is not None
+    await stream.flush_task
+    adapter.update_stream.assert_awaited_with("card_1", "你好啊", 2)
+
+
+async def test_streaming_reply_does_not_block_on_cardkit_network() -> None:
+    adapter = AsyncMock()
+    adapter.start_stream.return_value = "card_1"
+    request_finished = asyncio.Event()
+
+    async def slow_update(*_args) -> bool:
+        await request_finished.wait()
+        return True
+
+    adapter.update_stream.side_effect = slow_update
+    stream = _StreamingReply(adapter, _make_event_obj())
+    await stream.start()
+
+    # push 只排队，不能等待飞书 HTTP 请求完成。
+    await stream.push("增量")
+    await asyncio.sleep(0)
+    assert stream.flush_task is not None
+    assert not stream.flush_task.done()
+
+    request_finished.set()
+    await stream.flush_task
+
+
+async def test_buffered_event_logger_coalesces_text_deltas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    written: list[dict] = []
+
+    async def fake_log_event(_user_id, _session_id, event: dict) -> None:
+        written.append(event)
+
+    monkeypatch.setattr(
+        "aio_agent_platform.channels.pipeline.log_event", fake_log_event
+    )
+    logger = _BufferedEventLogger(uuid4(), uuid4())
+    logger.submit({"type": "text_delta", "content": "你"})
+    logger.submit({"type": "text_delta", "content": "好"})
+    logger.submit({"type": "tool_call", "name": "search"})
+    logger.submit({"type": "text_delta", "content": "完成"})
+    await logger.drain()
+
+    assert written == [
+        {"type": "text_delta", "content": "你好"},
+        {"type": "tool_call", "name": "search"},
+        {"type": "text_delta", "content": "完成"},
+    ]
+
+
+async def test_streaming_reply_forces_final_update() -> None:
+    adapter = AsyncMock()
+    adapter.start_stream.return_value = "card_1"
+    adapter.update_stream.return_value = True
+    adapter.finish_stream.return_value = True
+    event = _make_event_obj()
+    stream = _StreamingReply(adapter, event)
+
+    await stream.start()
+    await stream.push("部分")
+    stream.last_update_at -= _STREAM_UPDATE_INTERVAL_SECONDS
+    await stream.finish("完整回答")
+
+    adapter.update_stream.assert_awaited_with("card_1", "完整回答", 2)
+    adapter.finish_stream.assert_awaited_once_with("card_1", "完整回答", 3)
+    adapter.send_markdown.assert_not_awaited()
+
+
+async def test_streaming_reply_falls_back_when_update_fails() -> None:
+    adapter = AsyncMock()
+    adapter.start_stream.return_value = "card_1"
+    adapter.update_stream.return_value = False
+    adapter.finish_stream.return_value = True
+    event = _make_event_obj()
+    stream = _StreamingReply(adapter, event)
+
+    await stream.start()
+    await stream.push("回答")
+    await stream.finish("回答完成")
+
+    adapter.finish_stream.assert_awaited_once_with("card_1", "回答完成", 2)
+    adapter.send_markdown.assert_awaited_once_with(event, "回答完成")
+
+
+async def test_streaming_reply_disabled_sends_only_final_message() -> None:
+    adapter = AsyncMock()
+    event = _make_event_obj()
+    stream = _StreamingReply(adapter, event)
+
+    # 渠道关闭流式时不调用 start，finish 自动走一次性终稿发送。
+    await stream.push("生成中的内容")
+    await stream.finish("完整回答")
+
+    adapter.start_stream.assert_not_awaited()
+    adapter.update_stream.assert_not_awaited()
+    adapter.send_markdown.assert_awaited_once_with(event, "完整回答")
+
+
 # ---------------------------------------------------------------------------
 # binding — pure helpers
 # ---------------------------------------------------------------------------
@@ -356,6 +486,47 @@ def test_generate_code_is_6_digits() -> None:
         code = _generate_code()
         assert len(code) == 6
         assert code.isdigit()
+
+
+def test_channel_streaming_config_schema_defaults_and_override() -> None:
+    payload = {
+        "name": "飞书",
+        "agent_id": uuid4(),
+        "app_id": "cli_test",
+        "app_secret": "secret",
+        "mode": "websocket",
+    }
+    assert ChannelCreate(**payload).enable_streaming is True
+    assert ChannelCreate(**payload, enable_streaming=False).enable_streaming is False
+    assert ChannelUpdate().enable_streaming is None
+    assert ChannelUpdate(enable_streaming=False).enable_streaming is False
+
+
+def test_unchanged_channel_mode_is_not_a_sensitive_change() -> None:
+    channel = SimpleNamespace(
+        app_id="cli_test",
+        app_secret_encrypted="secret",
+        encrypt_key_encrypted="encrypt-key",
+        verification_token_encrypted="verification-token",
+        mode="websocket",
+    )
+
+    assert not _sensitive_config_changed(
+        channel, ChannelUpdate(name="新名称", mode="websocket")
+    )
+
+
+def test_changed_channel_credential_is_a_sensitive_change() -> None:
+    channel = SimpleNamespace(
+        app_id="cli_test",
+        app_secret_encrypted="secret",
+        encrypt_key_encrypted=None,
+        verification_token_encrypted=None,
+        mode="websocket",
+    )
+
+    assert _sensitive_config_changed(channel, ChannelUpdate(app_secret="new-secret"))
+    assert _sensitive_config_changed(channel, ChannelUpdate(app_id="cli_new"))
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +546,9 @@ class _FeishuAPIStub:
         self.download_code = 0
         self.upload_code = 0
         self.image_code = 0
+        self.cardkit_code = 0
+        self.stream_code = 0
+        self.settings_code = 0
         self.last_send_url: str | None = None
         self.last_resource_url: str | None = None
         self.last_send_body = ""
@@ -382,6 +556,9 @@ class _FeishuAPIStub:
         self.last_upload_body = ""
         self.last_image_url: str | None = None
         self.last_image_body = ""
+        self.last_cardkit_body = ""
+        self.last_stream_body = ""
+        self.last_settings_body = ""
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -415,6 +592,19 @@ class _FeishuAPIStub:
             if self.image_code != 0:
                 return httpx.Response(200, json={"code": self.image_code, "msg": "image failed"})
             return httpx.Response(200, json={"code": 0, "data": {"image_key": "img_v2_test"}})
+        if path.endswith("/cardkit/v1/cards") and request.method == "POST":
+            self.last_cardkit_body = request.content.decode("utf-8")
+            return httpx.Response(200, json={
+                "code": self.cardkit_code,
+                "msg": "cardkit result",
+                "data": {"card_id": "card_123"},
+            })
+        if path.endswith("/content") and request.method == "PUT":
+            self.last_stream_body = request.content.decode("utf-8")
+            return httpx.Response(200, json={"code": self.stream_code, "msg": "stream result"})
+        if path.endswith("/settings") and request.method == "PATCH":
+            self.last_settings_body = request.content.decode("utf-8")
+            return httpx.Response(200, json={"code": self.settings_code, "msg": "settings result"})
         if request.method == "PUT":
             return httpx.Response(200, json={"code": self.update_code, "data": {}})
         if request.method == "POST" and "/messages" in path:
@@ -476,6 +666,42 @@ async def test_update_message(feishu_stub) -> None:
     assert await client.update_message("om_1", "new text") is True
     stub.update_code = 230001
     assert await client.update_message("om_1", "new text") is False
+
+
+async def test_cardkit_native_streaming_flow(feishu_stub) -> None:
+    client, stub = feishu_stub
+
+    assert await client.create_streaming_card("思考中") == "card_123"
+    create_body = json.loads(stub.last_cardkit_body)
+    card = json.loads(create_body["data"])
+    assert card["schema"] == "2.0"
+    assert card["config"]["streaming_mode"] is True
+    assert "streaming_config" not in card["config"]
+    assert card["body"]["elements"][0]["element_id"] == "assistant_answer"
+
+    assert await client.send_card_entity("oc_1", "card_123") == "om_123"
+    send_body = json.loads(stub.last_send_body)
+    assert send_body["msg_type"] == "interactive"
+    assert json.loads(send_body["content"])["data"]["card_id"] == "card_123"
+
+    assert await client.stream_card_text("card_123", "完整内容", 1) is True
+    stream_body = json.loads(stub.last_stream_body)
+    assert stream_body["content"] == "完整内容"
+    assert stream_body["sequence"] == 1
+    assert stream_body["uuid"]
+
+    assert await client.finish_streaming_card("card_123", "完整内容", 2) is True
+    finish_body = json.loads(stub.last_settings_body)
+    settings = json.loads(finish_body["settings"])
+    assert settings["config"]["streaming_mode"] is False
+    assert settings["config"]["summary"]["content"] == "完整内容"
+    assert finish_body["sequence"] == 2
+
+
+async def test_cardkit_permission_failure_returns_none(feishu_stub) -> None:
+    client, stub = feishu_stub
+    stub.cardkit_code = 99991672
+    assert await client.create_streaming_card() is None
 
 
 async def test_reactions(feishu_stub) -> None:
@@ -646,6 +872,29 @@ async def test_adapter_send_markdown_falls_back_to_text() -> None:
     result = await adapter.send_markdown(_make_event_obj(), "**md**")
     assert result == "om_text"
     client.send_text.assert_awaited_once()
+
+
+async def test_adapter_update_returns_client_result() -> None:
+    adapter, client = _make_adapter()
+    client.update_message.return_value = True
+    await adapter.update("om_out", "增量")
+    client.update_message.assert_awaited_once_with("om_out", "增量")
+
+
+async def test_adapter_native_streaming_delegates_to_cardkit() -> None:
+    adapter, client = _make_adapter()
+    event = _make_event_obj(mentions_bot=True)
+    client.create_streaming_card.return_value = "card_1"
+    client.send_card_entity.return_value = "om_card"
+    client.stream_card_text.return_value = True
+    client.finish_streaming_card.return_value = True
+
+    assert await adapter.start_stream(event, "思考中") == "card_1"
+    client.send_card_entity.assert_awaited_once_with(
+        receive_id="oc_chat", card_id="card_1", reply_to="om_in"
+    )
+    assert await adapter.update_stream("card_1", "回答", 1) is True
+    assert await adapter.finish_stream("card_1", "回答", 2) is True
 
 
 async def test_adapter_reaction_requires_message_id() -> None:
@@ -1035,6 +1284,7 @@ def _make_channel(**overrides) -> SimpleNamespace:
         "status": "enabled",
         "channel_key": f"key_{uuid4().hex[:8]}",
         "tool_blacklist": [],
+        "enable_streaming": True,
         "last_error": None,
     }
     defaults.update(overrides)

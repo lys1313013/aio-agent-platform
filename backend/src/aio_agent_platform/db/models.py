@@ -1465,6 +1465,10 @@ class ChannelConfig(Base):
         JSONB, nullable=False, default=list,
         comment="渠道级工具黑名单",
     )
+    enable_streaming: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true"),
+        comment="是否启用渠道流式回复",
+    )
     last_error: Mapped[str | None] = mapped_column(Text, comment="最近一次错误信息")
     created_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="创建人 ID")
     created_at: Mapped[datetime] = mapped_column(

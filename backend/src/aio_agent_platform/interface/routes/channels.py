@@ -43,6 +43,7 @@ class ChannelCreate(BaseModel):
     verification_token: str | None = None
     mode: str = Field(..., pattern=r"^(websocket|webhook)$")
     tool_blacklist: list[str] = Field(default_factory=list)
+    enable_streaming: bool = True
 
 
 class ChannelUpdate(BaseModel):
@@ -54,6 +55,7 @@ class ChannelUpdate(BaseModel):
     verification_token: str | None = None
     mode: str | None = Field(default=None, pattern=r"^(websocket|webhook)$")
     tool_blacklist: list[str] | None = None
+    enable_streaming: bool | None = None
 
 
 class ChannelOut(BaseModel):
@@ -66,6 +68,7 @@ class ChannelOut(BaseModel):
     status: str
     channel_key: str
     tool_blacklist: list[str] = []
+    enable_streaming: bool = True
     last_error: str | None = None
     created_at: str
     updated_at: str
@@ -113,6 +116,7 @@ def _channel_to_dict(ch: ChannelConfig) -> dict:
         "status": ch.status,
         "channel_key": ch.channel_key,
         "tool_blacklist": ch.tool_blacklist or [],
+        "enable_streaming": ch.enable_streaming,
         "last_error": ch.last_error,
         "created_at": ch.created_at.isoformat() if ch.created_at else "",
         "updated_at": ch.updated_at.isoformat() if ch.updated_at else "",
@@ -129,6 +133,22 @@ def _binding_to_dict(b: ChannelBinding) -> dict:
         "created_at": b.created_at.isoformat() if b.created_at else "",
         "updated_at": b.updated_at.isoformat() if b.updated_at else "",
     }
+
+
+def _sensitive_config_changed(channel: ChannelConfig, req: ChannelUpdate) -> bool:
+    """Return whether an update actually changes connection credentials or mode."""
+    return any(
+        (
+            req.app_id is not None and req.app_id != channel.app_id,
+            req.app_secret is not None
+            and req.app_secret != channel.app_secret_encrypted,
+            req.encrypt_key is not None
+            and req.encrypt_key != channel.encrypt_key_encrypted,
+            req.verification_token is not None
+            and req.verification_token != channel.verification_token_encrypted,
+            req.mode is not None and req.mode != channel.mode,
+        )
+    )
 
 
 # ---- Admin CRUD ----
@@ -189,6 +209,7 @@ async def create_channel(
         status="disabled",
         channel_key=secrets.token_urlsafe(32),
         tool_blacklist=req.tool_blacklist,
+        enable_streaming=req.enable_streaming,
         created_by=user.id,
     )
     db.add(channel)
@@ -214,6 +235,8 @@ async def update_channel(
     channel = result.scalar_one_or_none()
     if channel is None:
         raise HTTPException(status_code=404, detail="渠道不存在")
+
+    sensitive_changed = _sensitive_config_changed(channel, req)
 
     if req.name is not None:
         channel.name = req.name
@@ -241,11 +264,11 @@ async def update_channel(
         channel.mode = req.mode
     if req.tool_blacklist is not None:
         channel.tool_blacklist = req.tool_blacklist
+    if req.enable_streaming is not None:
+        channel.enable_streaming = req.enable_streaming
 
-    # If credentials or mode changed while enabled, force re-enable
-    sensitive_changed = any([
-        req.app_secret, req.encrypt_key, req.verification_token, req.mode
-    ])
+    # If credentials or mode actually changed while enabled, force re-enable.
+    # Merely resubmitting the existing mode must not stop a working channel.
     if sensitive_changed and channel.status == "enabled":
         channel.status = "disabled"
 

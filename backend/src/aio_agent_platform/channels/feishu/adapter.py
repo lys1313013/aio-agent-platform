@@ -71,6 +71,27 @@ class FeishuAdapter(ChannelAdapter):
     async def update(self, message_id: str, text: str) -> None:
         await self.client.update_message(message_id, text)
 
+    async def start_stream(self, event: InboundEvent, text: str) -> str | None:
+        """Create and send a CardKit 2.0 streaming card."""
+        card_id = await self.client.create_streaming_card(text)
+        if card_id is None:
+            return None
+        reply_to = event.message_id if event.mentions_bot else None
+        message_id = await self.client.send_card_entity(
+            receive_id=event.chat_id,
+            card_id=card_id,
+            reply_to=reply_to,
+        )
+        return card_id if message_id else None
+
+    async def update_stream(self, stream_id: str, text: str, sequence: int) -> bool:
+        return await self.client.stream_card_text(stream_id, text, sequence)
+
+    async def finish_stream(
+        self, stream_id: str, text: str, sequence: int
+    ) -> bool:
+        return await self.client.finish_streaming_card(stream_id, text, sequence)
+
     async def send_file(self, event: InboundEvent, filename: str, data: bytes) -> str | None:
         """Upload and send a message to the originating chat.
 
