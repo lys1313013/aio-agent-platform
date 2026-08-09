@@ -114,11 +114,18 @@ async def _get_or_create_config(db: AsyncSession, user_id: UUID) -> UserConfig:
     return config
 
 
-async def _get_or_create_profile(db: AsyncSession, user_id: UUID) -> UserProfile:
-    result = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
+async def _get_or_create_profile(
+    db: AsyncSession, user_id: UUID, tenant_id: UUID
+) -> UserProfile:
+    result = await db.execute(
+        select(UserProfile).where(
+            UserProfile.user_id == user_id,
+            UserProfile.tenant_id == tenant_id,
+        )
+    )
     profile = result.scalar_one_or_none()
     if not profile:
-        profile = UserProfile(user_id=user_id)
+        profile = UserProfile(user_id=user_id, tenant_id=tenant_id)
         db.add(profile)
         await db.flush()
     return profile
@@ -132,7 +139,7 @@ async def get_profile(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    profile = await _get_or_create_profile(db, user.id)
+    profile = await _get_or_create_profile(db, user.id, user.tenant_id)
     return {
         "username": user.username,
         "email": user.email,
@@ -148,7 +155,7 @@ async def update_profile(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    profile = await _get_or_create_profile(db, user.id)
+    profile = await _get_or_create_profile(db, user.id, user.tenant_id)
 
     if req.display_name is not None:
         profile.display_name = req.display_name
@@ -220,7 +227,7 @@ async def switch_active_tenant(
         raise HTTPException(status_code=404, detail="租户不存在、已停用或用户不属于该租户")
     user.tenant_id = tenant.id
     await db.flush()
-    profile = await _get_or_create_profile(db, user.id)
+    profile = await _get_or_create_profile(db, user.id, tenant.id)
     return {
         "username": user.username,
         "email": user.email,
@@ -238,7 +245,7 @@ async def get_personal_portrait(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    profile = await _get_or_create_profile(db, user.id)
+    profile = await _get_or_create_profile(db, user.id, user.tenant_id)
     return {"personal_portrait": profile.personal_portrait}
 
 
@@ -248,12 +255,13 @@ async def update_personal_portrait(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    profile = await _get_or_create_profile(db, user.id)
+    profile = await _get_or_create_profile(db, user.id, user.tenant_id)
 
     # Save a version snapshot before overwriting
     if profile.personal_portrait and profile.personal_portrait.strip():
         db.add(PortraitVersion(
             user_id=user.id,
+            tenant_id=user.tenant_id,
             content=profile.personal_portrait,
             source="manual",
         ))
@@ -273,7 +281,10 @@ async def list_portrait_versions(
 ) -> dict:
     result = await db.execute(
         select(PortraitVersion)
-        .where(PortraitVersion.user_id == user.id)
+        .where(
+            PortraitVersion.user_id == user.id,
+            PortraitVersion.tenant_id == user.tenant_id,
+        )
         .order_by(PortraitVersion.created_at.desc())
         .limit(50)
     )
@@ -301,6 +312,7 @@ async def get_portrait_version(
         select(PortraitVersion).where(
             PortraitVersion.id == version_id,
             PortraitVersion.user_id == user.id,
+            PortraitVersion.tenant_id == user.tenant_id,
         )
     )
     version = result.scalar_one_or_none()
@@ -314,6 +326,25 @@ async def get_portrait_version(
     )
 
 
+@router.delete("/personal-portrait/versions/{version_id}", status_code=204)
+async def delete_portrait_version(
+    version_id: UUID,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    result = await db.execute(
+        select(PortraitVersion).where(
+            PortraitVersion.id == version_id,
+            PortraitVersion.user_id == user.id,
+            PortraitVersion.tenant_id == user.tenant_id,
+        )
+    )
+    version = result.scalar_one_or_none()
+    if not version:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    await db.delete(version)
+
+
 @router.post("/personal-portrait/versions/{version_id}/restore")
 async def restore_portrait_version(
     version_id: UUID,
@@ -325,18 +356,20 @@ async def restore_portrait_version(
         select(PortraitVersion).where(
             PortraitVersion.id == version_id,
             PortraitVersion.user_id == user.id,
+            PortraitVersion.tenant_id == user.tenant_id,
         )
     )
     version = result.scalar_one_or_none()
     if not version:
         raise HTTPException(status_code=404, detail="版本不存在")
 
-    profile = await _get_or_create_profile(db, user.id)
+    profile = await _get_or_create_profile(db, user.id, user.tenant_id)
 
     # Save current as snapshot before restoring
     if profile.personal_portrait and profile.personal_portrait.strip():
         db.add(PortraitVersion(
             user_id=user.id,
+            tenant_id=user.tenant_id,
             content=profile.personal_portrait,
             source="manual",
         ))

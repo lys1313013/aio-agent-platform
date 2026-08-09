@@ -22,19 +22,30 @@ async def handle_update_user_portrait(
     factory = get_session_factory()
     async with factory() as db:
         current_user_id.set(user_id)
+        # Look up tenant_id from the user record
+        from aio_agent_platform.db.models import User
+        user_result = await db.execute(select(User.tenant_id).where(User.id == uid))
+        tenant_id = user_result.scalar_one_or_none()
+        if not tenant_id:
+            return "用户不存在"
+
         result = await db.execute(
-            select(UserProfile).where(UserProfile.user_id == uid)
+            select(UserProfile).where(
+                UserProfile.user_id == uid,
+                UserProfile.tenant_id == tenant_id,
+            )
         )
         profile = result.scalar_one_or_none()
 
         if not profile:
-            profile = UserProfile(user_id=uid)
+            profile = UserProfile(user_id=uid, tenant_id=tenant_id)
             db.add(profile)
 
         # Save a version snapshot before overwriting
         if profile.personal_portrait and profile.personal_portrait.strip():
             db.add(PortraitVersion(
                 user_id=uid,
+                tenant_id=tenant_id,
                 content=profile.personal_portrait,
                 source="ai",
             ))

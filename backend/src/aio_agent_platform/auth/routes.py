@@ -112,7 +112,7 @@ async def register(
     db.add(TenantMembership(tenant_id=tenant.id, user_id=user.id))
 
     # Create profile + config
-    db.add(UserProfile(user_id=user.id))
+    db.add(UserProfile(user_id=user.id, tenant_id=tenant.id))
     db.add(UserConfig(user_id=user.id))
     await db.flush()
 

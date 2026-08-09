@@ -120,7 +120,7 @@ async def create_user(
     await db.flush()
     for tenant_id in tenant_ids:
         db.add(TenantMembership(tenant_id=tenant_id, user_id=user.id))
-    profile = UserProfile(user_id=user.id, display_name=req.display_name)
+    profile = UserProfile(user_id=user.id, tenant_id=active_tenant_id, display_name=req.display_name)
     db.add(profile)
     db.add(UserConfig(user_id=user.id))
     await db.flush()
@@ -161,9 +161,14 @@ async def update_user(
         user.role = req.role
     if req.is_active is not None:
         user.is_active = req.is_active
-    profile = await db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
+    profile = await db.scalar(
+        select(UserProfile).where(
+            UserProfile.user_id == user.id,
+            UserProfile.tenant_id == user.tenant_id,
+        )
+    )
     if not profile:
-        profile = UserProfile(user_id=user.id)
+        profile = UserProfile(user_id=user.id, tenant_id=user.tenant_id)
         db.add(profile)
     if "display_name" in req.model_fields_set:
         profile.display_name = req.display_name
