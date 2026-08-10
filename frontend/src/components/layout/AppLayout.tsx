@@ -149,20 +149,19 @@ export default function AppLayout() {
     },
   ];
 
+  // 精确匹配或按路径段前缀匹配，避免 /knowledge 误匹配 /knowledge-graph
+  const isPathActive = (path: string) => {
+    if (!path) return false;
+    return path === '/'
+      ? location.pathname === '/'
+      : location.pathname === path || location.pathname.startsWith(`${path}/`);
+  };
+
   const isItemActive = (item: NavItem) => {
     if (item.path) {
-      return item.path === '/'
-        ? location.pathname === '/'
-        : location.pathname.startsWith(item.path);
+      return isPathActive(item.path);
     }
-    return (
-      item.children?.some(
-        (child) =>
-          child.path === '/'
-            ? location.pathname === '/'
-            : location.pathname.startsWith(child.path ?? ''),
-      ) ?? false
-    );
+    return item.children?.some((child) => isPathActive(child.path ?? '')) ?? false;
   };
 
   const activeGroupKey =
@@ -348,10 +347,7 @@ export default function AppLayout() {
                                 >
                                   <div className="overflow-hidden">
                                     {item.children.map((child) => {
-                                      const childActive =
-                                        child.path === '/'
-                                          ? location.pathname === '/'
-                                          : location.pathname.startsWith(child.path ?? '');
+                                      const childActive = isPathActive(child.path ?? '');
 
                                       return (
                                         <NavLink
@@ -385,10 +381,7 @@ export default function AppLayout() {
                             );
                           }
 
-                          const isActive =
-                            item.path === '/'
-                              ? location.pathname === '/'
-                              : location.pathname.startsWith(item.path ?? '');
+                          const isActive = isPathActive(item.path ?? '');
 
                           return (
                             <NavLink
@@ -442,10 +435,7 @@ export default function AppLayout() {
                     item.children && item.children.length ? item.children : [item],
                   )
                   .map((item) => {
-                    const isActive =
-                      item.path === '/'
-                        ? location.pathname === '/'
-                        : location.pathname.startsWith(item.path ?? '');
+                    const isActive = isPathActive(item.path ?? '');
 
                     return (
                       <NavLink

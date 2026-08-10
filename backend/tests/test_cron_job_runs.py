@@ -445,6 +445,115 @@ async def test_handler_create_cron_job_sets_tenant_id(engine, db_session, monkey
         assert job.tenant_id == tenant.id
 
 
+async def test_handler_create_cron_job_autobinds_channel(engine, db_session, monkeypatch):
+    """渠道会话中创建任务且未显式传 channel_id 时，自动绑定当前渠道。"""
+    from types import SimpleNamespace
+
+    from aio_agent_platform.channels.file_send import (
+        ChannelSendContext,
+        current_channel_send_ctx,
+    )
+    from aio_agent_platform.cron_jobs.handlers import handle_create_cron_job
+
+    tenant = Tenant(name="handler-tenant-ch", slug="cron-handler-ch")
+    db_session.add(tenant)
+    await db_session.flush()
+    user = User(
+        id=uuid4(), username="handler-user-ch", email="h-ch@test.com",
+        password_hash="x", role="admin", is_active=True, tenant_id=tenant.id,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    await db_session.commit()
+
+    factory = _test_factory(engine)
+    monkeypatch.setattr(
+        "aio_agent_platform.cron_jobs.handlers.get_session_factory",
+        lambda: factory,
+    )
+
+    channel_id = uuid4()
+    token = current_channel_send_ctx.set(
+        ChannelSendContext(
+            adapter=SimpleNamespace(channel_id=channel_id),
+            event=SimpleNamespace(),
+        )
+    )
+    try:
+        resp = await handle_create_cron_job(
+            {"name": "channel job", "cron_expr": "0 8 * * *", "message": "hi"},
+            str(user.id),
+            "session-x",
+        )
+    finally:
+        current_channel_send_ctx.reset(token)
+    assert "successfully" in resp
+
+    async with factory() as db:
+        job = (
+            await db.execute(select(CronJob).where(CronJob.name == "channel job"))
+        ).scalar_one()
+        assert job.channel_id == channel_id
+
+
+async def test_handler_create_cron_job_explicit_channel_wins(engine, db_session, monkeypatch):
+    """显式传入 channel_id 时不被渠道上下文覆盖。"""
+    from types import SimpleNamespace
+
+    from aio_agent_platform.channels.file_send import (
+        ChannelSendContext,
+        current_channel_send_ctx,
+    )
+    from aio_agent_platform.cron_jobs.handlers import handle_create_cron_job
+
+    tenant = Tenant(name="handler-tenant-ch2", slug="cron-handler-ch2")
+    db_session.add(tenant)
+    await db_session.flush()
+    user = User(
+        id=uuid4(), username="handler-user-ch2", email="h-ch2@test.com",
+        password_hash="x", role="admin", is_active=True, tenant_id=tenant.id,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    await db_session.commit()
+
+    factory = _test_factory(engine)
+    monkeypatch.setattr(
+        "aio_agent_platform.cron_jobs.handlers.get_session_factory",
+        lambda: factory,
+    )
+
+    explicit_id, ctx_id = uuid4(), uuid4()
+    token = current_channel_send_ctx.set(
+        ChannelSendContext(
+            adapter=SimpleNamespace(channel_id=ctx_id),
+            event=SimpleNamespace(),
+        )
+    )
+    try:
+        resp = await handle_create_cron_job(
+            {
+                "name": "explicit channel job",
+                "cron_expr": "0 8 * * *",
+                "message": "hi",
+                "channel_id": str(explicit_id),
+            },
+            str(user.id),
+            "session-x",
+        )
+    finally:
+        current_channel_send_ctx.reset(token)
+    assert "successfully" in resp
+
+    async with factory() as db:
+        job = (
+            await db.execute(
+                select(CronJob).where(CronJob.name == "explicit channel job")
+            )
+        ).scalar_one()
+        assert job.channel_id == explicit_id
+
+
 async def test_handler_list_cron_jobs_scoped_to_tenant(engine, db_session, monkeypatch):
     from aio_agent_platform.cron_jobs.handlers import handle_list_cron_jobs
 

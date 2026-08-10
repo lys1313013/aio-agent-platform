@@ -1219,6 +1219,39 @@ export const graphKnowledgeApi = {
     );
   },
 
+  /** Upload a document file (.md/.txt/.html/.pdf/.docx) for parsing and chunking. */
+  async uploadDocument(id: string, file: File, title?: string): Promise<{
+    id: string; title: string; status: string; chunk_count: number;
+  }> {
+    if (isTokenExpiringSoon(tokenStorage.getAccess())) {
+      const refreshed = await refreshAccessToken();
+      if (!refreshed && tokenStorage.getRefresh()) {
+        throw new ApiError(401, 'Session expired');
+      }
+    }
+
+    const form = new FormData();
+    form.append('file', file);
+    if (title) form.append('title', title);
+
+    const token = tokenStorage.getAccess() || '';
+    const resp = await fetch(`${API_BASE}/admin/graph-knowledge-bases/${id}/documents/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      // Do NOT set Content-Type — browser auto-sets multipart boundary
+      body: form,
+    });
+    if (!resp.ok) {
+      let errMsg = resp.statusText;
+      try {
+        const body = await resp.json();
+        errMsg = body.detail || errMsg;
+      } catch { /* ignore */ }
+      throw new ApiError(resp.status, errMsg);
+    }
+    return resp.json();
+  },
+
   chunks(kbId: string, docId: string) {
     return request<GraphChunk[]>(`/admin/graph-knowledge-bases/${kbId}/documents/${docId}/chunks`);
   },

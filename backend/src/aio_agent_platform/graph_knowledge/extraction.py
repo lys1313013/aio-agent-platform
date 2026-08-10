@@ -108,9 +108,11 @@ def _parse_llm_json(raw: str) -> dict:
 
 
 async def _extract_from_chunk(provider, llm_message_cls, chunk_text: str) -> dict:
+    # Reasoning models (e.g. deepseek) burn several thousand tokens on thinking
+    # before emitting any content — a small max_tokens leaves content empty.
     response = await provider.complete(
         messages=[llm_message_cls(role="user", content=_EXTRACTION_PROMPT + chunk_text)],
-        max_tokens=3000,
+        max_tokens=16000,
     )
     return _parse_llm_json(response.content or "")
 

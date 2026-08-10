@@ -61,6 +61,9 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "email-validator>=2.2.0",
     "Pillow>=10.0.0", # 图片压缩 (chat attachments)
+    # ---- 文档解析 (图谱知识库上传) ----
+    "pypdf>=5.0.0",
+    "python-docx>=1.1.0",
     # ---- 可观测性 ----
     "langfuse>=4.0.0",
     "lark-oapi>=1.7.1",

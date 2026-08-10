@@ -244,6 +244,31 @@ async def add_document(
     return doc
 
 
+async def create_pending_document(
+    db: AsyncSession,
+    kb: GraphKnowledgeBase,
+    user,
+    *,
+    title: str,
+) -> GraphDocument:
+    """Create a placeholder document for async parsing (e.g. scanned PDF via MinerU).
+
+    Content/chunks are filled in by the background OCR job (ocr_jobs.py).
+    """
+    doc = GraphDocument(
+        knowledge_base_id=kb.id,
+        title=title,
+        content="",
+        source_type="upload",
+        status="parsing",
+        chunk_count=0,
+        created_by=user.id,
+    )
+    db.add(doc)
+    await db.flush()
+    return doc
+
+
 async def delete_document(
     db: AsyncSession, kb: GraphKnowledgeBase, doc_id: UUID
 ) -> bool:
@@ -568,6 +593,23 @@ async def approve_relationships(
         .where(
             GraphRelationship.id.in_(ids),
             GraphRelationship.knowledge_base_id == kb.id,
+        )
+        .values(status="approved")
+    )
+    # 级联采纳关系两端的实体，否则图谱视图(默认只显示已采纳)看不到这些关系
+    rel_filter = [
+        GraphRelationship.id.in_(ids),
+        GraphRelationship.knowledge_base_id == kb.id,
+    ]
+    entity_ids = select(GraphRelationship.source_entity_id).where(*rel_filter).union(
+        select(GraphRelationship.target_entity_id).where(*rel_filter)
+    )
+    await db.execute(
+        GraphEntity.__table__.update()
+        .where(
+            GraphEntity.id.in_(entity_ids),
+            GraphEntity.knowledge_base_id == kb.id,
+            GraphEntity.status == "pending",
         )
         .values(status="approved")
     )

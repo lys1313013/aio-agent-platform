@@ -1226,7 +1226,7 @@ class GraphDocument(Base):
         String(16), default="text", server_default="text", comment="来源: text/upload"
     )
     status: Mapped[str] = mapped_column(
-        String(16), default="pending", server_default="pending", comment="状态: pending/chunked/failed"
+        String(16), default="pending", server_default="pending", comment="状态: pending/parsing/chunked/failed"
     )
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, comment="分块数量")
     created_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="创建者用户ID")

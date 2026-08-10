@@ -192,9 +192,19 @@ class WebSettings(BaseSettings):
     )
 
 
+class MinerUSettings(BaseSettings):
+    """MinerU cloud document parsing (扫描版 PDF OCR) configuration."""
+
+    model_config = SettingsConfigDict(env_prefix="MINERU_")
+
+    api_token: str = Field(default="", description="MinerU API token (mineru.net/apiManage/token)")
+    base_url: str = Field(default="https://mineru.net", description="MinerU API base URL")
+    timeout_seconds: int = Field(default=600, ge=30, le=3600, description="Max wait for parsing result")
+    poll_interval_seconds: float = Field(default=5.0, ge=1.0, le=60.0, description="Result poll interval")
+
+
 class HookSettings(BaseSettings):
     """Hook mechanism configuration."""
-
     model_config = SettingsConfigDict(env_prefix="HOOK_")
 
     enabled: bool = Field(default=True, description="Enable hook dispatch")
@@ -254,6 +264,7 @@ class AppSettings(BaseSettings):
     langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
     web: WebSettings = Field(default_factory=WebSettings)
     hook: HookSettings = Field(default_factory=HookSettings)
+    mineru: MinerUSettings = Field(default_factory=MinerUSettings)
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

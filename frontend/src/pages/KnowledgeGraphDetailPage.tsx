@@ -12,12 +12,14 @@ import {
   CheckCircleOutlined,
   FileTextOutlined,
   ThunderboltOutlined,
+  InboxOutlined,
 } from '@ant-design/icons';
 import {
   Alert,
   App,
   Button,
   Card,
+  Drawer,
   Empty,
   Form,
   Input,
@@ -32,8 +34,11 @@ import {
   Tabs,
   Tag,
   Typography,
+  Upload,
 } from 'antd';
+import type { UploadFile } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import GraphCanvas from '@/components/graph/GraphCanvas';
 import { graphKnowledgeApi } from '@/lib/api';
 import type {
   GraphChunk,
@@ -42,8 +47,6 @@ import type {
   GraphExtractionJob,
   GraphKnowledgeBase,
   GraphRelationship,
-  GraphRetrieveEntity,
-  GraphRetrieveRelationship,
   GraphRetrieveResult,
 } from '@/lib/api';
 
@@ -64,7 +67,7 @@ export default function KnowledgeGraphDetailPage() {
 
   const [kb, setKb] = useState<GraphKnowledgeBase | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('documents');
+  const [activeTab, setActiveTab] = useState('graph');
 
   useEffect(() => {
     graphKnowledgeApi
@@ -132,6 +135,7 @@ export default function KnowledgeGraphDetailPage() {
           activeKey={activeTab}
           onChange={setActiveTab}
           items={[
+            { key: 'graph', label: '图谱', children: <GraphViewTab kbId={kbIdStr} /> },
             { key: 'documents', label: '文档', children: <DocumentsTab kbId={kbIdStr} /> },
             { key: 'entities', label: '实体', children: <EntitiesTab kbId={kbIdStr} /> },
             { key: 'relationships', label: '关系', children: <RelationshipsTab kbId={kbIdStr} /> },
@@ -140,6 +144,152 @@ export default function KnowledgeGraphDetailPage() {
           ]}
         />
       </div>
+    </div>
+  );
+}
+
+// ---- Full graph view ----
+
+function GraphViewTab({ kbId }: { kbId: string }) {
+  const { message } = App.useApp();
+  const [status, setStatus] = useState('approved');
+  const [loading, setLoading] = useState(true);
+  const [entities, setEntities] = useState<GraphEntity[]>([]);
+  const [relationships, setRelationships] = useState<GraphRelationship[]>([]);
+  const [selected, setSelected] = useState<GraphEntity | null>(null);
+
+  const fetchGraph = useCallback(async () => {
+    setLoading(true);
+    try {
+      const statusParam = status === 'all' ? undefined : status;
+      const [ents, rels] = await Promise.all([
+        graphKnowledgeApi.entities(kbId, { status: statusParam, limit: 2000 }),
+        graphKnowledgeApi.relationships(kbId, { status: statusParam, limit: 5000 }),
+      ]);
+      setEntities(ents.items);
+      setRelationships(rels.items);
+    } catch (err: any) {
+      message.error(`加载图谱失败：${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [kbId, status, message]);
+
+  useEffect(() => { fetchGraph(); }, [fetchGraph]);
+
+  const entityIds = new Set(entities.map((e) => e.id));
+  const nodes = entities.map((e) => ({
+    id: e.id,
+    name: e.name,
+    type: e.type || '其他',
+    description: e.description,
+  }));
+  const links = relationships
+    .filter((r) => entityIds.has(r.source_entity_id) && entityIds.has(r.target_entity_id))
+    .map((r) => ({
+      id: r.id,
+      source: r.source_entity_id,
+      target: r.target_entity_id,
+      relationType: r.relation_type,
+      description: r.description,
+    }));
+
+  const selectedRels = selected
+    ? relationships.filter(
+        (r) => r.source_entity_id === selected.id || r.target_entity_id === selected.id,
+      )
+    : [];
+
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <Space>
+          <Segmented
+            value={status}
+            onChange={(v) => setStatus(String(v))}
+            options={[
+              { label: '已采纳', value: 'approved' },
+              { label: '待确认', value: 'pending' },
+              { label: '全部', value: 'all' },
+            ]}
+          />
+          <Text type="secondary" className="text-xs">
+            {entities.length} 个实体 · {links.length} 条关系
+          </Text>
+        </Space>
+        <Space>
+          <Text type="secondary" className="text-xs">拖拽平移 · 滚轮缩放 · 点击节点看详情</Text>
+          <Button size="small" icon={<ReloadOutlined />} onClick={fetchGraph} loading={loading}>
+            刷新
+          </Button>
+        </Space>
+      </div>
+
+      {loading ? (
+        <div className="py-24 text-center"><Spin size="large" /></div>
+      ) : entities.length === 0 ? (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="暂无实体，请先在「抽取任务」中构建图谱并采纳实体与关系"
+        />
+      ) : (
+        <div className="border border-border rounded-lg overflow-hidden bg-white">
+          <GraphCanvas
+            nodes={nodes}
+            links={links}
+            height="calc(100vh - 340px)"
+            onNodeClick={(node) => setSelected(entities.find((e) => e.id === node.id) ?? null)}
+          />
+        </div>
+      )}
+
+      <Drawer
+        title={selected?.name}
+        open={!!selected}
+        onClose={() => setSelected(null)}
+        width={420}
+      >
+        {selected && (
+          <div className="space-y-4">
+            <div>
+              <Tag color="blue">{selected.type || '其他'}</Tag>
+              {selected.status === 'approved' ? (
+                <Tag color="success" icon={<CheckCircleOutlined />}>已采纳</Tag>
+              ) : (
+                <Tag color="warning">待确认</Tag>
+              )}
+            </div>
+            {selected.description && (
+              <div>
+                <Text strong className="block mb-1">描述</Text>
+                <Text type="secondary" className="text-sm whitespace-pre-wrap">
+                  {selected.description}
+                </Text>
+              </div>
+            )}
+            <div>
+              <Text strong className="block mb-2">关联关系（{selectedRels.length}）</Text>
+              <div className="space-y-2">
+                {selectedRels.map((rel) => (
+                  <Card key={rel.id} size="small">
+                    <div className="flex items-center gap-2 text-sm flex-wrap">
+                      <Text strong>{rel.source_name}</Text>
+                      <Tag color="purple">{rel.relation_type}</Tag>
+                      <Text strong>{rel.target_name}</Text>
+                    </div>
+                    {rel.description && (
+                      <Text type="secondary" className="text-xs">{rel.description}</Text>
+                    )}
+                  </Card>
+                ))}
+                {selectedRels.length === 0 && (
+                  <Text type="secondary" className="text-sm">暂无关联关系</Text>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </Drawer>
     </div>
   );
 }
@@ -154,32 +304,55 @@ function DocumentsTab({ kbId }: { kbId: string }) {
   const [saving, setSaving] = useState(false);
   const [chunks, setChunks] = useState<GraphChunk[] | null>(null);
   const [chunkDoc, setChunkDoc] = useState<GraphDocument | null>(null);
+  const [addMode, setAddMode] = useState<'upload' | 'text'>('upload');
+  const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [uploadTitle, setUploadTitle] = useState('');
   const [form] = Form.useForm();
 
-  const fetchDocs = useCallback(async () => {
-    setLoading(true);
+  const fetchDocs = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       setDocuments(await graphKnowledgeApi.documents(kbId));
     } catch (err: any) {
-      message.error(`加载文档失败：${err.message}`);
+      if (!silent) message.error(`加载文档失败：${err.message}`);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [kbId, message]);
 
   useEffect(() => { fetchDocs(); }, [fetchDocs]);
 
+  // Poll silently while any document is being parsed (MinerU OCR)
+  useEffect(() => {
+    if (!documents.some((d) => d.status === 'parsing')) return;
+    const timer = setInterval(() => fetchDocs(true), 5000);
+    return () => clearInterval(timer);
+  }, [documents, fetchDocs]);
+
   const handleAdd = async () => {
     try {
-      const values = await form.validateFields();
       setSaving(true);
-      await graphKnowledgeApi.addDocument(kbId, {
-        title: values.title || undefined,
-        content: values.content,
-      });
+      if (addMode === 'upload') {
+        const raw = fileList[0]
+          ? ((fileList[0].originFileObj ?? fileList[0]) as unknown as File)
+          : null;
+        if (!raw) {
+          message.warning('请先选择要上传的文件');
+          return;
+        }
+        await graphKnowledgeApi.uploadDocument(kbId, raw, uploadTitle.trim() || undefined);
+      } else {
+        const values = await form.validateFields();
+        await graphKnowledgeApi.addDocument(kbId, {
+          title: values.title || undefined,
+          content: values.content,
+        });
+      }
       message.success('文档已添加并完成分块');
       setModalOpen(false);
       form.resetFields();
+      setFileList([]);
+      setUploadTitle('');
       fetchDocs();
     } catch (err: any) {
       if (err?.errorFields) return;
@@ -237,11 +410,16 @@ function DocumentsTab({ kbId }: { kbId: string }) {
               title: '状态',
               dataIndex: 'status',
               width: 110,
-              render: (v: string) => (
-                <Tag color={v === 'chunked' ? 'success' : 'warning'}>
-                  {v === 'chunked' ? '已分块' : v}
-                </Tag>
-              ),
+              render: (v: string) => {
+                const meta: Record<string, { color: string; label: string }> = {
+                  chunked: { color: 'success', label: '已分块' },
+                  parsing: { color: 'processing', label: '解析中' },
+                  failed: { color: 'error', label: '失败' },
+                  pending: { color: 'warning', label: '待处理' },
+                };
+                const m = meta[v] ?? { color: 'default', label: v };
+                return <Tag color={m.color}>{m.label}</Tag>;
+              },
             },
             {
               title: '操作',
@@ -277,18 +455,60 @@ function DocumentsTab({ kbId }: { kbId: string }) {
         destroyOnHidden
         width={640}
       >
-        <Form form={form} layout="vertical" className="mt-4">
-          <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入标题' }]}>
-            <Input placeholder="例如：产品技术手册-第3章" />
-          </Form.Item>
-          <Form.Item
-            name="content"
-            label="内容"
-            rules={[{ required: true, message: '请输入文档内容' }]}
-          >
-            <TextArea rows={12} placeholder="粘贴 Markdown / 纯文本内容，支持标题分块" />
-          </Form.Item>
-        </Form>
+        <Tabs
+          activeKey={addMode}
+          onChange={(k) => setAddMode(k as 'upload' | 'text')}
+          className="mt-2"
+          items={[
+            {
+              key: 'upload',
+              label: '上传文件',
+              children: (
+                <div className="space-y-4">
+                  <Upload.Dragger
+                    accept=".md,.markdown,.txt,.html,.htm,.pdf,.docx"
+                    maxCount={1}
+                    fileList={fileList}
+                    beforeUpload={() => false}
+                    onChange={({ fileList: fl }) => setFileList(fl.slice(-1))}
+                    onRemove={() => setFileList([])}
+                  >
+                    <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+                    <p className="ant-upload-text">点击或拖拽文件到此处上传</p>
+                    <p className="ant-upload-hint">
+                      支持 Markdown / TXT / HTML / PDF / Word(.docx),单文件不超过 20MB;扫描版
+                      PDF 将自动通过 OCR 解析(需后台配置 MinerU)
+                    </p>
+                  </Upload.Dragger>
+                  <Input
+                    placeholder="标题(留空则使用文件名)"
+                    value={uploadTitle}
+                    onChange={(e) => setUploadTitle(e.target.value)}
+                    maxLength={256}
+                  />
+                </div>
+              ),
+            },
+            {
+              key: 'text',
+              label: '粘贴文本',
+              children: (
+                <Form form={form} layout="vertical">
+                  <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入标题' }]}>
+                    <Input placeholder="例如:产品技术手册-第3章" />
+                  </Form.Item>
+                  <Form.Item
+                    name="content"
+                    label="内容"
+                    rules={[{ required: true, message: '请输入文档内容' }]}
+                  >
+                    <TextArea rows={12} placeholder="粘贴 Markdown / 纯文本内容,支持标题分块" />
+                  </Form.Item>
+                </Form>
+              ),
+            },
+          ]}
+        />
       </Modal>
 
       <Modal
@@ -328,6 +548,7 @@ function EntitiesTab({ kbId }: { kbId: string }) {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<string>('all');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [selected, setSelected] = useState<string[]>([]);
   const [editing, setEditing] = useState<GraphEntity | null>(null);
   const [editOpen, setEditOpen] = useState(false);
@@ -338,8 +559,8 @@ function EntitiesTab({ kbId }: { kbId: string }) {
     try {
       const result = await graphKnowledgeApi.entities(kbId, {
         status: status === 'all' ? undefined : status,
-        limit: 20,
-        offset: (page - 1) * 20,
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
       });
       setItems(result.items);
       setTotal(result.total);
@@ -348,7 +569,7 @@ function EntitiesTab({ kbId }: { kbId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [kbId, status, page, message]);
+  }, [kbId, status, page, pageSize, message]);
 
   useEffect(() => { fetchEntities(); }, [fetchEntities]);
 
@@ -457,10 +678,14 @@ function EntitiesTab({ kbId }: { kbId: string }) {
         columns={columns}
         pagination={{
           current: page,
-          pageSize: 20,
+          pageSize,
           total,
+          showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: setPage,
+          onChange: (p, ps) => {
+            setPage(ps !== pageSize ? 1 : p);
+            setPageSize(ps);
+          },
         }}
       />
       <Modal
@@ -496,6 +721,7 @@ function RelationshipsTab({ kbId }: { kbId: string }) {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<string>('all');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [selected, setSelected] = useState<string[]>([]);
   const [editing, setEditing] = useState<GraphRelationship | null>(null);
   const [editOpen, setEditOpen] = useState(false);
@@ -506,8 +732,8 @@ function RelationshipsTab({ kbId }: { kbId: string }) {
     try {
       const result = await graphKnowledgeApi.relationships(kbId, {
         status: status === 'all' ? undefined : status,
-        limit: 20,
-        offset: (page - 1) * 20,
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
       });
       setItems(result.items);
       setTotal(result.total);
@@ -516,7 +742,7 @@ function RelationshipsTab({ kbId }: { kbId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [kbId, status, page, message]);
+  }, [kbId, status, page, pageSize, message]);
 
   useEffect(() => { fetchRels(); }, [fetchRels]);
 
@@ -636,10 +862,14 @@ function RelationshipsTab({ kbId }: { kbId: string }) {
         columns={columns}
         pagination={{
           current: page,
-          pageSize: 20,
+          pageSize,
           total,
+          showSizeChanger: true,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: setPage,
+          onChange: (p, ps) => {
+            setPage(ps !== pageSize ? 1 : p);
+            setPageSize(ps);
+          },
         }}
       />
       <Modal
@@ -681,6 +911,10 @@ function RetrieveTab({ kbId }: { kbId: string }) {
   const [result, setResult] = useState<GraphRetrieveResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'graph'>('graph');
+
+  const nameToId = result
+    ? new Map(result.entities.map((e) => [e.name, e.id]))
+    : new Map<string, string>();
 
   const handleSearch = async () => {
     if (!query.trim()) {
@@ -762,7 +996,27 @@ function RetrieveTab({ kbId }: { kbId: string }) {
           )}
 
           {viewMode === 'graph' && result.entities.length > 0 ? (
-            <SubgraphView entities={result.entities} relationships={result.relationships} />
+            <div className="border border-border rounded-lg overflow-hidden bg-white">
+              <GraphCanvas
+                height={560}
+                nodes={result.entities.map((e) => ({
+                  id: e.id,
+                  name: e.name,
+                  type: e.type || '其他',
+                  description: e.description,
+                  isSeed: e.is_seed,
+                }))}
+                links={result.relationships
+                  .filter((r) => nameToId.has(r.source) && nameToId.has(r.target))
+                  .map((r) => ({
+                    id: r.id,
+                    source: nameToId.get(r.source)!,
+                    target: nameToId.get(r.target)!,
+                    relationType: r.relation_type,
+                    description: r.description,
+                  }))}
+              />
+            </div>
           ) : (
             <>
           {result.relationships.length > 0 && (
@@ -817,107 +1071,6 @@ function RetrieveTab({ kbId }: { kbId: string }) {
           description="输入查询开始图谱检索（仅检索已采纳的实体与关系）"
         />
       )}
-    </div>
-  );
-}
-
-// ---- Subgraph SVG visualization ----
-
-const TYPE_COLORS: Record<string, string> = {
-  人物: '#1677ff',
-  组织: '#722ed1',
-  产品: '#13c2c2',
-  概念: '#52c41a',
-  事件: '#fa8c16',
-  地点: '#eb2f96',
-  其他: '#8c8c8c',
-};
-
-interface SubgraphViewProps {
-  entities: GraphRetrieveEntity[];
-  relationships: GraphRetrieveRelationship[];
-}
-
-function SubgraphView({ entities, relationships }: SubgraphViewProps) {
-  const W = 820;
-  const H = 560;
-  const cx = W / 2;
-  const cy = H / 2;
-
-  // BFS depth from seed entities (radial ring layout).
-  const seeds = entities.filter((e) => e.is_seed).map((e) => e.name);
-  const depth: Record<string, number> = {};
-  seeds.forEach((s) => { depth[s] = 0; });
-  const adj: Record<string, string[]> = {};
-  entities.forEach((e) => { adj[e.name] = []; });
-  relationships.forEach((r) => {
-    (adj[r.source] = adj[r.source] || []).push(r.target);
-    (adj[r.target] = adj[r.target] || []).push(r.source);
-  });
-  const queue = [...seeds];
-  while (queue.length) {
-    const cur = queue.shift()!;
-    for (const nb of adj[cur] || []) {
-      if (depth[nb] === undefined) {
-        depth[nb] = (depth[cur] ?? 0) + 1;
-        queue.push(nb);
-      }
-    }
-  }
-
-  const rings: Record<number, string[]> = {};
-  entities.forEach((e) => {
-    const d = depth[e.name] ?? 0;
-    (rings[d] = rings[d] || []).push(e.name);
-  });
-
-  const pos: Record<string, { x: number; y: number }> = {};
-  Object.entries(rings).forEach(([dStr, names]) => {
-    const d = Number(dStr);
-    const radius = d === 0 ? 0 : 74 * d;
-    names.forEach((name, i) => {
-      if (d === 0) { pos[name] = { x: cx, y: cy }; return; }
-      const angle = (i / names.length) * Math.PI * 2 - Math.PI / 2;
-      pos[name] = { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) };
-    });
-  });
-
-  const colorFor = (type: string) => TYPE_COLORS[type] ?? '#8c8c8c';
-
-  return (
-    <div className="border border-border rounded-lg overflow-auto">
-      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block">
-        {relationships.map((r) => {
-          const s = pos[r.source];
-          const t = pos[r.target];
-          if (!s || !t) return null;
-          const mx = (s.x + t.x) / 2;
-          const my = (s.y + t.y) / 2;
-          return (
-            <g key={r.id}>
-              <line x1={s.x} y1={s.y} x2={t.x} y2={t.y} stroke="#d9d9d9" strokeWidth={1.5} />
-              <text x={mx} y={my - 4} textAnchor="middle" fontSize={10} fill="#8c8c8c">
-                {r.relation_type}
-              </text>
-            </g>
-          );
-        })}
-        {entities.map((e) => {
-          const p = pos[e.name] ?? { x: cx, y: cy };
-          const color = colorFor(e.type);
-          return (
-            <g key={e.id}>
-              <circle cx={p.x} cy={p.y} r={24} fill={color} opacity={0.15} stroke={color} strokeWidth={2} />
-              {e.is_seed && (
-                <circle cx={p.x} cy={p.y} r={29} fill="none" stroke={color} strokeWidth={1} strokeDasharray="4 3" />
-              )}
-              <text x={p.x} y={p.y + 4} textAnchor="middle" fontSize={11} fontWeight={600} fill={color}>
-                {e.name.length > 6 ? `${e.name.slice(0, 6)}…` : e.name}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
     </div>
   );
 }

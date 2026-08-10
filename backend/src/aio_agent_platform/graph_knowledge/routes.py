@@ -5,17 +5,25 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import AdminUser
 from aio_agent_platform.db.connection import get_db
-from aio_agent_platform.graph_knowledge import service
+from aio_agent_platform.graph_knowledge import mineru, service
+from aio_agent_platform.graph_knowledge.ocr_jobs import start_ocr_job
+from aio_agent_platform.graph_knowledge.parsing import (
+    DocumentParseError,
+    ScannedPDFError,
+    extract_text,
+)
 from aio_agent_platform.graph_knowledge.service import serialize_kb
 
 router = APIRouter(tags=["graph-knowledge"])
+
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
 
 
 # ---- Schemas ----
@@ -164,6 +172,69 @@ async def add_document(
         title=req.title or "未命名文档",
         content=req.content,
         source_type=req.source_type,
+    )
+    await db.commit()
+    return {
+        "id": doc.id,
+        "title": doc.title,
+        "status": doc.status,
+        "chunk_count": doc.chunk_count,
+    }
+
+
+@router.post("/api/admin/graph-knowledge-bases/{kb_id}/documents/upload")
+async def upload_document(
+    kb_id: UUID,
+    admin: AdminUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    file: UploadFile = File(...),
+    title: str | None = Form(None),
+) -> dict:
+    """Upload a document file (.md/.txt/.html/.pdf/.docx) and parse it into text."""
+    kb = await service.get_kb(db, kb_id, admin)
+    if not kb:
+        raise HTTPException(status_code=404, detail="图谱知识库不存在")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件过大(最大 {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)",
+        )
+
+    filename = file.filename or "document"
+    doc_title = (title or "").strip() or filename.rsplit(".", 1)[0]
+    try:
+        content = extract_text(filename, data)
+    except ScannedPDFError:
+        if not mineru.is_configured():
+            raise HTTPException(
+                status_code=415,
+                detail="扫描版 PDF 需要通过 MinerU 远程解析,请配置 MINERU_API_TOKEN",
+            ) from None
+        doc = await service.create_pending_document(db, kb, admin, title=doc_title[:256])
+        await db.commit()
+        start_ocr_job(doc.id, filename, data)
+        return {
+            "id": doc.id,
+            "title": doc.title,
+            "status": doc.status,
+            "chunk_count": doc.chunk_count,
+        }
+    except DocumentParseError as e:
+        raise HTTPException(status_code=415, detail=str(e)) from e
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="未从文件中提取到文本内容")
+
+    doc = await service.add_document(
+        db,
+        kb,
+        admin,
+        title=doc_title[:256],
+        content=content,
+        source_type="upload",
     )
     await db.commit()
     return {

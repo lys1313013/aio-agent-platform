@@ -937,7 +937,9 @@ CREATE_CRON_JOB = Tool(
                 "description": (
                     "Optional UUID of an IM channel (e.g. Feishu) to push the "
                     "task result to. The result is sent to the task owner's "
-                    "bound external account on that channel's tenant."
+                    "bound external account on that channel's tenant. "
+                    "Omit it — when the conversation happens in an IM channel, "
+                    "that channel is bound automatically."
                 ),
             },
         },

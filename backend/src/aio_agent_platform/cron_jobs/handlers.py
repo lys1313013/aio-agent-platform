@@ -9,6 +9,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
+from aio_agent_platform.channels.file_send import current_channel_send_ctx
 from aio_agent_platform.cron_jobs.scheduler import CRON_TIMEZONE, get_global_scheduler
 from aio_agent_platform.cron_jobs.service import CronJobService
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
@@ -60,6 +61,13 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
     agent_id = UUID(agent_id_str) if agent_id_str else None
     channel_id = UUID(channel_id_str) if channel_id_str else None
 
+    # 在 IM 渠道（如飞书）会话中创建任务时，默认绑定当前渠道用于结果通知，
+    # 否则任务静默执行、用户看不到结果。显式传入 channel_id 时以参数为准。
+    if not channel_id:
+        ch_ctx = current_channel_send_ctx.get()
+        if ch_ctx is not None:
+            channel_id = ch_ctx.adapter.channel_id
+
     # Default to current session's agent if not explicitly provided
     if not agent_id and session_id:
         try:
@@ -100,11 +108,17 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
     if scheduler is not None:
         scheduler.add_job(job)
 
+    notify_line = (
+        f"  Notify channel: {job.channel_id} (结果会推送到该渠道)\n"
+        if job.channel_id
+        else "  Notify channel: 未绑定（任务将静默执行，结果仅写入会话）\n"
+    )
     return (
         f"Cron job created successfully.\n"
         f"  ID: {job.id}\n"
         f"  Name: {job.name}\n"
         f"  Schedule: {job.cron_expr or job.run_at}\n"
+        f"{notify_line}"
         f"  Active: {job.is_active}"
     )
 
