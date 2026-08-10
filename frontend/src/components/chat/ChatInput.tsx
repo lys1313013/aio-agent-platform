@@ -386,7 +386,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
 
   return (
     <div
-      className={`border-t border-border ${simple ? 'p-2' : 'bg-muted/20 p-3'} ${isDragging ? 'bg-primary/5' : ''}`}
+      className={`${simple ? 'p-2' : 'bg-muted/20 p-3'} ${isDragging ? 'bg-primary/5' : ''}`}
       onDragOver={simple ? undefined : handleDragOver}
       onDragLeave={simple ? undefined : handleDragLeave}
       onDrop={simple ? undefined : handleDrop}
