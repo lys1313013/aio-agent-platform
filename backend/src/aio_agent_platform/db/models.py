@@ -688,6 +688,9 @@ class Memory(Base):
         nullable=False,
         comment="关联用户ID",
     )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=DEFAULT_TENANT_ID, comment="所属租户ID"
+    )
     layer: Mapped[str] = mapped_column(String(4), nullable=False, comment="记忆层级: L1/L2/L3")
     content: Mapped[str] = mapped_column(Text, nullable=False, comment="记忆内容")
     search_vec: Mapped[str | None] = mapped_column(Text, comment="搜索向量(用于pg_trgm检索)")
@@ -705,6 +708,7 @@ class Memory(Base):
 
     __table_args__ = (
         Index("idx_memories_user_layer", "user_id", "layer", "created_at"),
+        Index("idx_memories_tenant", "tenant_id"),
         {"comment": "记忆表"},
     )
 
@@ -719,6 +723,9 @@ class DailyMemory(Base):
         PG_UUID(as_uuid=True),
         nullable=False,
         comment="关联用户ID",
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=DEFAULT_TENANT_ID, comment="所属租户ID"
     )
     date: Mapped[date] = mapped_column(Date, nullable=False, comment="记忆所属日期(用户本地日,东八区)")
     content: Mapped[str] = mapped_column(Text, nullable=False, comment="当日记忆正文(Markdown)")
@@ -738,6 +745,7 @@ class DailyMemory(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "date", name="uq_daily_memories_user_date"),
         Index("idx_daily_memories_user_date", "user_id", "date"),
+        Index("idx_daily_memories_tenant", "tenant_id"),
         {"comment": "每日记忆表(一人一天一条)"},
     )
 

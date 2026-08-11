@@ -154,7 +154,7 @@ async def create_memory(
 ) -> dict:
     """Create a new memory."""
     memory = await MemoryService.create_memory(
-        db, user.id, req.layer, req.content, meta=req.metadata
+        db, user.id, req.layer, req.content, meta=req.metadata, tenant_id=user.tenant_id
     )
     return MemoryOut.from_model(memory).model_dump(mode="json")
 

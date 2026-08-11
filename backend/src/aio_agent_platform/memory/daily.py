@@ -16,7 +16,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.db.models import DailyMemory, Memory, Session
-from aio_agent_platform.memory.service import MemoryService, create_default_provider_for_user
+from aio_agent_platform.memory.service import (
+    MemoryService,
+    create_default_provider_for_user,
+    resolve_tenant_id,
+)
 
 logger = structlog.get_logger()
 
@@ -125,6 +129,7 @@ class DailyMemoryService:
         content: str,
         highlights: list | None = None,
         source_session_ids: list | None = None,
+        tenant_id: UUID | None = None,
     ) -> DailyMemory:
         """Insert or update the daily memory for (user_id, day)."""
         memory = await DailyMemoryService.get_by_date(db, user_id, day)
@@ -132,6 +137,7 @@ class DailyMemoryService:
         if memory is None:
             memory = DailyMemory(
                 user_id=user_id,
+                tenant_id=tenant_id or await resolve_tenant_id(db, user_id),
                 date=day,
                 content=content,
                 search_vec=search_vec,

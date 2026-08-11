@@ -11,9 +11,15 @@ import structlog
 from sqlalchemy import delete, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.db.models import Memory
+from aio_agent_platform.db.models import DEFAULT_TENANT_ID, Memory, User
 
 logger = structlog.get_logger()
+
+
+async def resolve_tenant_id(db: AsyncSession, user_id: UUID) -> UUID:
+    """查询用户所属租户;用户不存在时回退默认租户(与历史数据回填策略一致)。"""
+    tenant_id = await db.scalar(select(User.tenant_id).where(User.id == user_id))
+    return tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
 
 
 async def create_default_provider_for_user(user_id: UUID, temperature: float = 0.3):
@@ -121,11 +127,13 @@ class MemoryService:
         layer: str,
         content: str,
         meta: dict | None = None,
+        tenant_id: UUID | None = None,
     ) -> Memory:
         """Create a new memory. Auto-generates search_vec via jieba tokenization."""
         search_vec = MemoryService._tokenize(content)
         memory = Memory(
             user_id=user_id,
+            tenant_id=tenant_id or await resolve_tenant_id(db, user_id),
             layer=layer,
             content=content,
             search_vec=search_vec,

@@ -336,6 +336,21 @@ async def _run_manual_migrations(conn) -> None:
         "ALTER TABLE llm_models ALTER COLUMN tenant_id SET NOT NULL",
         """CREATE INDEX IF NOT EXISTS idx_llm_models_tenant_default
            ON llm_models (tenant_id, is_default) WHERE is_default""",
+        # Memory tenant isolation
+        "ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id UUID",
+        """UPDATE memories m SET tenant_id = u.tenant_id
+           FROM users u WHERE m.user_id = u.id AND m.tenant_id IS NULL""",
+        """UPDATE memories SET tenant_id = '00000000-0000-0000-0000-000000000001'
+           WHERE tenant_id IS NULL""",
+        "ALTER TABLE memories ALTER COLUMN tenant_id SET NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_memories_tenant ON memories (tenant_id)",
+        "ALTER TABLE daily_memories ADD COLUMN IF NOT EXISTS tenant_id UUID",
+        """UPDATE daily_memories dm SET tenant_id = u.tenant_id
+           FROM users u WHERE dm.user_id = u.id AND dm.tenant_id IS NULL""",
+        """UPDATE daily_memories SET tenant_id = '00000000-0000-0000-0000-000000000001'
+           WHERE tenant_id IS NULL""",
+        "ALTER TABLE daily_memories ALTER COLUMN tenant_id SET NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_daily_memories_tenant ON daily_memories (tenant_id)",
     ]
     for sql in migrations:
         await conn.execute(text(sql))
