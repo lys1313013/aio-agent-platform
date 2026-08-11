@@ -663,6 +663,7 @@ function parseWebpageResult(preview?: string): WebpageResult | null {
 /** Custom renderer for create_webpage — clickable webpage artifact card. */
 function CreateWebpageCard({ toolCall }: Props) {
   const { message } = App.useApp();
+  const panelAvailable = useWebpagePreviewStore((s) => s.panelAvailable);
   const isPending = !toolCall.result;
   const isError = toolCall.result?.status === 'err';
   const data = parseWebpageResult(toolCall.result?.preview);
@@ -683,6 +684,12 @@ function CreateWebpageCard({ toolCall }: Props) {
 
   const handlePreview = async () => {
     if (!data) return;
+    // 无预览面板的场景（宠物浮窗）降级为新标签页打开
+    if (!useWebpagePreviewStore.getState().panelAvailable) {
+      const url = await fetchFreshUrl();
+      if (url) window.open(url, '_blank', 'noopener');
+      return;
+    }
     useWebpagePreviewStore.getState().openPreview({ pageId: data.page_id, title });
   };
 
@@ -736,7 +743,7 @@ function CreateWebpageCard({ toolCall }: Props) {
       )}
       {data && (
         <div className="px-3 pb-2 text-xs text-purple-400 dark:text-purple-300/70">
-          点击卡片在右侧预览
+          {panelAvailable ? '点击卡片在右侧预览' : '点击卡片在新标签页打开'}
         </div>
       )}
     </div>

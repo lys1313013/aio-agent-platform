@@ -8,6 +8,7 @@ import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import AgentConfigSidebar from '@/components/AgentConfigSidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
+import WebpagePreviewPanel from '@/components/chat/WebpagePreviewPanel';
 import { Alert, App, Typography, Spin, Tag, Button } from 'antd';
 import { PlusOutlined, LinkOutlined, DeleteOutlined } from '@ant-design/icons';
 import { agentsApi } from '@/lib/api';
@@ -995,6 +996,9 @@ export default function AgentChatPage() {
 
         {/* Sandbox file panel */}
         <SandboxFilePanel workspaceId={activeSession?.workspace_id ?? null} />
+
+        {/* Webpage artifact preview panel */}
+        <WebpagePreviewPanel />
       </div>
     </div>
   );

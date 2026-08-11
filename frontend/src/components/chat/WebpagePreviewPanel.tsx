@@ -16,6 +16,12 @@ export default function WebpagePreviewPanel() {
   const [url, setUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // 标记面板已挂载：无面板挂载的聊天场景（宠物浮窗）点击卡片时降级为新标签页打开
+  useEffect(() => {
+    useWebpagePreviewStore.getState().setPanelAvailable(true);
+    return () => useWebpagePreviewStore.getState().setPanelAvailable(false);
+  }, []);
+
   useEffect(() => {
     if (!preview) {
       setUrl(null);
