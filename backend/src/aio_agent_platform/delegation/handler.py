@@ -464,6 +464,7 @@ async def _build_child_system_prompt(
         tools=tools_list,
         persistent_memories=memory_data["l1_memories"],
         relevant_memories=memory_data["l2_memories"] + memory_data["l3_memories"],
+        daily_memories=memory_data["daily_memories"],
         relevant_skills=matched_skills if matched_skills else None,
         agent_prompt=child_agent.system_prompt,
         child_agents=child_agent.children if child_agent.children else None,

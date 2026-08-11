@@ -71,6 +71,23 @@ class Scheduler:
         self._scheduler.shutdown(wait=False)
         logger.info("scheduler_shutdown")
 
+    def add_system_job(
+        self,
+        job_id: str,
+        cron_expr: str,
+        handler: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Register a built-in platform job (not backed by a CronJob DB row)."""
+        trigger = CronTrigger.from_crontab(cron_expr, timezone=CRON_TIMEZONE)
+        self._scheduler.add_job(
+            handler,
+            trigger=trigger,
+            id=f"system:{job_id}",
+            name=job_id,
+            replace_existing=True,
+        )
+        logger.info("system_job_scheduled", job_id=job_id, cron=cron_expr)
+
     def add_job(self, job: CronJob) -> None:
         """Add a job to the scheduler (called after DB creation)."""
         self._schedule_job(job)

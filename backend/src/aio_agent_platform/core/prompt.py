@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -30,6 +31,7 @@ def build_system_prompt(
     persistent_memories: list | None = None,
     relevant_memories: list | None = None,
     relevant_skills: list | None = None,
+    daily_memories: list | None = None,
     user_name: str | None = None,
     user_portrait: str | None = None,
     agent_prompt: str | None = None,
@@ -43,6 +45,7 @@ def build_system_prompt(
         tools: List of Tool objects with .name and .description
         persistent_memories: List of Memory objects with .content (L1 — always loaded)
         relevant_memories: List of Memory objects with .content and .layer (L2/L3 — by relevance)
+        daily_memories: List of DailyMemory objects with .date and .content (by day)
         relevant_skills: List of Skill objects with .name and .description
         user_name: User's display name
         agent_prompt: Agent's custom system prompt (overrides default template)
@@ -73,6 +76,9 @@ def build_system_prompt(
             parts.append("\n## Relevant Memories")
             for memory in relevant_memories:
                 parts.append(f"- [{memory.layer}] {memory.content}")
+
+        if daily_memories:
+            parts.append(_build_daily_section(_trim_daily_memories(daily_memories)))
 
         if relevant_skills:
             relevant_skills = _trim_skills(relevant_skills)
@@ -109,6 +115,7 @@ def build_system_prompt(
     persistent_memories = _trim_memories(persistent_memories or [])
     relevant_memories = _trim_relevant_memories(relevant_memories or [])
     relevant_skills = _trim_skills(relevant_skills or [])
+    daily_memories = _trim_daily_memories(daily_memories or [])
 
     template = _env.get_template("system_prompt.j2")
 
@@ -117,6 +124,7 @@ def build_system_prompt(
         persistent_memories=persistent_memories,
         relevant_memories=relevant_memories,
         relevant_skills=relevant_skills,
+        daily_memories=daily_memories,
         child_agents=child_agents or [],
         current_datetime=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
         user_name=user_name or "User",
@@ -216,6 +224,43 @@ def _trim_relevant_memories(memories: list) -> list:
         logger.info("Relevant memories trimmed: %d -> %d", len(memories), max_relevant)
         return memories[:max_relevant]
     return memories
+
+
+_MAX_DAILY_MEMORIES = 4
+_MAX_DAILY_CONTENT_CHARS = 800
+
+
+def _trim_daily_memories(memories: list) -> list:
+    """Limit daily memories: at most 4 days, each content capped in length.
+
+    Returns lightweight copies — never mutates ORM objects (dirty-flush risk).
+    """
+    if len(memories) > _MAX_DAILY_MEMORIES:
+        logger.info("Daily memories trimmed: %d -> %d", len(memories), _MAX_DAILY_MEMORIES)
+    return [
+        SimpleNamespace(
+            date=m.date,
+            content=(
+                m.content[:_MAX_DAILY_CONTENT_CHARS] + "…"
+                if len(m.content) > _MAX_DAILY_CONTENT_CHARS
+                else m.content
+            ),
+        )
+        for m in memories[:_MAX_DAILY_MEMORIES]
+    ]
+
+
+def _build_daily_section(daily_memories: list) -> str:
+    """Render the daily-memories prompt section for the custom-prompt branch."""
+    lines = ["\n## Daily Memories (按天的记忆记录)"]
+    lines.append(
+        "Each entry summarizes what the user did on that day. "
+        "Use them for continuity; when the user asks about a specific day, answer from these records."
+    )
+    for memory in daily_memories:
+        lines.append(f"### {memory.date.isoformat()}")
+        lines.append(memory.content)
+    return "\n".join(lines)
 
 
 def _trim_skills(skills: list) -> list:

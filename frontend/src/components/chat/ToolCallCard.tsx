@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type MouseEvent } from 'react';
 import {
   CodeOutlined,
   CheckCircleOutlined,
@@ -13,10 +13,14 @@ import {
   EditOutlined,
   MessageOutlined,
   ReadOutlined,
+  GlobalOutlined,
+  ExportOutlined,
 } from '@ant-design/icons';
-import { Tag } from 'antd';
+import { App, Tag } from 'antd';
 import type { ToolCallInfo } from '@/lib/types';
+import { webpagesApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { useWebpagePreviewStore } from '@/stores/webpagePreviewStore';
 
 interface Props {
   toolCall: ToolCallInfo;
@@ -50,6 +54,7 @@ const TOOL_LABELS: Record<string, string> = {
   file_query: '文件查询',
   read_pdf: '读取 PDF',
   update_user_portrait: '更新用户画像',
+  create_webpage: '创建网页',
 };
 
 const LAYER_COLORS: Record<string, string> = {
@@ -631,6 +636,113 @@ function DefaultToolCard({ toolCall }: Props) {
   );
 }
 
+interface WebpageResult {
+  page_id: string;
+  title: string;
+  url: string;
+}
+
+/** Parse the JSON payload returned by the create_webpage tool handler. */
+function parseWebpageResult(preview?: string): WebpageResult | null {
+  if (!preview) return null;
+  try {
+    const data = JSON.parse(preview);
+    if (data && typeof data.page_id === 'string' && typeof data.url === 'string') {
+      return {
+        page_id: data.page_id,
+        title: typeof data.title === 'string' ? data.title : '未命名网页',
+        url: data.url,
+      };
+    }
+  } catch {
+    /* not a webpage result */
+  }
+  return null;
+}
+
+/** Custom renderer for create_webpage — clickable webpage artifact card. */
+function CreateWebpageCard({ toolCall }: Props) {
+  const { message } = App.useApp();
+  const isPending = !toolCall.result;
+  const isError = toolCall.result?.status === 'err';
+  const data = parseWebpageResult(toolCall.result?.preview);
+  const title =
+    (toolCall.arguments.title as string) || data?.title || '未命名网页';
+
+  /** 换取新鲜令牌 URL（创建时返回的令牌会过期） */
+  const fetchFreshUrl = async (): Promise<string | null> => {
+    if (!data) return null;
+    try {
+      const { url } = await webpagesApi.getAccess(data.page_id);
+      return url;
+    } catch {
+      message.error('网页加载失败，可能已被删除');
+      return null;
+    }
+  };
+
+  const handlePreview = async () => {
+    if (!data) return;
+    useWebpagePreviewStore.getState().openPreview({ pageId: data.page_id, title });
+  };
+
+  const handleOpenNewTab = async (e: MouseEvent) => {
+    e.stopPropagation();
+    const url = await fetchFreshUrl();
+    if (url) window.open(url, '_blank', 'noopener');
+  };
+
+  return (
+    <div
+      className={cn(
+        'rounded-lg border overflow-hidden transition-colors',
+        isError
+          ? 'border-red-200 dark:border-red-800/50 bg-red-50/50 dark:bg-red-950/20'
+          : 'border-purple-200 dark:border-purple-800/50 bg-purple-50/50 dark:bg-purple-950/20',
+        data && 'cursor-pointer hover:bg-purple-100/50 dark:hover:bg-purple-900/20',
+      )}
+      onClick={() => void handlePreview()}
+    >
+      <div className="flex items-center justify-between px-3 py-2.5">
+        <div className="flex items-center gap-2 min-w-0">
+          <GlobalOutlined className="text-purple-500 flex-shrink-0" />
+          <span className="text-sm font-medium text-purple-900 dark:text-purple-100 truncate" title={title}>
+            {title}
+          </span>
+          <Tag color="purple" className="text-xs flex-shrink-0">
+            网页
+          </Tag>
+        </div>
+        <div className="flex-shrink-0 ml-2 flex items-center gap-2">
+          {isPending && <LoadingOutlined className="text-purple-400" />}
+          {isError && <CloseCircleOutlined className="text-red-500" />}
+          {data && (
+            <span
+              className="text-xs text-purple-500 hover:text-purple-700 flex items-center gap-1"
+              onClick={(e) => void handleOpenNewTab(e)}
+            >
+              <ExportOutlined />
+              新标签页
+            </span>
+          )}
+        </div>
+      </div>
+      {isError && toolCall.result?.preview && (
+        <div className="px-3 pb-3 border-t border-red-200 dark:border-red-800/50">
+          <pre className="text-xs p-2 mt-2 rounded bg-red-50 dark:bg-red-950/20 text-red-900 dark:text-red-100 whitespace-pre-wrap break-all">
+            {toolCall.result.preview}
+          </pre>
+        </div>
+      )}
+      {data && (
+        <div className="px-3 pb-2 text-xs text-purple-400 dark:text-purple-300/70">
+          点击卡片在右侧预览
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ToolCallCard({ toolCall }: Props) {
   // Delegate to custom renderers for specific tools
   if (toolCall.name === 'memory_write') {
@@ -644,6 +756,9 @@ export default function ToolCallCard({ toolCall }: Props) {
   }
   if (toolCall.name === 'knowledge_retrieval') {
     return <KnowledgeRetrievalCard toolCall={toolCall} />;
+  }
+  if (toolCall.name === 'create_webpage') {
+    return <CreateWebpageCard toolCall={toolCall} />;
   }
   return <DefaultToolCard toolCall={toolCall} />;
 }

@@ -78,10 +78,104 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
+def _local_alembic_heads() -> set[str]:
+    """读取本地 alembic 迁移的 head 版本(纯文件解析,不连库)。
+
+    找不到 alembic 目录时返回空集合,调用方退化为哨兵表检测。
+    """
+    from pathlib import Path
+
+    try:
+        from alembic.script import ScriptDirectory
+
+        alembic_dir = Path(__file__).resolve().parents[3] / "alembic"
+        if not alembic_dir.is_dir():
+            return set()
+        return set(ScriptDirectory(dir=str(alembic_dir)).get_heads())
+    except Exception:
+        return set()
+
+
+async def _schema_initialized(conn) -> bool:
+    """哨兵检测:核心表都在即认为 schema 已完成初始化(legacy 库兜底用)。
+
+    覆盖早期(users)与后期(tenant_memberships / llm_models)迁移的表,
+    单次查询一个网络往返。
+    """
+    result = await conn.execute(
+        text(
+            "SELECT to_regclass('public.users'), to_regclass('public.tenants'),"
+            " to_regclass('public.tenant_memberships'),"
+            " to_regclass('public.llm_models'), to_regclass('public.cron_jobs')"
+        )
+    )
+    return all(row is not None for row in result.one())
+
+
+async def _db_schema_state(conn, heads: set[str]) -> str:
+    """判断数据库 schema 状态: current / behind / legacy / empty。"""
+    result = await conn.execute(text("SELECT to_regclass('public.alembic_version')"))
+    if result.scalar() is not None:
+        rows = (
+            (await conn.execute(text("SELECT version_num FROM alembic_version")))
+            .scalars()
+            .all()
+        )
+        if rows and heads and all(rev in heads for rev in rows):
+            return "current"
+        return "behind" if heads else "current"
+    # 无版本记录:历史上由 create_all bootstrap 出来的库,哨兵表兜底识别
+    if await _schema_initialized(conn):
+        return "legacy"
+    return "empty"
+
+
+async def _stamp_alembic_head(conn, heads: set[str]) -> None:
+    """bootstrap 完成后写入 alembic 版本,使后续启动走版本比对快路径。"""
+    await conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS alembic_version ("
+            "version_num VARCHAR(32) NOT NULL,"
+            "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+        )
+    )
+    await conn.execute(text("DELETE FROM alembic_version"))
+    for rev in heads:
+        await conn.execute(
+            text("INSERT INTO alembic_version (version_num) VALUES (:rev)"),
+            {"rev": rev},
+        )
+
+
 async def init_db() -> None:
     """Initialize database: create extensions and all tables (dev bootstrap)."""
+    import structlog
+
+    log = structlog.get_logger()
     engine = get_engine()
     async with engine.begin() as conn:
+        # 远程库上 create_all(checkfirst) 每张表一次往返(53 张)+ 60 余条
+        # 幂等手动迁移,共 110+ 次往返,启动多花 10s 级。已初始化的库直接跳过;
+        # 后续 schema 变更走 alembic。全新部署时走完整 bootstrap 并盖章版本,
+        # 也可用 DATABASE_BOOTSTRAP_FORCE=true 强制执行。
+        heads = _local_alembic_heads()
+        if not settings.db.bootstrap_force:
+            state = await _db_schema_state(conn, heads)
+            if state == "current":
+                return
+            if state == "behind":
+                # 启动时绝不自动迁移(可能是远程生产库),只告警
+                log.warning(
+                    "db_schema_outdated: run 'uv run alembic upgrade head'",
+                )
+                return
+            if state == "legacy":
+                log.warning(
+                    "db_schema_unstamped: 库由旧版 bootstrap 创建,无 alembic 版本记录;"
+                    "确认 schema 最新后请执行 'uv run alembic stamp head'",
+                )
+                return
+
         # Create extensions
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pg_trgm"'))
@@ -94,6 +188,10 @@ async def init_db() -> None:
 
         # Manual migrations for existing tables that need new columns
         await _run_manual_migrations(conn)
+
+        # bootstrap 出来的库即当前 schema,写入 alembic 头版本
+        if heads:
+            await _stamp_alembic_head(conn, heads)
 
 
 async def _run_manual_migrations(conn) -> None:

@@ -12,6 +12,7 @@ import type {
   MemoryLayer,
   MemoryListResponse,
   MemorySearchResult,
+  DailyMemory,
   Skill,
   SkillListResponse,
   SkillSearchResult,
@@ -1379,6 +1380,17 @@ export const webToolSettingsApi = {
   },
 };
 
+// ---- Webpage Artifacts (create_webpage 产物) ----
+
+export const webpagesApi = {
+  /** 换取一个带限时令牌的新鲜访问 URL（历史消息中的旧令牌会过期） */
+  getAccess(pageId: string) {
+    return request<{ url: string }>(`/webpages/${pageId}/access`, {
+      method: 'POST',
+    });
+  },
+};
+
 // ---- Admin: System Config ----
 
 export interface AutoTitleConfig {
@@ -1555,6 +1567,27 @@ export const memoriesApi = {
     if (params?.layer) searchParams.set('layer', params.layer);
     if (params?.top_k) searchParams.set('top_k', String(params.top_k));
     return request<MemorySearchResult[]>(`/memories/search?${searchParams.toString()}`);
+  },
+};
+
+export const dailyMemoriesApi = {
+  list(params?: { date?: string; start?: string; end?: string; limit?: number; offset?: number }) {
+    const searchParams = new URLSearchParams();
+    if (params?.date) searchParams.set('date', params.date);
+    if (params?.start) searchParams.set('start', params.start);
+    if (params?.end) searchParams.set('end', params.end);
+    if (params?.limit) searchParams.set('limit', String(params.limit));
+    if (params?.offset) searchParams.set('offset', String(params.offset));
+    const qs = searchParams.toString();
+    return request<DailyMemory[]>(`/memories/daily${qs ? `?${qs}` : ''}`);
+  },
+
+  regenerate(day: string) {
+    return request<DailyMemory>(`/memories/daily/${day}/regenerate`, { method: 'POST' });
+  },
+
+  delete(day: string) {
+    return request<void>(`/memories/daily/${day}`, { method: 'DELETE' });
   },
 };
 

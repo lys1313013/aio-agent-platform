@@ -1,0 +1,25 @@
+{# Daily memory incremental merge — fold a new session summary into today's existing record #}
+你是一个日记整理助手。用户 {{ date }} 这一天已有一条记忆记录，现在刚结束了一段新会话，请把新会话摘要合并进当天记录。
+
+## 已有记录(正文)
+{{ existing_content }}
+
+## 新会话摘要
+{{ new_summary }}
+
+## 合并规则
+
+1. **content(日记正文):** 保持第二人称("你")、Markdown 列表格式,把新摘要中的要点融入已有记录。
+   - 同类事项合并,不要简单追加造成重复
+   - 每条要点自包含,总条数控制在 3-10 条
+   - 已有要点不要丢,除非与新摘要有实质重复
+2. **highlights(结构化要点):** 基于合并后的正文重新提炼:
+   - type 只能是: decision(决定) / todo(待办) / fact(事实) / event(事件)
+   - 最多 8 条,没有就返回空数组
+3. 如果新摘要没有实质内容(闲聊、测试消息),原样返回已有正文。
+
+## 输出格式
+
+仅返回合法的 JSON(不要 markdown 代码块,不要额外解释):
+
+{"content": "合并后的正文", "highlights": [{"type": "decision", "text": "..."}]}

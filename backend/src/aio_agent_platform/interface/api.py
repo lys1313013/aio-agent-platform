@@ -29,6 +29,7 @@ from aio_agent_platform.interface.routes import (
     commands_router,
     confirmations_router,
     cron_jobs_router,
+    daily_memories_router,
     delegations_router,
     graph_knowledge_router,
     knowledge_router,
@@ -47,6 +48,7 @@ from aio_agent_platform.interface.routes import (
     tools_router,
     users_router,
     web_tools_router,
+    webpages_router,
 )
 from aio_agent_platform.knowledge.handlers import KNOWLEDGE_HANDLERS
 from aio_agent_platform.memory.handlers import MEMORY_HANDLERS
@@ -64,6 +66,18 @@ from aio_agent_platform.workspaces.routes import router as workspaces_router
 async def lifespan(app: FastAPI):
     """Lifecycle: startup / shutdown."""
     # ---- Startup ----
+    import time as _time
+
+    import structlog as _structlog
+
+    _startup_log = _structlog.get_logger()
+    _t0 = _time.monotonic()
+
+    def _mark(phase: str) -> None:
+        nonlocal _t0
+        now = _time.monotonic()
+        _startup_log.info("startup_phase", phase=phase, seconds=round(now - _t0, 2))
+        _t0 = now
 
     # 1. Database bootstrap (create tables if not exist — for dev convenience)
     try:
@@ -78,6 +92,7 @@ async def lifespan(app: FastAPI):
         import structlog
 
         structlog.get_logger().warning("init_db failed (may already exist)", error=str(e))
+    _mark("init_db")
 
     # 2. Object storage + workspace storage
     workspace_storage = None
@@ -97,6 +112,7 @@ async def lifespan(app: FastAPI):
     # 4. Start periodic sync (background task)
     if workspace_storage:
         await sandbox_mgr.start_periodic_sync()
+    _mark("object_storage+sandbox")
 
     # 5. Tool registry + executor
     registry = ToolRegistry()
@@ -161,6 +177,13 @@ async def lifespan(app: FastAPI):
 
     tool_executor.register_direct_handler(NOTIFY_CHANNEL_TOOL_NAME, handle_notify_channel)
 
+    # 9.11 Register artifact tool handlers (create_webpage 网页产物)
+    from aio_agent_platform.artifacts.webpage import ARTIFACT_HANDLERS
+
+    for name, handler in ARTIFACT_HANDLERS.items():
+        tool_executor.register_direct_handler(name, handler)
+    _mark("tool_registry+handlers")
+
     # 10. MCP Manager — connect to configured MCP Servers
     from aio_agent_platform.tools.mcp.manager import MCPManager
 
@@ -216,6 +239,7 @@ async def lifespan(app: FastAPI):
 
     # Inject MCPManager into ToolExecutor
     tool_executor.mcp_manager = mcp_manager
+    _mark("mcp_connect")
 
     # 11. Remote Tool Manager — load remote HTTP tools from DB
     from aio_agent_platform.tools.remote.executor import RemoteToolExecutor
@@ -246,6 +270,7 @@ async def lifespan(app: FastAPI):
 
     # 11.5 Langfuse observability
     init_langfuse()
+    _mark("remote_tools+langfuse")
 
     # 11.6 Observation recorder — async batch writer for observability tables
     from aio_agent_platform.observation.recorder import get_recorder
@@ -531,12 +556,23 @@ async def lifespan(app: FastAPI):
         app.state.scheduler = scheduler
         from aio_agent_platform.cron_jobs.scheduler import set_global_scheduler
         set_global_scheduler(scheduler)
+
+        # Built-in: consolidate yesterday's sessions into daily memories at 00:40
+        from aio_agent_platform.memory.daily import run_daily_consolidation
+
+        async def _daily_memory_job() -> None:
+            await run_daily_consolidation()
+
+        scheduler.add_system_job(
+            "daily-memory-consolidation", "40 0 * * *", _daily_memory_job
+        )
     except Exception as e:
         import structlog
         structlog.get_logger().warning(
             "scheduler_start_failed",
             error=str(e),
         )
+    _mark("scheduler")
 
     # 13. Channel connection manager — starts all enabled channel transports.
     from aio_agent_platform.channels.connection_manager import (
@@ -561,6 +597,7 @@ async def lifespan(app: FastAPI):
     # Mount the shared webhook router for all Feishu webhook channels
     webhook_router = build_webhook_router()
     app.include_router(webhook_router)
+    _mark("channels")
 
     yield
 
@@ -612,6 +649,7 @@ def create_app() -> FastAPI:
     app.include_router(models_router)
     app.include_router(observability_router)
     app.include_router(settings_router)
+    app.include_router(daily_memories_router)  # before memories_router: /daily vs /{memory_id}
     app.include_router(memories_router)
     app.include_router(pets_router)
     app.include_router(admin_pets_router)
@@ -633,6 +671,7 @@ def create_app() -> FastAPI:
     app.include_router(channels_router)
     app.include_router(channel_bindings_router)
     app.include_router(web_tools_router)
+    app.include_router(webpages_router)
     app.include_router(system_config_router)
 
     # Health check
@@ -650,27 +689,38 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
-def run():
-    """Run with uvicorn."""
+def _run_server() -> None:
+    """Serve the app with uvicorn (each reload child binds the port itself)."""
     import uvicorn
-
-    kwargs: dict = {}
-    if settings.server.reload:
-        package_root = Path(__file__).resolve().parents[1]
-        kwargs.update(
-            reload=True,
-            reload_dirs=[str(package_root)],
-            reload_excludes=["*.pyc", "__pycache__", "*.log"],
-            reload_delay=settings.server.reload_delay,
-        )
 
     uvicorn.run(
         "aio_agent_platform.interface.api:app",
         host=settings.server.host,
         port=settings.server.port,
         log_level=settings.server.log_level.lower(),
-        **kwargs,
     )
+
+
+def run():
+    """Run with uvicorn, optionally with file-watch reload.
+
+    不用 uvicorn 自带的 reload:它在 macOS + Python 3.13(spawn)下靠
+    multiprocessing pickling 传递监听 socket,重启后 socket 丢失,服务假死
+    (TCP 能连上但无人 accept)。改用 watchfiles.run_process 整体杀掉并重启
+    子进程,子进程每次从零 bind 端口,不涉及 socket 继承。
+    """
+    if settings.server.reload:
+        from watchfiles import run_process
+
+        package_root = Path(__file__).resolve().parents[1]
+        run_process(
+            str(package_root),
+            target=_run_server,
+            debounce=int(settings.server.reload_delay * 1000),
+        )
+        return
+
+    _run_server()
 
 
 if __name__ == "__main__":

@@ -210,6 +210,23 @@ export interface MemorySearchResult {
   created_at: string;
 }
 
+export type DailyHighlightType = 'decision' | 'todo' | 'fact' | 'event';
+
+export interface DailyHighlight {
+  type: DailyHighlightType;
+  text: string;
+}
+
+export interface DailyMemory {
+  id: string;
+  date: string; // YYYY-MM-DD
+  content: string;
+  highlights: DailyHighlight[];
+  source_session_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
 // ---- Skills ----
 
 export interface SkillFile {

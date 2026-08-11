@@ -1,6 +1,6 @@
 """SQLAlchemy models — all tables with RLS, no foreign key constraints."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated
 from uuid import UUID, uuid4
 
@@ -706,6 +706,39 @@ class Memory(Base):
     __table_args__ = (
         Index("idx_memories_user_layer", "user_id", "layer", "created_at"),
         {"comment": "记忆表"},
+    )
+
+
+class DailyMemory(Base):
+    """Daily consolidated memory — one row per user per local day (Asia/Shanghai)."""
+
+    __tablename__ = "daily_memories"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=False,
+        comment="关联用户ID",
+    )
+    date: Mapped[date] = mapped_column(Date, nullable=False, comment="记忆所属日期(用户本地日,东八区)")
+    content: Mapped[str] = mapped_column(Text, nullable=False, comment="当日记忆正文(Markdown)")
+    highlights: Mapped[list] = mapped_column(JSONB, default=list, comment="结构化要点(JSON): [{type, text}]")
+    source_session_ids: Mapped[list] = mapped_column(JSONB, default=list, comment="贡献的会话ID列表(JSON)")
+    search_vec: Mapped[str | None] = mapped_column(Text, comment="搜索向量(用于pg_trgm检索)")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="创建时间")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now(), comment="更新时间"
+    )
+
+    user: Mapped["User"] = relationship(
+        primaryjoin="DailyMemory.user_id == User.id",
+        foreign_keys="[DailyMemory.user_id]",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "date", name="uq_daily_memories_user_date"),
+        Index("idx_daily_memories_user_date", "user_id", "date"),
+        {"comment": "每日记忆表(一人一天一条)"},
     )
 
 

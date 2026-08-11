@@ -1,0 +1,1 @@
+"""Agent-generated artifacts (webpages, ...)."""

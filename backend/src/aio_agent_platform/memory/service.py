@@ -16,6 +16,46 @@ from aio_agent_platform.db.models import Memory
 logger = structlog.get_logger()
 
 
+async def create_default_provider_for_user(user_id: UUID, temperature: float = 0.3):
+    """Resolve the tenant's default LLM model for a user and build a provider.
+
+    Returns None when the user or an active default model is missing.
+    Creates its own short-lived DB session — safe for background tasks.
+    """
+    from sqlalchemy.orm import selectinload
+
+    from aio_agent_platform.db.connection import get_session_factory
+    from aio_agent_platform.db.models import LLMModel, User
+    from aio_agent_platform.llm import create_provider
+
+    factory = get_session_factory()
+    async with factory() as db:
+        user_result = await db.execute(select(User.tenant_id).where(User.id == user_id))
+        tenant_id = user_result.scalar_one_or_none()
+        if tenant_id is None:
+            logger.warning("用户不存在,无法解析默认模型", user_id=str(user_id))
+            return None
+        result = await db.execute(
+            select(LLMModel)
+            .options(selectinload(LLMModel.provider))
+            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == tenant_id)
+            .limit(1)
+        )
+        model = result.scalar_one_or_none()
+
+    if not model or not model.provider:
+        logger.warning("没有可用的默认模型")
+        return None
+
+    return create_provider(
+        provider=model.provider.provider_type,
+        model=model.model_name,
+        base_url=model.provider.base_url,
+        api_key=model.provider.api_key_encrypted,
+        temperature=temperature,
+    )
+
+
 class MemoryService:
     """
     Stateless memory service — all methods take an explicit db session and user_id.
@@ -225,6 +265,7 @@ class MemoryService:
             l1_memories: list[Memory] — all L1 memories (always loaded)
             l2_memories: list[Memory] — top-K by relevance
             l3_memories: list[Memory] — top-K by relevance + recency
+            daily_memories: list[DailyMemory] — mentioned dates, else today + yesterday
         """
         # L1: Load ALL L1 memories (always present)
         l1_result = await db.execute(
@@ -265,10 +306,17 @@ class MemoryService:
                 l3_memories.append(m)
                 seen_ids.add(m.id)
 
+        # Daily: mentioned dates (精确查) or recent days — deferred import, daily.py
+        # imports MemoryService so a top-level import would be circular
+        from aio_agent_platform.memory.daily import DailyMemoryService
+
+        daily_memories = await DailyMemoryService.get_for_prompt(db, user_id, user_message)
+
         return {
             "l1_memories": l1_memories,
             "l2_memories": l2_memories,
             "l3_memories": l3_memories[:top_k],
+            "daily_memories": daily_memories,
         }
 
     # ---- Auto Extraction ----
@@ -293,39 +341,13 @@ class MemoryService:
             prompt_text = template.render(messages=messages)
 
             # 2. Call LLM (non-streaming, low temperature for structured extraction)
-            from sqlalchemy.orm import selectinload
+            from aio_agent_platform.llm import LLMMessage
 
-            from aio_agent_platform.db.connection import get_session_factory as _get_session_factory
-            from aio_agent_platform.db.models import LLMModel, User
-            from aio_agent_platform.llm import LLMMessage, create_provider
-
-            # Resolve tenant from user_id, then query tenant's default model
-            _factory = _get_session_factory()
-            async with _factory() as _db:
-                _user_result = await _db.execute(select(User.tenant_id).where(User.id == user_id))
-                _tenant_id = _user_result.scalar_one_or_none()
-                if _tenant_id is None:
-                    logger.warning("用户不存在，跳过记忆提取", user_id=str(user_id))
-                    return []
-                _result = await _db.execute(
-                    select(LLMModel)
-                    .options(selectinload(LLMModel.provider))
-                    .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == _tenant_id)
-                    .limit(1)
-                )
-                _model = _result.scalar_one_or_none()
-
-            if not _model or not _model.provider:
+            provider = await create_default_provider_for_user(user_id, temperature=0.3)
+            if provider is None:
                 logger.warning("没有可用的默认模型，跳过记忆提取")
                 return []
 
-            provider = create_provider(
-                provider=_model.provider.provider_type,
-                model=_model.model_name,
-                base_url=_model.provider.base_url,
-                api_key=_model.provider.api_key_encrypted,
-                temperature=0.3,
-            )
             response = await provider.complete(
                 messages=[LLMMessage(role="user", content=prompt_text)],
                 max_tokens=2000,

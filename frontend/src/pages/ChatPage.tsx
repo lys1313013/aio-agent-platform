@@ -7,6 +7,7 @@ import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import ChatHistorySidebar from '@/components/chat/ChatHistorySidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
+import WebpagePreviewPanel from '@/components/chat/WebpagePreviewPanel';
 import { Alert, App, Button, Spin } from 'antd';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import type { StreamingState } from '@/lib/types';
@@ -579,6 +580,9 @@ export default function ChatPage() {
 
         {/* Sandbox file panel */}
         <SandboxFilePanel workspaceId={activeSession?.workspace_id ?? null} />
+
+        {/* Webpage artifact preview panel */}
+        <WebpagePreviewPanel />
       </div>
     </div>
   );

@@ -34,6 +34,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     registry.register(DELETE_CRON_JOB)
     registry.register(WEB_SEARCH)
     registry.register(WEB_FETCH)
+    registry.register(CREATE_WEBPAGE)
 
 
 # ---- Shell / Code (sandbox, dangerous permission) ----
@@ -1038,5 +1039,36 @@ WEB_FETCH = Tool(
     },
     requires_sandbox=False,
     permission_level="read",
+    timeout=30,
+)
+
+
+# ---- Webpage artifact (direct, write permission) ----
+
+CREATE_WEBPAGE = Tool(
+    name="create_webpage",
+    description=(
+        "生成一个完整 HTML 网页并返回可点击的网页卡片，用户可在对话中内嵌预览或新标签页打开。"
+        "适用场景：数据可视化报告、方案对比、图文教程、可交互的小工具演示等——"
+        "当纯文本或 Markdown 不足以讲清楚时使用。"
+        "要求：单个自包含 HTML 文件（内联 CSS/JS），可通过公共 CDN 引入 ECharts 等库；"
+        "不要引用本地文件或需要登录态的资源；内容排版美观、适配桌面与移动端。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "网页标题，展示在卡片和浏览器标签上",
+            },
+            "html": {
+                "type": "string",
+                "description": "完整的 HTML 文档（从 <!DOCTYPE html> 开始）",
+            },
+        },
+        "required": ["title", "html"],
+    },
+    requires_sandbox=False,
+    permission_level="write",
     timeout=30,
 )

@@ -302,6 +302,7 @@ async def build_system_prompt_with_memories(
         tools=tools_list,
         persistent_memories=memory_data["l1_memories"],
         relevant_memories=memory_data["l2_memories"] + memory_data["l3_memories"],
+        daily_memories=memory_data["daily_memories"],
         relevant_skills=matched_skills if matched_skills else None,
         agent_prompt=agent.system_prompt if agent else None,
         child_agents=agent.children if agent and agent.children else None,
@@ -598,13 +599,22 @@ def fire_memory_extraction(
     messages.append({"role": "user", "content": user_message})
     messages.append({"role": "assistant", "content": assistant_output})
 
-    task = asyncio.create_task(
-        MemoryService.extract_memories_from_conversation(
+    async def _extract_and_merge_daily() -> None:
+        created = await MemoryService.extract_memories_from_conversation(
             user_id=user_id,
             session_id=session_id,
             messages=messages,
         )
-    )
+        # 实时追加:把本次会话的 L3 摘要合并进今天的每日记忆(凌晨 cron 会再精修)
+        l3_memory = next((m for m in created if m.layer == "L3"), None)
+        if l3_memory is not None:
+            from aio_agent_platform.memory.daily import DailyMemoryService
+
+            await DailyMemoryService.append_session_summary(
+                user_id, session_id, l3_memory.content
+            )
+
+    task = asyncio.create_task(_extract_and_merge_daily())
     background_tasks.add(task)
     task.add_done_callback(background_tasks.discard)
 

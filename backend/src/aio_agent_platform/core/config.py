@@ -20,6 +20,10 @@ class DatabaseSettings(BaseSettings):
         description="PostgreSQL connection URL (required)",
         min_length=1,
     )
+    bootstrap_force: bool = Field(
+        default=False,
+        description="强制在启动时执行完整建表/手动迁移(默认哨兵检测后跳过)",
+    )
 
 
 class RedisSettings(BaseSettings):
@@ -242,6 +246,12 @@ class ServerSettings(BaseSettings):
         description="Public URL of this server (e.g. https://agent.example.com). "
                     "Used for generating publicly-accessible image URLs. "
                     "If empty, falls back to http://localhost:{port}.",
+    )
+    pages_base_url: str = Field(
+        default="",
+        description="独立源网页产物 base URL（如 https://pages.example.com），"
+                    "用于 serve 智能体生成的不可信 HTML，与主站 cookie 隔离。"
+                    "为空时回退 server_url。",
     )
     github_token: str = Field(
         default="",

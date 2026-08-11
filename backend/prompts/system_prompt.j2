@@ -55,6 +55,15 @@ These memories may be relevant to the current conversation. Use them for context
 {% endfor %}
 {% endif %}
 
+{% if daily_memories %}
+## Daily Memories (按天的记忆记录)
+Each entry summarizes what the user did on that day. Use them for continuity; when the user asks about a specific day (e.g. "8月9日我们做了什么"), answer from these records.
+{% for memory in daily_memories %}
+### {{ memory.date.isoformat() }}
+{{ memory.content }}
+{% endfor %}
+{% endif %}
+
 {% if relevant_skills %}
 ## Relevant Experience
 You have learned methodologies for the following tasks. Use `view_skill` to read

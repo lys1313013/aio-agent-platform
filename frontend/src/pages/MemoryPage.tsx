@@ -27,8 +27,12 @@ import {
   TagsOutlined,
 } from '@ant-design/icons';
 import type { TabsProps } from 'antd';
+import { CalendarOutlined } from '@ant-design/icons';
 import { memoriesApi } from '@/lib/api';
 import type { Memory, MemoryLayer } from '@/lib/types';
+import DailyMemoryTimeline from '@/components/memory/DailyMemoryTimeline';
+
+type MemoryTab = MemoryLayer | 'daily';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -79,7 +83,7 @@ function formatRelativeTime(iso: string): string {
 
 export default function MemoryPage() {
   const { message } = App.useApp();
-  const [activeLayer, setActiveLayer] = useState<MemoryLayer>('L1');
+  const [activeLayer, setActiveLayer] = useState<MemoryTab>('L1');
   const [searchQuery, setSearchQuery] = useState('');
   const [memories, setMemories] = useState<Memory[]>([]);
   const [scores, setScores] = useState<Record<string, number>>({});
@@ -96,9 +100,16 @@ export default function MemoryPage() {
   const [formContent, setFormContent] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  const config = LAYER_CONFIG[activeLayer];
+  const isDailyTab = activeLayer === 'daily';
+  const config = isDailyTab
+    ? {
+        label: '每日记忆',
+        description: '按天汇总的记忆记录。每天凌晨自动合并前一天的会话,对话结束时也会实时追加;点击"重新生成"可手动刷新。',
+      }
+    : LAYER_CONFIG[activeLayer];
 
   const fetchMemories = useCallback(async () => {
+    if (activeLayer === 'daily') return;
     setLoading(true);
     try {
       if (searchQuery.trim()) {
@@ -240,7 +251,7 @@ export default function MemoryPage() {
   };
 
   const openCreateModal = () => {
-    setFormLayer(activeLayer);
+    setFormLayer(activeLayer === 'daily' ? 'L1' : activeLayer);
     setFormContent('');
     setCreateModalOpen(true);
   };
@@ -252,19 +263,30 @@ export default function MemoryPage() {
   };
 
   const handleTabChange = (key: string) => {
-    setActiveLayer(key as MemoryLayer);
+    setActiveLayer(key as MemoryTab);
     setSearchQuery('');
   };
 
-  const tabItems: TabsProps['items'] = LAYERS.map((layer) => ({
-    key: layer,
-    label: (
-      <span className="flex items-center gap-2">
-        <AppstoreOutlined />
-        {LAYER_CONFIG[layer].label}
-      </span>
-    ),
-  }));
+  const tabItems: TabsProps['items'] = [
+    ...LAYERS.map((layer) => ({
+      key: layer,
+      label: (
+        <span className="flex items-center gap-2">
+          <AppstoreOutlined />
+          {LAYER_CONFIG[layer].label}
+        </span>
+      ),
+    })),
+    {
+      key: 'daily',
+      label: (
+        <span className="flex items-center gap-2">
+          <CalendarOutlined />
+          每日记忆
+        </span>
+      ),
+    },
+  ];
 
   const layerOptions = LAYERS.map((layer) => ({
     value: layer,
@@ -288,9 +310,11 @@ export default function MemoryPage() {
             </h1>
             <Text type="secondary">查看和管理 Agent 在不同层级的持久化记忆。</Text>
           </div>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
-            添加记忆
-          </Button>
+          {!isDailyTab && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+              添加记忆
+            </Button>
+          )}
         </div>
 
         {/* Layer stat cards */}
@@ -341,6 +365,10 @@ export default function MemoryPage() {
           <Text>{config.description}</Text>
         </div>
 
+        {isDailyTab ? (
+          <DailyMemoryTimeline />
+        ) : (
+          <>
         {/* Toolbar: search + batch actions */}
         <div className="mb-4 flex flex-wrap items-center gap-3">
           <Input
@@ -435,7 +463,7 @@ export default function MemoryPage() {
                             {memory.content}
                           </p>
                           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                            <Tag color={config.color} className="!mr-0">
+                            <Tag color={LAYER_CONFIG[memory.layer].color} className="!mr-0">
                               {memory.layer}
                             </Tag>
                             <Text type="secondary" className="text-xs">
@@ -493,6 +521,8 @@ export default function MemoryPage() {
             </>
           )}
         </Spin>
+          </>
+        )}
 
         {/* Create Modal */}
         <Modal

@@ -11,6 +11,7 @@ from aio_agent_platform.interface.routes.chat import router as chat_router
 from aio_agent_platform.interface.routes.commands import router as commands_router
 from aio_agent_platform.interface.routes.confirmations import router as confirmations_router
 from aio_agent_platform.interface.routes.cron_jobs import router as cron_jobs_router
+from aio_agent_platform.interface.routes.daily_memories import router as daily_memories_router
 from aio_agent_platform.interface.routes.delegations import router as delegations_router
 from aio_agent_platform.interface.routes.knowledge import router as knowledge_router
 from aio_agent_platform.interface.routes.mcp_servers import router as mcp_servers_router
@@ -29,6 +30,7 @@ from aio_agent_platform.interface.routes.tenants import router as tenants_router
 from aio_agent_platform.interface.routes.tools import router as tools_router
 from aio_agent_platform.interface.routes.users import router as users_router
 from aio_agent_platform.interface.routes.web_tools import router as web_tools_router
+from aio_agent_platform.interface.routes.webpages import router as webpages_router
 
 __all__ = [
     "admin_models_router",
@@ -42,6 +44,7 @@ __all__ = [
     "commands_router",
     "confirmations_router",
     "cron_jobs_router",
+    "daily_memories_router",
     "delegations_router",
     "graph_knowledge_router",
     "knowledge_router",
@@ -60,4 +63,5 @@ __all__ = [
     "tools_router",
     "users_router",
     "web_tools_router",
+    "webpages_router",
 ]
