@@ -1,6 +1,9 @@
 """FastAPI application entry point."""
 
 import asyncio
+import os
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -688,10 +691,43 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
+# 环境变量名:reload 父进程 pid,由 run() 在 spawn 子进程前写入,
+# 子进程靠它探测父进程是否还活着(见 _start_supervisor_watchdog)。
+_SUPERVISOR_PID_ENV = "AIO_SUPERVISOR_PID"
+
+
+def _start_supervisor_watchdog() -> None:
+    """父进程一死就退出本进程,避免孤儿进程持有端口假死。
+
+    reload 模式下真正的 server 是 watchfiles spawn 出的子进程。父进程被杀
+    (如关闭启动它的终端)后,子进程会被 launchd 收养、继续持有监听 socket,
+    且 stdout 仍指向死掉的 pty,写日志阻塞后整个事件循环冻住——表现为
+    "TCP 能连上但无任何响应"的假死。macOS 没有 PR_SET_PDEATHSIG,
+    只能轮询探测父进程是否存活。
+    """
+    supervisor_pid = os.environ.get(_SUPERVISOR_PID_ENV)
+    if not supervisor_pid:
+        return
+
+    def _watch() -> None:
+        pid = int(supervisor_pid)
+        while True:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                os._exit(0)
+            except PermissionError:
+                pass  # 进程还在,只是无权 signal(理论上同用户不会发生)
+            time.sleep(2)
+
+    threading.Thread(target=_watch, daemon=True).start()
+
 
 def _run_server() -> None:
     """Serve the app with uvicorn (each reload child binds the port itself)."""
     import uvicorn
+
+    _start_supervisor_watchdog()
 
     uvicorn.run(
         "aio_agent_platform.interface.api:app",
@@ -712,6 +748,7 @@ def run():
     if settings.server.reload:
         from watchfiles import run_process
 
+        os.environ[_SUPERVISOR_PID_ENV] = str(os.getpid())
         package_root = Path(__file__).resolve().parents[1]
         run_process(
             str(package_root),
