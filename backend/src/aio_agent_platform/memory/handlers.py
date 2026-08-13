@@ -72,10 +72,17 @@ async def handle_memory_write(arguments: dict, user_id: str, session_id: str, **
     async with factory() as db:
         current_user_id.set(user_id)
         await _set_rls_context(db, user_id)
-        memory = await MemoryService.create_memory(db, uid, layer, content, meta=meta)
+        memory, action = await MemoryService.create_or_update_memory(
+            db, uid, layer, content, meta=meta
+        )
         await db.commit()
 
     layer_label = _LAYER_LABELS.get(layer, layer)
+    if action == "updated":
+        return (
+            f"Memory merged into an existing {layer} ({layer_label}) entry "
+            f"(similar content already present), id: {memory.id}"
+        )
     return f"Memory saved to {layer} ({layer_label}), id: {memory.id}"
 
 

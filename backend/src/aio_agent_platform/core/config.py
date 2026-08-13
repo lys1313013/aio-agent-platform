@@ -98,6 +98,12 @@ class AgentSettings(BaseSettings):
         pattern="^(ask_always|ask_dangerous|auto_all)$",
     )
     memory_top_k: int = Field(default=5, ge=1, le=20)
+    memory_dedupe_threshold: float = Field(
+        default=0.65,
+        ge=0.0,
+        le=1.0,
+        description="记忆写入去重阈值: 与同用户同层级已有记忆的 pg_trgm 相似度达到该值则更新而非新增",
+    )
     # Multi-agent delegation settings
     max_delegation_depth: int = Field(
         default=3, ge=1, le=10, description="Maximum delegation nesting depth"

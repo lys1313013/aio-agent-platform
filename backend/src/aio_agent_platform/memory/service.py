@@ -16,6 +16,36 @@ from aio_agent_platform.db.models import DEFAULT_TENANT_ID, Memory, User
 logger = structlog.get_logger()
 
 
+def _dedupe_threshold_from_settings() -> float:
+    """Read the memory dedupe threshold from app settings (lazy import avoids cycle)."""
+    from aio_agent_platform.core.config import settings
+
+    return settings.agent.memory_dedupe_threshold
+
+
+def _merge_meta(old: dict, new: dict) -> dict:
+    """Merge incoming meta into existing meta for an updated memory.
+
+    ``tags`` are unioned and de-duplicated (order-preserving); ``source_session``
+    is appended only when not already present. Other keys are overwritten by the
+    incoming value.
+    """
+    merged = dict(old)
+    for key, value in new.items():
+        if key == "tags":
+            merged[key] = list(dict.fromkeys([*(merged.get("tags") or []), *value]))
+        elif key == "source_session":
+            # 兼容已有值可能是字符串(旧路径 str(session_id))或列表
+            existing = merged.get("source_session")
+            sessions = existing if isinstance(existing, list) else ([existing] if existing else [])
+            if value and value not in sessions:
+                sessions.append(value)
+            merged[key] = sessions
+        else:
+            merged[key] = value
+    return merged
+
+
 async def resolve_tenant_id(db: AsyncSession, user_id: UUID) -> UUID:
     """查询用户所属租户;用户不存在时回退默认租户(与历史数据回填策略一致)。"""
     tenant_id = await db.scalar(select(User.tenant_id).where(User.id == user_id))
@@ -143,6 +173,88 @@ class MemoryService:
         await db.flush()
         await db.refresh(memory)  # re-fetch server-generated timestamps to avoid MissingGreenlet
         return memory
+
+    @staticmethod
+    async def create_or_update_memory(
+        db: AsyncSession,
+        user_id: UUID,
+        layer: str,
+        content: str,
+        meta: dict | None = None,
+        tenant_id: UUID | None = None,
+        dedupe_threshold: float | None = None,
+    ) -> tuple[Memory, str]:
+        """
+        Create a memory, or update a near-duplicate instead of inserting a copy.
+
+        Compares against the user's existing memories in the SAME layer via
+        pg_trgm similarity. When the best match exceeds ``dedupe_threshold``
+        (defaults to ``AgentSettings.memory_dedupe_threshold``), that row is
+        updated in place (content replaced, meta merged) and
+        ``(memory, "updated")`` is returned; otherwise a new row is inserted
+        and ``(memory, "created")`` is returned.
+
+        This stops repeated conversation extractions from piling up
+        near-identical facts in L1/L2. Explicit user-driven creation should
+        keep using :meth:`create_memory` to preserve "create a new row" semantics.
+        """
+        threshold = (
+            dedupe_threshold
+            if dedupe_threshold is not None
+            else _dedupe_threshold_from_settings()
+        )
+        search_vec = MemoryService._tokenize(content)
+
+        existing = await MemoryService._find_top_similar(
+            db, user_id, layer, search_vec, threshold
+        )
+        if existing is not None:
+            existing.content = content
+            existing.search_vec = search_vec
+            if meta is not None:
+                existing.meta = _merge_meta(existing.meta or {}, meta)
+            await db.flush()
+            await db.refresh(existing)  # re-fetch server-generated updated_at
+            return existing, "updated"
+
+        memory = Memory(
+            user_id=user_id,
+            tenant_id=tenant_id or await resolve_tenant_id(db, user_id),
+            layer=layer,
+            content=content,
+            search_vec=search_vec,
+            meta=meta or {},
+        )
+        db.add(memory)
+        await db.flush()
+        await db.refresh(memory)
+        return memory, "created"
+
+    @staticmethod
+    async def _find_top_similar(
+        db: AsyncSession,
+        user_id: UUID,
+        layer: str,
+        search_vec: str,
+        threshold: float,
+    ) -> Memory | None:
+        """Return the user's most similar memory in ``layer`` above ``threshold``, if any."""
+        if not search_vec:
+            return None
+        sim_score = func.similarity(Memory.search_vec, search_vec).label("score")
+        result = await db.execute(
+            select(Memory, sim_score)
+            .where(
+                Memory.user_id == user_id,
+                Memory.layer == layer,
+                Memory.search_vec.isnot(None),
+                func.similarity(Memory.search_vec, search_vec) > threshold,
+            )
+            .order_by(sim_score.desc())
+            .limit(1)
+        )
+        row = result.first()
+        return row.Memory if row is not None else None
 
     @staticmethod
     async def update_memory(
@@ -386,7 +498,7 @@ class MemoryService:
                     content = item.get("content", "").strip()
                     if not content:
                         continue
-                    mem = await MemoryService.create_memory(
+                    mem, action = await MemoryService.create_or_update_memory(
                         db,
                         user_id,
                         "L2",
@@ -397,10 +509,16 @@ class MemoryService:
                         },
                     )
                     created.append(mem)
+                    if action == "updated":
+                        logger.info(
+                            "memory_extraction_deduped",
+                            layer="L2",
+                            memory_id=str(mem.id),
+                        )
 
                 summary = extracted.get("l3_summary", "").strip()
                 if summary:
-                    mem = await MemoryService.create_memory(
+                    mem, action = await MemoryService.create_or_update_memory(
                         db,
                         user_id,
                         "L3",
@@ -408,6 +526,12 @@ class MemoryService:
                         meta={"source_session": str(session_id)},
                     )
                     created.append(mem)
+                    if action == "updated":
+                        logger.info(
+                            "memory_extraction_deduped",
+                            layer="L3",
+                            memory_id=str(mem.id),
+                        )
 
                 await db.commit()
                 logger.info(
