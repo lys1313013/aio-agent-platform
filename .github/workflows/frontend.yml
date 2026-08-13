@@ -93,6 +93,9 @@ jobs:
           context: frontend
           platforms: linux/amd64,linux/arm64
           push: true
+          # 同 backend.yml: 关闭 OCI attestation 兼容阿里云 ACR 推送
+          provenance: false
+          sbom: false
           tags: |
             ghcr.io/${{ github.repository }}-frontend:latest
             ${{ env.ALIYUN_ACR_REGISTRY }}/${{ env.ALIYUN_ACR_NAMESPACE }}/aio-agent-platform-frontend:latest
