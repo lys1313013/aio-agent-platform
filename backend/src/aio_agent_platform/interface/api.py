@@ -218,10 +218,14 @@ async def lifespan(app: FastAPI):
                 await asyncio.wait_for(
                     mcp_manager.add_server(server.id, config), timeout=15
                 )
-            except TimeoutError:
+            except (TimeoutError, asyncio.CancelledError):
+                # wait_for 超时对 anyio cancel scope 触发取消时，可能以
+                # CancelledError 而非 TimeoutError 逃逸（CancelledError 是
+                # BaseException，不会被 except Exception 捕获）。两者都按
+                # 「服务器不可达，跳过」处理，避免单个 MCP 连接失败拖垮启动
                 import structlog
                 structlog.get_logger().warning(
-                    "mcp_server_startup_timeout",
+                    "mcp_server_startup_skipped",
                     server_id=str(server.id),
                     name=server.name,
                 )
