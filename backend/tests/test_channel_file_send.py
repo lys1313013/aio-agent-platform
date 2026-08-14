@@ -126,6 +126,7 @@ async def test_file_read_failure(monkeypatch) -> None:
 async def test_oversize_file_rejected(monkeypatch) -> None:
     adapter = MagicMock()
     adapter.send_file = AsyncMock(return_value="om_file")
+    adapter.max_file_size_bytes = 30 * 1024 * 1024
     monkeypatch.setattr(
         "aio_agent_platform.channels.file_send._read_workspace_file",
         AsyncMock(return_value=b"0" * (30 * 1024 * 1024 + 1)),

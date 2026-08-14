@@ -400,7 +400,7 @@ export interface RemoteToolTestResult {
 
 // ---- Channels ----
 
-export type ChannelType = 'feishu' | 'dingtalk' | 'wecom';
+export type ChannelType = 'feishu' | 'dingtalk' | 'wecom' | 'wecom_bot';
 export type ChannelMode = 'websocket' | 'webhook';
 export type ChannelStatus = 'enabled' | 'disabled' | 'error';
 
@@ -415,6 +415,7 @@ export interface Channel {
   channel_key: string;
   tool_blacklist: string[];
   enable_streaming: boolean;
+  extra_config: Record<string, unknown>;
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -432,6 +433,7 @@ export interface ChannelCreate {
   mode: ChannelMode;
   tool_blacklist?: string[];
   enable_streaming?: boolean;
+  extra_config?: Record<string, unknown>;
 }
 
 export interface ChannelUpdate {
@@ -444,6 +446,7 @@ export interface ChannelUpdate {
   mode?: ChannelMode;
   tool_blacklist?: string[];
   enable_streaming?: boolean;
+  extra_config?: Record<string, unknown>;
 }
 
 export interface ChannelBinding {

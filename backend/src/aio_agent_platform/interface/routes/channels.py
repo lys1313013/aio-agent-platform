@@ -18,7 +18,7 @@ from aio_agent_platform.channels.binding import (
     BindCodeRateLimited,
     consume_bind_code,
 )
-from aio_agent_platform.channels.feishu.client import FeishuClient
+from aio_agent_platform.channels.registry import get_channel_spec
 from aio_agent_platform.db.connection import get_db
 from aio_agent_platform.db.models import (
     Agent,
@@ -29,13 +29,43 @@ from aio_agent_platform.db.models import (
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
 
+_CHANNEL_LABELS = {"feishu": "飞书", "wecom": "企微", "wecom_bot": "企微机器人", "dingtalk": "钉钉"}
+
+
+def _channel_label(channel_type: str) -> str:
+    return _CHANNEL_LABELS.get(channel_type, channel_type)
+
+
+def _validate_channel_mode(channel_type: str, mode: str) -> None:
+    """Reject a mode the channel type doesn't support (e.g. WeCom is webhook-only)."""
+    spec = get_channel_spec(channel_type)
+    if mode not in spec.allowed_modes:
+        label = _channel_label(channel_type)
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label}渠道仅支持 {'/'.join(spec.allowed_modes)} 连接模式",
+        )
+
+
+async def _verify_channel_credentials(
+    channel_type: str, app_id: str, app_secret: str, extra_config: dict
+) -> None:
+    """Verify credentials through the channel-type spec; 400 on failure."""
+    label = _channel_label(channel_type)
+    spec = get_channel_spec(channel_type)
+    if spec.verify_credentials is None:
+        raise HTTPException(status_code=400, detail=f"{label}渠道不支持凭证校验")
+    valid = await spec.verify_credentials(app_id, app_secret, extra_config)
+    if not valid:
+        raise HTTPException(status_code=400, detail=f"{label}凭证无效，请检查凭证配置")
+
 
 # ---- Pydantic Schemas ----
 
 
 class ChannelCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
-    channel_type: str = Field(default="feishu", pattern=r"^(feishu|dingtalk|wecom)$")
+    channel_type: str = Field(default="feishu", pattern=r"^(feishu|dingtalk|wecom|wecom_bot)$")
     agent_id: UUID
     app_id: str = Field(..., min_length=1, max_length=128)
     app_secret: str = Field(..., min_length=1)
@@ -44,6 +74,7 @@ class ChannelCreate(BaseModel):
     mode: str = Field(..., pattern=r"^(websocket|webhook)$")
     tool_blacklist: list[str] = Field(default_factory=list)
     enable_streaming: bool = True
+    extra_config: dict = Field(default_factory=dict, description="渠道类型特有配置(如企微 agentid)")
 
 
 class ChannelUpdate(BaseModel):
@@ -56,6 +87,7 @@ class ChannelUpdate(BaseModel):
     mode: str | None = Field(default=None, pattern=r"^(websocket|webhook)$")
     tool_blacklist: list[str] | None = None
     enable_streaming: bool | None = None
+    extra_config: dict | None = None
 
 
 class ChannelOut(BaseModel):
@@ -69,6 +101,7 @@ class ChannelOut(BaseModel):
     channel_key: str
     tool_blacklist: list[str] = []
     enable_streaming: bool = True
+    extra_config: dict = {}
     last_error: str | None = None
     created_at: str
     updated_at: str
@@ -117,6 +150,7 @@ def _channel_to_dict(ch: ChannelConfig) -> dict:
         "channel_key": ch.channel_key,
         "tool_blacklist": ch.tool_blacklist or [],
         "enable_streaming": ch.enable_streaming,
+        "extra_config": ch.extra_config or {},
         "last_error": ch.last_error,
         "created_at": ch.created_at.isoformat() if ch.created_at else "",
         "updated_at": ch.updated_at.isoformat() if ch.updated_at else "",
@@ -147,6 +181,7 @@ def _sensitive_config_changed(channel: ChannelConfig, req: ChannelUpdate) -> boo
             req.verification_token is not None
             and req.verification_token != channel.verification_token_encrypted,
             req.mode is not None and req.mode != channel.mode,
+            req.extra_config is not None and req.extra_config != (channel.extra_config or {}),
         )
     )
 
@@ -186,15 +221,13 @@ async def create_channel(
     if agent_result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Agent 不存在或无权限")
 
-    # Validate Feishu credentials
-    if req.channel_type == "feishu":
-        client = FeishuClient(app_id=req.app_id, app_secret=req.app_secret)
-        try:
-            valid = await client.verify_credentials()
-        finally:
-            await client.close()
-        if not valid:
-            raise HTTPException(status_code=400, detail="飞书凭证无效，请检查 App ID 和 App Secret")
+    # Validate credentials + mode through the channel-type spec.
+    _validate_channel_mode(req.channel_type, req.mode)
+    if req.channel_type == "wecom" and not (req.extra_config or {}).get("agentid"):
+        raise HTTPException(status_code=400, detail="企微渠道缺少应用 AgentID")
+    await _verify_channel_credentials(
+        req.channel_type, req.app_id, req.app_secret, req.extra_config
+    )
 
     channel = ChannelConfig(
         tenant_id=user.tenant_id,
@@ -210,6 +243,7 @@ async def create_channel(
         channel_key=secrets.token_urlsafe(32),
         tool_blacklist=req.tool_blacklist,
         enable_streaming=req.enable_streaming,
+        extra_config=req.extra_config,
         created_by=user.id,
     )
     db.add(channel)
@@ -262,6 +296,8 @@ async def update_channel(
         channel.verification_token_encrypted = req.verification_token
     if req.mode is not None:
         channel.mode = req.mode
+    if req.extra_config is not None:
+        channel.extra_config = req.extra_config
     if req.tool_blacklist is not None:
         channel.tool_blacklist = req.tool_blacklist
     if req.enable_streaming is not None:
@@ -300,17 +336,13 @@ async def enable_channel(
         raise HTTPException(status_code=503, detail="渠道管理器未初始化")
 
     try:
-        if channel.channel_type == "feishu":
-            client = FeishuClient(app_id=channel.app_id, app_secret=channel.app_secret_encrypted)
-            try:
-                valid = await client.verify_credentials()
-            finally:
-                await client.close()
-            if not valid:
-                channel.status = "error"
-                channel.last_error = "飞书凭证无效"
-                await db.commit()
-                raise HTTPException(status_code=400, detail="飞书凭证无效，无法启用")
+        _validate_channel_mode(channel.channel_type, channel.mode)
+        await _verify_channel_credentials(
+            channel.channel_type,
+            channel.app_id,
+            channel.app_secret_encrypted,
+            channel.extra_config or {},
+        )
 
         channel.status = "enabled"
         channel.last_error = None
@@ -323,7 +355,7 @@ async def enable_channel(
         if channel.mode == "webhook":
             from aio_agent_platform.core.config import settings
             base_url = settings.server.server_url or f"http://localhost:{settings.server.port}"
-            result_data["webhook_url"] = f"{base_url}/api/channels/feishu/events/{channel.channel_key}"
+            result_data["webhook_url"] = f"{base_url}/api/channels/webhook/{channel.channel_key}"
 
         return result_data
     except HTTPException:

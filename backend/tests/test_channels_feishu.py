@@ -57,6 +57,7 @@ from aio_agent_platform.channels.pipeline import (
     _STREAM_UPDATE_INTERVAL_SECONDS,
     _BufferedEventLogger,
     _build_image_data_uri,
+    _byte_truncate,
     _collect_image_attachments,
     _dedup,
     _event_seen,
@@ -354,6 +355,18 @@ def test_split_text_falls_back_to_space_then_hard_cut() -> None:
     # 无空格无换行时硬切
     chunks = _split_text("x" * 25, 10)
     assert chunks == ["x" * 10, "x" * 10, "x" * 5]
+
+
+def test_split_text_byte_safe_cjk() -> None:
+    """CJK 1 字 3 字节，切分不得劈开多字节码点。"""
+    text = "你好世界hello"
+    chunks = _split_text(text, 5)
+    assert all(len(c.encode("utf-8")) <= 5 for c in chunks)
+    assert "".join(chunks) == text
+    # 2 字节上限内单个 CJK 字放不下 → 返回空前缀，而非半个码点
+    assert _byte_truncate("你好", 2) == ""
+    assert _byte_truncate("你好世界", 5) == "你"
+    assert _byte_truncate("hello你好", 8) == "hello你"  # 恰好 8 字节，完整保留
 
 
 async def test_streaming_reply_updates_first_delta_and_throttles() -> None:
@@ -1158,7 +1171,7 @@ async def test_webhook_transport_stop_unregisters() -> None:
     pipeline = MagicMock()
     pipeline.channel = SimpleNamespace(channel_key="k_stop")
     register_webhook("k_stop", pipeline, SimpleNamespace())
-    transport = FeishuWebhookTransport(pipeline)
+    transport = FeishuWebhookTransport(pipeline, channel=pipeline.channel)
     await transport.stop()
     assert "k_stop" not in _webhook_registry
     assert transport.state == "disconnected"

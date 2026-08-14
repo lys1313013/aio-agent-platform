@@ -32,7 +32,7 @@ import {
 } from 'antd';
 import { channelsApi, agentsApi, toolsApi, usersApi } from '@/lib/api';
 import type { AdminUser } from '@/lib/api';
-import type { Agent, Channel, ChannelBinding, ChannelMode, ToolInfo } from '@/lib/types';
+import type { Agent, Channel, ChannelBinding, ChannelMode, ChannelType, ToolInfo } from '@/lib/types';
 import { useAuthStore } from '@/stores/authStore';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
@@ -49,6 +49,13 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
 const MODE_META: Record<string, { label: string; color: string }> = {
   websocket: { label: 'WebSocket', color: 'blue' },
   webhook: { label: 'Webhook', color: 'purple' },
+};
+
+const CHANNEL_TYPE_LABEL: Record<ChannelType, string> = {
+  feishu: '飞书',
+  wecom: '企微',
+  wecom_bot: '企微机器人',
+  dingtalk: '钉钉',
 };
 
 type SecretField = 'app_secret' | 'encrypt_key' | 'verification_token';
@@ -76,9 +83,11 @@ export default function ChannelsPage() {
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
   const [mode, setMode] = useState<ChannelMode>('websocket');
+  const [channelType, setChannelType] = useState<ChannelType>('feishu');
   const [secretsBeingEdited, setSecretsBeingEdited] = useState<Set<SecretField>>(new Set());
 
   const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
+  const [webhookChannelType, setWebhookChannelType] = useState<ChannelType>('feishu');
 
   const [bindingsChannel, setBindingsChannel] = useState<Channel | null>(null);
   const [bindings, setBindings] = useState<ChannelBinding[]>([]);
@@ -116,6 +125,7 @@ export default function ChannelsPage() {
     setSecretsBeingEdited(new Set());
     if (channel) {
       setEditingChannel(channel);
+      setChannelType(channel.channel_type);
       form.setFieldsValue({
         name: channel.name,
         channel_type: channel.channel_type,
@@ -124,6 +134,7 @@ export default function ChannelsPage() {
         app_secret: '',
         encrypt_key: '',
         verification_token: '',
+        agentid: (channel.extra_config?.agentid as number) ?? '',
         mode: channel.mode,
         enable_streaming: channel.enable_streaming,
         tool_blacklist: channel.tool_blacklist,
@@ -131,6 +142,7 @@ export default function ChannelsPage() {
       setMode(channel.mode);
     } else {
       setEditingChannel(null);
+      setChannelType('feishu');
       form.resetFields();
       form.setFieldsValue({
         channel_type: 'feishu',
@@ -160,10 +172,13 @@ export default function ChannelsPage() {
           name: values.name,
           agent_id: values.agent_id,
           app_id: values.app_id,
-          mode: values.mode,
+          mode: isWecomBot ? 'websocket' : isWecom ? 'webhook' : values.mode,
           enable_streaming: values.enable_streaming,
           tool_blacklist: values.tool_blacklist ?? [],
         };
+        if (isWecom) {
+          payload.extra_config = { agentid: Number(values.agentid) };
+        }
         if (secretsBeingEdited.has('app_secret') && values.app_secret) {
           payload.app_secret = values.app_secret;
         }
@@ -184,9 +199,10 @@ export default function ChannelsPage() {
           app_secret: values.app_secret,
           encrypt_key: values.encrypt_key || null,
           verification_token: values.verification_token || null,
-          mode: values.mode,
+          mode: isWecomBot ? 'websocket' : isWecom ? 'webhook' : values.mode,
           enable_streaming: values.enable_streaming,
           tool_blacklist: values.tool_blacklist ?? [],
+          extra_config: isWecom ? { agentid: Number(values.agentid) } : undefined,
         });
         message.success('渠道已创建');
       }
@@ -206,6 +222,7 @@ export default function ChannelsPage() {
       message.success(`渠道「${channel.name}」已启用`);
       if (result.webhook_url) {
         setWebhookUrl(result.webhook_url);
+        setWebhookChannelType(channel.channel_type);
       }
       fetchData();
     } catch (err: any) {
@@ -254,6 +271,29 @@ export default function ChannelsPage() {
     );
   };
 
+  const isWecom = channelType === 'wecom';
+  const isWecomBot = channelType === 'wecom_bot';
+  const fields = isWecomBot
+    ? {
+        appId: { label: 'Bot ID', placeholder: '智能机器人 Bot ID（aib 开头）' },
+        appSecret: { label: 'Secret', placeholder: '智能机器人 Secret' },
+        encryptKey: { label: 'Encrypt Key', placeholder: '不适用' },
+        verificationToken: { label: 'Verification Token', placeholder: '不适用' },
+      }
+    : isWecom
+    ? {
+        appId: { label: '企业ID', placeholder: 'ww 开头的企业 ID' },
+        appSecret: { label: '应用Secret', placeholder: '应用 Secret（corpsecret）' },
+        encryptKey: { label: '回调 EncodingAESKey', placeholder: '43 位 EncodingAESKey' },
+        verificationToken: { label: '回调 Token', placeholder: '接收消息的回调 Token' },
+      }
+    : {
+        appId: { label: 'App ID', placeholder: 'cli_xxxxxxxx' },
+        appSecret: { label: 'App Secret', placeholder: '输入 App Secret' },
+        encryptKey: { label: 'Encrypt Key', placeholder: '事件订阅 Encrypt Key' },
+        verificationToken: { label: 'Verification Token', placeholder: '事件订阅 Verification Token' },
+      };
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -295,7 +335,7 @@ export default function ChannelsPage() {
         {channels.length === 0 ? (
           <Card>
             <Empty
-              description="暂无渠道。添加飞书渠道后，用户可在飞书中直接与 Agent 对话。"
+              description="暂无渠道。添加渠道后，用户可在 IM 中直接与 Agent 对话。"
               image={Empty.PRESENTED_IMAGE_SIMPLE}
             >
               <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
@@ -316,7 +356,7 @@ export default function ChannelsPage() {
                     <div className="flex items-center gap-2">
                       <ApiOutlined />
                       <span className="font-semibold">{channel.name}</span>
-                      <Tag color="cyan">{channel.channel_type === 'feishu' ? '飞书' : channel.channel_type}</Tag>
+                      <Tag color="cyan">{CHANNEL_TYPE_LABEL[channel.channel_type] ?? channel.channel_type}</Tag>
                       <Tag color={modeInfo.color}>{modeInfo.label}</Tag>
                       <Tag color={statusInfo.color}>{statusInfo.label}</Tag>
                     </div>
@@ -436,10 +476,23 @@ export default function ChannelsPage() {
 
             <div className="flex gap-4">
               <Form.Item name="channel_type" label="渠道类型" className="w-40">
-                <Select disabled={!!editingChannel}>
+                <Select
+                  disabled={!!editingChannel}
+                  onChange={(v) => {
+                    setChannelType(v as ChannelType);
+                    if (v === 'wecom') {
+                      form.setFieldValue('mode', 'webhook');
+                      setMode('webhook');
+                    } else if (v === 'wecom_bot') {
+                      form.setFieldValue('mode', 'websocket');
+                      setMode('websocket');
+                    }
+                  }}
+                >
                   <Option value="feishu">飞书</Option>
+                  <Option value="wecom">企微（企业内部应用）</Option>
+                  <Option value="wecom_bot">企微机器人（长连接）</Option>
                   <Option value="dingtalk" disabled>钉钉（待支持）</Option>
-                  <Option value="wecom" disabled>企微（待支持）</Option>
                 </Select>
               </Form.Item>
 
@@ -469,7 +522,7 @@ export default function ChannelsPage() {
             </Form.Item>
 
             <Form.Item noStyle shouldUpdate={(prev, next) => prev.enable_streaming !== next.enable_streaming}>
-              {({ getFieldValue }) => getFieldValue('enable_streaming') ? (
+              {({ getFieldValue }) => getFieldValue('enable_streaming') && !isWecom && !isWecomBot ? (
                 <Alert
                   type="info"
                   showIcon
@@ -488,15 +541,15 @@ export default function ChannelsPage() {
             <div className="flex gap-4">
               <Form.Item
                 name="app_id"
-                label="App ID"
-                rules={[{ required: true, message: '请输入 App ID' }]}
+                label={fields.appId.label}
+                rules={[{ required: true, message: `请输入${fields.appId.label}` }]}
                 className="flex-1"
               >
-                <Input placeholder="cli_xxxxxxxx" />
+                <Input placeholder={fields.appId.placeholder} />
               </Form.Item>
 
               {editingChannel && !secretsBeingEdited.has('app_secret') ? (
-                <Form.Item label="App Secret" className="flex-1">
+                <Form.Item label={fields.appSecret.label} className="flex-1">
                   <Space>
                     <Text type="secondary">已保存，保持原值</Text>
                     <Button type="link" className="px-0" onClick={() => startEditingSecret('app_secret')}>
@@ -507,45 +560,74 @@ export default function ChannelsPage() {
               ) : (
                 <Form.Item
                   name="app_secret"
-                  label="App Secret"
-                  rules={[{ required: true, message: '请输入 App Secret' }]}
+                  label={fields.appSecret.label}
+                  rules={[{ required: true, message: `请输入${fields.appSecret.label}` }]}
                   className="flex-1"
                 >
-                  <Input.Password {...SECRET_INPUT_PROPS} placeholder="输入 App Secret" />
+                  <Input.Password {...SECRET_INPUT_PROPS} placeholder={fields.appSecret.placeholder} />
                 </Form.Item>
               )}
             </div>
 
-            <Form.Item
-              name="mode"
-              label="连接模式"
-              rules={[{ required: true }]}
-              tooltip="同一渠道同一时刻仅一种模式生效；修改后需重新启用"
-            >
-              <Radio.Group onChange={(e) => setMode(e.target.value)}>
-                <Radio value="websocket">
-                  <div className="inline-block">
-                    <span className="font-medium">WebSocket 长连接</span>
-                    <Text type="secondary" className="text-xs block">
-                      无需公网地址，适合内网/私有化部署
-                    </Text>
-                  </div>
-                </Radio>
-                <Radio value="webhook">
-                  <div className="inline-block">
-                    <span className="font-medium">Webhook 回调</span>
-                    <Text type="secondary" className="text-xs block">
-                      需要公网可访问的回调地址
-                    </Text>
-                  </div>
-                </Radio>
-              </Radio.Group>
-            </Form.Item>
+            {isWecom && (
+              <Form.Item
+                name="agentid"
+                label="应用 AgentID"
+                rules={[{ required: true, message: '请输入数字应用 AgentID' }]}
+                tooltip="企业微信自建应用的 AgentId（数字），见「应用管理 → 应用详情」"
+              >
+                <Input type="number" placeholder="例如 1000002" />
+              </Form.Item>
+            )}
 
-            {mode === 'webhook' && (
+            {isWecomBot ? (
+              <Alert
+                type="info"
+                showIcon
+                className="mb-4"
+                message="企微机器人仅支持 WebSocket 长连接模式"
+                description="智能机器人通过 wss://openws.work.weixin.qq.com 长连接收发消息，无需公网回调地址。启用后需在企微后台将 Bot 状态设为「已上线」。"
+              />
+            ) : isWecom ? (
+              <Alert
+                type="info"
+                showIcon
+                className="mb-4"
+                message="企微（企业内部应用）仅支持 Webhook 回调连接模式"
+                description="请在企微管理后台配置应用回调 URL 并开启接收消息，启用后按下方回调地址配置。"
+              />
+            ) : (
+              <Form.Item
+                name="mode"
+                label="连接模式"
+                rules={[{ required: true }]}
+                tooltip="同一渠道同一时刻仅一种模式生效；修改后需重新启用"
+              >
+                <Radio.Group onChange={(e) => setMode(e.target.value)}>
+                  <Radio value="websocket">
+                    <div className="inline-block">
+                      <span className="font-medium">WebSocket 长连接</span>
+                      <Text type="secondary" className="text-xs block">
+                        无需公网地址，适合内网/私有化部署
+                      </Text>
+                    </div>
+                  </Radio>
+                  <Radio value="webhook">
+                    <div className="inline-block">
+                      <span className="font-medium">Webhook 回调</span>
+                      <Text type="secondary" className="text-xs block">
+                        需要公网可访问的回调地址
+                      </Text>
+                    </div>
+                  </Radio>
+                </Radio.Group>
+              </Form.Item>
+            )}
+
+            {(mode === 'webhook' || isWecom) && !isWecomBot && (
               <div className="flex gap-4">
                 {editingChannel && !secretsBeingEdited.has('encrypt_key') ? (
-                  <Form.Item label="Encrypt Key" className="flex-1">
+                  <Form.Item label={fields.encryptKey.label} className="flex-1">
                     <Space>
                       <Text type="secondary">保持原值</Text>
                       <Button type="link" className="px-0" onClick={() => startEditingSecret('encrypt_key')}>
@@ -554,12 +636,17 @@ export default function ChannelsPage() {
                     </Space>
                   </Form.Item>
                 ) : (
-                  <Form.Item name="encrypt_key" label="Encrypt Key" className="flex-1">
-                    <Input.Password {...SECRET_INPUT_PROPS} placeholder="事件订阅 Encrypt Key" />
+                  <Form.Item
+                    name="encrypt_key"
+                    label={fields.encryptKey.label}
+                    rules={isWecom ? [{ required: true, message: `请输入${fields.encryptKey.label}` }] : undefined}
+                    className="flex-1"
+                  >
+                    <Input.Password {...SECRET_INPUT_PROPS} placeholder={fields.encryptKey.placeholder} />
                   </Form.Item>
                 )}
                 {editingChannel && !secretsBeingEdited.has('verification_token') ? (
-                  <Form.Item label="Verification Token" className="flex-1">
+                  <Form.Item label={fields.verificationToken.label} className="flex-1">
                     <Space>
                       <Text type="secondary">保持原值</Text>
                       <Button type="link" className="px-0" onClick={() => startEditingSecret('verification_token')}>
@@ -568,8 +655,13 @@ export default function ChannelsPage() {
                     </Space>
                   </Form.Item>
                 ) : (
-                  <Form.Item name="verification_token" label="Verification Token" className="flex-1">
-                    <Input.Password {...SECRET_INPUT_PROPS} placeholder="事件订阅 Verification Token" />
+                  <Form.Item
+                    name="verification_token"
+                    label={fields.verificationToken.label}
+                    rules={isWecom ? [{ required: true, message: `请输入${fields.verificationToken.label}` }] : undefined}
+                    className="flex-1"
+                  >
+                    <Input.Password {...SECRET_INPUT_PROPS} placeholder={fields.verificationToken.placeholder} />
                   </Form.Item>
                 )}
               </div>
@@ -605,7 +697,9 @@ export default function ChannelsPage() {
         >
           <div className="mt-4 space-y-3">
             <Text type="secondary">
-              请将以下地址填入飞书开放平台「事件订阅 → 请求地址」中：
+              {webhookChannelType === 'wecom'
+                ? '请将以下地址填入企业微信管理后台「应用管理 → 应用 → 接收消息 → 设置API接收」：'
+                : '请将以下地址填入飞书开放平台「事件订阅 → 请求地址」中：'}
             </Text>
             <div className="flex items-center gap-2">
               <Paragraph
@@ -638,7 +732,7 @@ export default function ChannelsPage() {
             locale={{ emptyText: '暂无绑定用户' }}
             columns={[
               {
-                title: '外部用户 ID (open_id)',
+                title: '外部用户 ID',
                 dataIndex: 'external_id',
                 render: (v: string) => <Text className="font-mono text-xs">{v}</Text>,
               },

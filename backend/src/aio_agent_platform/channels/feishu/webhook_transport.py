@@ -1,8 +1,14 @@
 """Feishu Webhook transport — receives events via HTTP POST.
 
+The shared webhook registry and router live in ``channels.webhook``; this
+module keeps the historical import surface used by existing tests
+(``FeishuWebhookTransport`` / ``register_webhook`` / ``_webhook_registry`` /
+``build_webhook_router``) and implements the Feishu-specific protocol in
+``FeishuWebhookTransport.handle_webhook``.
+
 Responsibilities:
   - Respond to Feishu's URL verification challenge.
-  - Verify X-Lark-Signature header (when verification_token is set).
+  - Verify the X-Lark-Signature header (when verification_token is set).
   - Decrypt the ``encrypt`` field (when encrypt_key is set).
   - Normalize valid ``im.message.receive_v1`` events into InboundEvent and
     hand them to the pipeline.
@@ -11,15 +17,24 @@ Responsibilities:
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import HTTPException, Request, Response
 
 from aio_agent_platform.channels.adapter import Transport, TransportState
 from aio_agent_platform.channels.feishu.crypto import decrypt_event, verify_signature
 from aio_agent_platform.channels.feishu.events import normalize_event
 from aio_agent_platform.channels.pipeline import ChannelInboundPipeline
+from aio_agent_platform.channels.webhook import (
+    _webhook_registry,  # noqa: F401  (re-exported for test compatibility)
+    build_webhook_router,  # noqa: F401  (re-exported for test compatibility)
+)
+from aio_agent_platform.channels.webhook import (
+    register_webhook as _register_webhook,
+)
+from aio_agent_platform.channels.webhook import (
+    unregister_webhook as _unregister_webhook,
+)
 
 logger = structlog.get_logger()
 
@@ -28,57 +43,32 @@ class FeishuWebhookTransport(Transport):
     """Webhook transport.
 
     Unlike the WebSocket transport, the webhook doesn't run a persistent
-    connection — instead it registers a FastAPI route on the shared webhook
-    router. The route handler dispatches to the pipeline via
-    ``pipeline.submit``.
+    connection — instead it registers itself in the shared webhook registry
+    (keyed by ``channel_key``) on ``start()``. The router dispatches requests
+    here via ``handle_webhook``.
     """
 
-    def __init__(self, pipeline: ChannelInboundPipeline):
+    def __init__(
+        self,
+        pipeline: ChannelInboundPipeline,
+        channel,
+        channel_key: str | None = None,
+    ):
         self.pipeline = pipeline
-        self.state = TransportState.CONNECTED  # Webhook is "always on" once registered.
+        self.channel = channel
+        self.channel_key = channel_key or getattr(channel, "channel_key", None)
+        self.state = TransportState.CONNECTED
 
     async def start(self) -> None:
         self.state = TransportState.CONNECTED
+        _register_webhook(self.channel_key, self)
 
     async def stop(self) -> None:
-        # Webhook routes are registered globally; remove our channel_key so
-        # future events return 404.
-        unregister_webhook(self.pipeline.channel.channel_key)
+        _unregister_webhook(self.channel_key)
         self.state = TransportState.DISCONNECTED
 
-
-# --- Shared webhook router ---
-
-# Maps channel_key -> channel runtime info. Populated by the connection
-# manager when a webhook channel is enabled.
-_webhook_registry: dict[str, dict[str, Any]] = {}
-
-
-def register_webhook(channel_key: str, pipeline: ChannelInboundPipeline, channel_row: Any) -> None:
-    _webhook_registry[channel_key] = {"pipeline": pipeline, "channel": channel_row}
-
-
-def unregister_webhook(channel_key: str) -> None:
-    _webhook_registry.pop(channel_key, None)
-
-
-def build_webhook_router() -> APIRouter:
-    """Build the FastAPI router that serves all webhook channels.
-
-    Mounted once at app startup under /api/channels/feishu/events. The
-    ``{channel_key}`` path parameter selects the target channel.
-    """
-    router = APIRouter(prefix="/api/channels/feishu/events", tags=["channels"])
-
-    @router.post("/{channel_key}")
-    async def feishu_webhook(channel_key: str, request: Request) -> Response:
-        entry = _webhook_registry.get(channel_key)
-        if entry is None:
-            raise HTTPException(status_code=404, detail="channel not found")
-
-        channel_row = entry["channel"]
-        pipeline: ChannelInboundPipeline = entry["pipeline"]
-
+    async def handle_webhook(self, request: Request) -> Response:
+        channel = self.channel
         body = await request.body()
 
         try:
@@ -91,7 +81,7 @@ def build_webhook_router() -> APIRouter:
             challenge = payload.get("challenge")
             if not challenge:
                 raise HTTPException(status_code=400, detail="missing challenge")
-            vtoken = getattr(channel_row, "_verification_token", None)
+            vtoken = getattr(channel, "_verification_token", None)
             if vtoken and payload.get("token") != vtoken:
                 raise HTTPException(status_code=401, detail="invalid token")
             return Response(
@@ -100,7 +90,7 @@ def build_webhook_router() -> APIRouter:
             )
 
         # 2. Signature verification (when verification_token set).
-        vtoken = getattr(channel_row, "_verification_token", None)
+        vtoken = getattr(channel, "_verification_token", None)
         if vtoken:
             signature = request.headers.get("X-Lark-Signature", "")
             timestamp = request.headers.get("X-Lark-Request-Timestamp", "")
@@ -109,7 +99,7 @@ def build_webhook_router() -> APIRouter:
                 raise HTTPException(status_code=401, detail="invalid signature")
 
         # 3. Decryption (when encrypt_key set).
-        encrypt_key = getattr(channel_row, "_encrypt_key", None)
+        encrypt_key = getattr(channel, "_encrypt_key", None)
         if payload.get("encrypt") and encrypt_key:
             try:
                 payload = decrypt_event(encrypt_key, payload["encrypt"])
@@ -126,15 +116,27 @@ def build_webhook_router() -> APIRouter:
 
         # 5. Normalize and submit to the pipeline.
         inbound = normalize_event(
-            channel_id=channel_row.id,
+            channel_id=channel.id,
             event_id=event_id,
             event=payload,
-            bot_app_id=channel_row.app_id,
+            bot_app_id=channel.app_id,
         )
         if inbound is None:
             return Response(status_code=200)
 
-        pipeline.submit(inbound)
+        self.pipeline.submit(inbound)
         return Response(status_code=200)
 
-    return router
+
+def register_webhook(channel_key: str, pipeline: ChannelInboundPipeline, channel) -> None:
+    """Legacy 3-arg registration — build a transport from (pipeline, channel).
+
+    Kept so existing callers (tests, pre-registry code) register a
+    ``FeishuWebhookTransport`` under ``channel_key`` with the shared router.
+    """
+    _register_webhook(
+        channel_key,
+        FeishuWebhookTransport(
+            pipeline=pipeline, channel=channel, channel_key=channel_key
+        ),
+    )

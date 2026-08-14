@@ -38,6 +38,7 @@ from aio_agent_platform.channels.file_send import (
     ChannelSendContext,
     current_channel_send_ctx,
 )
+from aio_agent_platform.channels.registry import get_channel_spec
 from aio_agent_platform.core.agent import AgentStep
 from aio_agent_platform.core.auto_title import generate_session_title
 from aio_agent_platform.core.chat import (
@@ -91,8 +92,9 @@ def _dedup(event_id: str) -> bool:
     return False
 
 
-# Feishu's per-message text limit is ~30KB; we use a conservative char cap.
-_MAX_CHARS_PER_MESSAGE = 3500
+# 出站文本单条上限默认值（字节）。各适配器可用 max_message_bytes 覆写：
+# 飞书 30KB 上限保守取 3500 字节；企微 text 上限 2048 字节（中文 1 字 3 字节）。
+_MAX_MESSAGE_BYTES = 3500
 
 # CardKit 单卡最多更新 10 次/秒；仅按官方上限合并，首个 delta 立即推送。
 _STREAM_UPDATE_INTERVAL_SECONDS = 0.1
@@ -105,6 +107,7 @@ class _StreamingReply:
 
     adapter: ChannelAdapter
     event: InboundEvent
+    max_bytes: int = _MAX_MESSAGE_BYTES
     stream_id: str | None = None
     sequence: int = 0
     last_update_at: float = 0.0
@@ -132,7 +135,7 @@ class _StreamingReply:
         """Queue accumulated output without blocking consumption of LLM tokens."""
         if not text or self.stream_id is None or self.stream_failed:
             return
-        self.pending_text = text[:_MAX_CHARS_PER_MESSAGE]
+        self.pending_text = _byte_truncate(text, self.max_bytes)
         if self.flush_task is None or self.flush_task.done():
             self.flush_task = asyncio.create_task(self._flush_pending())
 
@@ -174,7 +177,7 @@ class _StreamingReply:
     async def finish(self, text: str) -> None:
         """Force the final content to the streamed message, with safe fallback."""
         final_text = text or "（无输出）"
-        chunks = _split_text(final_text, _MAX_CHARS_PER_MESSAGE)
+        chunks = _split_text(final_text, self.max_bytes)
 
         if self.stream_id is None:
             for chunk in chunks:
@@ -300,7 +303,10 @@ def _pop_pending(key: str) -> list[dict]:
 
 def _channel_title_prefix(channel_type: str) -> str:
     """渠道会话标题前缀，便于在会话列表中区分来源渠道。"""
-    return "飞书· " if channel_type == "feishu" else ""
+    try:
+        return get_channel_spec(channel_type).title_prefix
+    except ValueError:
+        return ""
 
 
 def _sniff_mime(data: bytes) -> str | None:
@@ -776,8 +782,8 @@ class ChannelInboundPipeline:
             self.tool_executor, agent, extra_blacklist=blacklist
         )
 
-        # 飞书渠道注入文件发送工具：schema 供 LLM 调用，Tool 供 system prompt 提及。
-        if self.channel.channel_type == "feishu":
+        # 支持文件发送的渠道注入文件发送工具：schema 供 LLM 调用，Tool 供 system prompt 提及。
+        if self.adapter.supports_file_send:
             fn = SEND_FILE_TOOL_SCHEMA["function"]
             tools_list = [
                 *tools_list,
@@ -861,9 +867,13 @@ class ChannelInboundPipeline:
             agent_id=str(self.channel.agent_id),
         )
 
-        # 飞书通过 CardKit 原生流式卡片输出，不调用普通消息编辑接口。
+        # 渠道原生流式卡片输出，不调用普通消息编辑接口。
         # 卡片在进入 AgentLoop 前发出，让思考/调用工具期间也有即时反馈。
-        stream_reply = _StreamingReply(self.adapter, event)
+        stream_reply = _StreamingReply(
+            self.adapter,
+            event,
+            max_bytes=self.adapter.max_message_bytes or _MAX_MESSAGE_BYTES,
+        )
         if self.channel.enable_streaming:
             await stream_reply.start()
 
@@ -1016,20 +1026,44 @@ class ChannelInboundPipeline:
 # --- Utilities ---
 
 
-def _split_text(text: str, limit: int) -> list[str]:
-    """Split long text at natural boundaries (paragraphs / newlines)."""
-    if len(text) <= limit:
+def _find_prefix_bytes(text: str, max_bytes: int) -> int:
+    """Largest char index n such that ``text[:n]`` fits within ``max_bytes`` UTF-8 bytes.
+
+    Walks code points so a multi-byte character is never split in half.
+    """
+    size = 0
+    for i, ch in enumerate(text):
+        size += len(ch.encode("utf-8"))
+        if size > max_bytes:
+            return i
+    return len(text)
+
+
+def _byte_truncate(text: str, max_bytes: int) -> str:
+    """Truncate ``text`` to a byte-safe prefix of at most ``max_bytes``."""
+    return text[:_find_prefix_bytes(text, max_bytes)]
+
+
+def _split_text(text: str, max_bytes: int) -> list[str]:
+    """Split long text into UTF-8 byte-safe chunks no larger than ``max_bytes``.
+
+    Prefers paragraph/newline boundaries, then spaces; falls back to a hard
+    byte cut that never splits a multi-byte code point.
+    """
+    if len(text.encode("utf-8")) <= max_bytes:
         return [text]
     chunks: list[str] = []
     while text:
-        if len(text) <= limit:
+        if len(text.encode("utf-8")) <= max_bytes:
             chunks.append(text)
             break
-        cut = text.rfind("\n", 0, limit)
+        # Largest byte-safe prefix index; look for a natural boundary inside it.
+        hard_cut = _find_prefix_bytes(text, max_bytes)
+        cut = text.rfind("\n", 0, hard_cut)
         if cut <= 0:
-            cut = text.rfind(" ", 0, limit)
+            cut = text.rfind(" ", 0, hard_cut)
         if cut <= 0:
-            cut = limit
+            cut = hard_cut
         chunks.append(text[:cut])
         text = text[cut:].lstrip("\n")
     return chunks

@@ -10,14 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.channels.adapter import ChannelAdapter
-from aio_agent_platform.channels.feishu.adapter import FeishuAdapter
-from aio_agent_platform.channels.feishu.client import FeishuClient
-from aio_agent_platform.channels.feishu.webhook_transport import (
-    FeishuWebhookTransport,
-    register_webhook,
-)
-from aio_agent_platform.channels.feishu.ws_transport import FeishuWebSocketTransport
-from aio_agent_platform.channels.pipeline import ChannelInboundPipeline
+from aio_agent_platform.channels.registry import get_channel_spec
 from aio_agent_platform.db.models import ChannelConfig
 from aio_agent_platform.tools.executor import ToolExecutor
 
@@ -93,41 +86,19 @@ class ChannelConnectionManager:
         logger.info("channel_stopped", channel_id=str(channel_id))
 
     async def _start_channel(self, channel: ChannelConfig) -> None:
-        """Internal: create adapter and transport, start the transport."""
-        if channel.channel_type != "feishu":
-            raise ValueError(f"Unsupported channel type: {channel.channel_type}")
+        """Internal: build the adapter via the channel-type spec, then start it.
 
-        # Create Feishu client
-        client = FeishuClient(
-            app_id=channel.app_id,
-            app_secret=channel.app_secret_encrypted,
-        )
-
-        # Create pipeline
-        pipeline = ChannelInboundPipeline(channel=channel, adapter=None, tool_executor=self.tool_executor)  # type: ignore
-
-        # Create adapter
-        adapter = FeishuAdapter(channel_id=channel.id, client=client, pipeline=pipeline)
-        pipeline.adapter = adapter  # type: ignore
-
-        # Create and attach transport
-        if channel.mode == "websocket":
-            transport = FeishuWebSocketTransport(
-                app_id=channel.app_id,
-                app_secret=channel.app_secret_encrypted,
-                pipeline=pipeline,
+        The spec's ``build`` creates the client → pipeline → adapter → transport
+        chain; webhook transports register themselves with the shared router on
+        ``adapter.start()``.
+        """
+        spec = get_channel_spec(channel.channel_type)
+        if spec.build is None:
+            raise ValueError(
+                f"Channel type {channel.channel_type} has no adapter builder"
             )
-        elif channel.mode == "webhook":
-            transport = FeishuWebhookTransport(pipeline=pipeline)
-            # Attach decrypt/verify keys so the webhook route can access them.
-            channel._encrypt_key = channel.encrypt_key_encrypted  # type: ignore[attr-defined]
-            channel._verification_token = channel.verification_token_encrypted  # type: ignore[attr-defined]
-            # Register with the webhook router
-            register_webhook(channel.channel_key, pipeline, channel)
-        else:
-            raise ValueError(f"Invalid channel mode: {channel.mode}")
 
-        adapter.set_transport(transport)
+        adapter = spec.build(channel, self.tool_executor)
 
         # Start the transport
         await adapter.start()

@@ -29,6 +29,12 @@ class FeishuAdapter(ChannelAdapter):
     by the connection manager based on the row's ``mode`` field.
     """
 
+    supports_file_send = True
+    # 飞书 im/v1 消息体上限 ~30KB；字节口径保守取值，CJK 输出会分几段但仍远低于上限。
+    max_message_bytes = 3500
+    # 飞书 im/v1/files 上传上限 30MB。
+    max_file_size_bytes = 30 * 1024 * 1024
+
     def __init__(
         self,
         channel_id: UUID,
@@ -41,6 +47,17 @@ class FeishuAdapter(ChannelAdapter):
 
     def set_transport(self, transport: Transport) -> None:
         self.transport = transport
+
+    async def send_to_user(self, external_id: str, text: str) -> str | None:
+        """Actively push a markdown card to a user by open_id (cron 推送)."""
+        message_id = await self.client.send_card_markdown(
+            receive_id=external_id, markdown=text, receive_id_type="open_id"
+        )
+        if message_id is None:
+            message_id = await self.client.send_text(
+                receive_id=external_id, text=text, receive_id_type="open_id"
+            )
+        return message_id
 
     async def send(self, event: InboundEvent, text: str) -> str | None:
         """Send a reply to the chat that originated the event.

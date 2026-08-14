@@ -312,8 +312,7 @@ async def lifespan(app: FastAPI):
             log.warning("cron_job_channel_manager_unavailable", job_id=str(job.id))
             return False
         adapter = conn_manager.get_adapter(job.channel_id)
-        client = getattr(adapter, "client", None)
-        if client is None:
+        if adapter is None:
             log.warning(
                 "cron_job_channel_not_connected",
                 job_id=str(job.id),
@@ -344,17 +343,11 @@ async def lifespan(app: FastAPI):
             )
             return False
 
-        message_id = await client.send_card_markdown(
-            receive_id=binding.external_id,
-            markdown=f"**⏰ {job.name}**\n\n{text}",
-            receive_id_type="open_id",
+        # 渠道无关主动推送：适配器按各自 IM 能力渲染（飞书卡片→纯文本兜底）。
+        message_id = await adapter.send_to_user(
+            binding.external_id,
+            f"**⏰ {job.name}**\n\n{text}",
         )
-        if message_id is None:
-            message_id = await client.send_text(
-                receive_id=binding.external_id,
-                text=f"【{job.name}】\n{text}",
-                receive_id_type="open_id",
-            )
         if message_id:
             log.info(
                 "cron_job_channel_pushed",
@@ -601,7 +594,8 @@ async def lifespan(app: FastAPI):
             error=str(e),
         )
 
-    # Mount the shared webhook router for all Feishu webhook channels
+    # Mount the shared webhook router (all webhook-mode channels register by
+    # channel_key via their transport's start()).
     webhook_router = build_webhook_router()
     app.include_router(webhook_router)
     _mark("channels")

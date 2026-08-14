@@ -1522,6 +1522,10 @@ class ChannelConfig(Base):
         JSONB, nullable=False, default=list,
         comment="渠道级工具黑名单",
     )
+    extra_config: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("{}"),
+        comment="渠道类型特有配置(如企微 agentid)",
+    )
     enable_streaming: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=text("true"),
         comment="是否启用渠道流式回复",

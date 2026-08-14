@@ -2,8 +2,8 @@
 
 The pipeline sets ``current_channel_send_ctx`` around the AgentLoop run so the
 ``send_file_to_user`` direct handler knows which chat/adapter to deliver to.
-Only the Feishu pipeline injects the tool schema, so web conversations never
-see the tool.
+Only channels whose adapter ``supports_file_send`` inject the tool schema, so
+web conversations never see the tool.
 """
 
 from __future__ import annotations
@@ -22,9 +22,6 @@ from aio_agent_platform.tools.executor import ToolExecutor
 logger = structlog.get_logger()
 
 SEND_FILE_TOOL_NAME = "send_file_to_user"
-
-# 飞书 im/v1/files 上传上限 30MB。
-_MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024
 
 SEND_FILE_TOOL_SCHEMA: dict[str, Any] = {
     "type": "function",
@@ -135,8 +132,9 @@ async def handle_send_file(
         return f"无法读取文件 {filename}，请确认 file_path 是否正确。"
     if not data:
         return f"文件 {filename} 内容为空，无法发送。"
-    if len(data) > _MAX_FILE_SIZE_BYTES:
-        return f"文件 {filename} 超过飞书渠道上传上限（30MB），无法发送。"
+    limit = ctx.adapter.max_file_size_bytes
+    if isinstance(limit, int) and len(data) > limit:
+        return f"文件 {filename} 超过当前渠道上传上限（{limit // (1024 * 1024)}MB），无法发送。"
 
     message_id = await ctx.adapter.send_file(ctx.event, filename, data)
     if not message_id:

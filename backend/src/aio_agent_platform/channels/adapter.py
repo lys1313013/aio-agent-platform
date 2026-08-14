@@ -83,6 +83,14 @@ class Transport:
     async def stop(self) -> None:
         raise NotImplementedError
 
+    async def handle_webhook(self, request) -> Any:
+        """Handle an inbound webhook HTTP request (webhook-mode transports).
+
+        Returns a FastAPI ``Response`` (or any object the router can return).
+        WebSocket transports never receive webhook traffic.
+        """
+        raise NotImplementedError
+
 
 class ChannelAdapter:
     """Base adapter — one instance per enabled channel row.
@@ -95,6 +103,13 @@ class ChannelAdapter:
     channel_id: UUID
     transport: Transport | None = None
 
+    # Channel capability knobs. Adapters override to reflect what their IM
+    # supports; the pipeline and file-send tool key off these instead of the
+    # channel_type string.
+    supports_file_send: bool = False
+    max_message_bytes: int | None = None     # 出站文本单条上限（字节）
+    max_file_size_bytes: int | None = None   # 出站文件上传上限（字节）
+
     async def start(self) -> None:
         if self.transport:
             await self.transport.start()
@@ -102,6 +117,9 @@ class ChannelAdapter:
     async def stop(self) -> None:
         if self.transport:
             await self.transport.stop()
+
+    def set_transport(self, transport: Transport) -> None:
+        self.transport = transport
 
     async def send(self, event: InboundEvent, text: str) -> str | None:
         """Send a new message. Returns the outbound message_id if available."""
@@ -136,6 +154,23 @@ class ChannelAdapter:
     async def send_file(self, event: InboundEvent, filename: str, data: bytes) -> str | None:
         """Send a file to the originating chat. Returns the message_id, or None
         if the channel does not support file delivery."""
+        return None
+
+    async def download_attachment(self, event: InboundEvent) -> bytes | None:
+        """Download the file/image resource attached to an inbound message.
+
+        Called unconditionally by the pipeline for attachment events; adapters
+        that never produce attachments can keep the base ``None``.
+        """
+        return None
+
+    async def send_to_user(self, external_id: str, text: str) -> str | None:
+        """Actively push a message to a user by their external id.
+
+        Used for out-of-band pushes (e.g. cron results) where no inbound event
+        is available. Base class is unsupported; adapters override when their IM
+        can address a user directly.
+        """
         return None
 
     async def add_reaction(self, event: InboundEvent, emoji_type: str) -> str | None:
