@@ -1523,7 +1523,7 @@ class ChannelConfig(Base):
         comment="渠道级工具黑名单",
     )
     extra_config: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default=text("{}"),
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"),
         comment="渠道类型特有配置(如企微 agentid)",
     )
     enable_streaming: Mapped[bool] = mapped_column(
