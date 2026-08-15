@@ -10,7 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 from aio_agent_platform.cron_jobs.scheduler import Scheduler
-from aio_agent_platform.db.models import CronJob, CronJobRun, Tenant, User
+from aio_agent_platform.db.models import (
+    DEFAULT_TENANT_ID,
+    Agent,
+    CronJob,
+    CronJobRun,
+    Tenant,
+    User,
+)
 from aio_agent_platform.interface.api import app
 
 
@@ -52,6 +59,7 @@ async def _create_job(engine, **kwargs):
     async with factory() as db:
         fields = {
             "user_id": uuid4(),
+            "tenant_id": uuid4(),
             "name": "test job",
             "cron_expr": "*/1 * * * *",
             "message": "hello",
@@ -443,6 +451,59 @@ async def test_handler_create_cron_job_sets_tenant_id(engine, db_session, monkey
         ).scalar_one()
         assert job.user_id == user.id
         assert job.tenant_id == tenant.id
+
+
+async def test_handler_create_cron_job_derives_tenant_from_agent(
+    engine, db_session, monkeypatch
+):
+    """回归：显式传 agent_id 时，任务租户取自该智能体的租户，而非默认租户。
+
+    曾出现创建路径漏传 tenant_id、静默回退到默认租户导致任务在管理页不可见。
+    """
+    from aio_agent_platform.cron_jobs.handlers import handle_create_cron_job
+
+    tenant = Tenant(name="handler-agent-tenant", slug="cron-handler-agent")
+    db_session.add(tenant)
+    await db_session.flush()
+    agent = Agent(
+        id=uuid4(), name="agent-in-tenant", tenant_id=tenant.id,
+        created_by=uuid4(),
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    user = User(
+        id=uuid4(), username="handler-agent-user", email="h-agent@test.com",
+        password_hash="x", role="admin", is_active=True, tenant_id=tenant.id,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    await db_session.commit()
+
+    factory = _test_factory(engine)
+    monkeypatch.setattr(
+        "aio_agent_platform.cron_jobs.handlers.get_session_factory",
+        lambda: factory,
+    )
+
+    resp = await handle_create_cron_job(
+        {
+            "name": "agent tenant job",
+            "cron_expr": "0 8 * * *",
+            "message": "hello",
+            "agent_id": str(agent.id),
+        },
+        str(user.id),
+        "session-x",
+    )
+    assert "successfully" in resp
+
+    async with factory() as db:
+        job = (
+            await db.execute(select(CronJob).where(CronJob.name == "agent tenant job"))
+        ).scalar_one()
+        assert job.agent_id == agent.id
+        assert job.tenant_id == tenant.id
+        assert job.tenant_id != DEFAULT_TENANT_ID
 
 
 async def test_handler_create_cron_job_autobinds_channel(engine, db_session, monkeypatch):

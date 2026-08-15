@@ -66,6 +66,9 @@ export default function RemoteToolManagementPage() {
   // ---- List state ----
   const [tools, setTools] = useState<RemoteTool[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
 
   // ---- Edit/Create modal ----
   const [modalOpen, setModalOpen] = useState(false);
@@ -182,6 +185,7 @@ export default function RemoteToolManagementPage() {
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
+      setSaving(true);
 
       // Parse JSON fields
       let parametersSchema: Record<string, unknown>;
@@ -253,28 +257,36 @@ export default function RemoteToolManagementPage() {
     } catch (err: any) {
       if (err?.errorFields) return;
       message.error(err.message || '操作失败');
+    } finally {
+      setSaving(false);
     }
   };
 
   // ---- Delete ----
   const handleDelete = async (id: string) => {
+    setDeletingId(id);
     try {
       await remoteToolsApi.delete(id);
       message.success('远程工具已删除');
       fetchData();
     } catch (err: any) {
       message.error(`删除失败：${err.message}`);
+    } finally {
+      setDeletingId(null);
     }
   };
 
   // ---- Toggle active ----
   const handleToggle = async (id: string) => {
+    setTogglingId(id);
     try {
       await remoteToolsApi.toggle(id);
       message.success('状态已更新');
       fetchData();
     } catch (err: any) {
       message.error(`操作失败：${err.message}`);
+    } finally {
+      setTogglingId(null);
     }
   };
 
@@ -333,15 +345,6 @@ export default function RemoteToolManagementPage() {
     }
   };
 
-  // ---- Loading state ----
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="w-full px-6 py-8">
@@ -362,7 +365,11 @@ export default function RemoteToolManagementPage() {
         </div>
 
         {/* Empty state */}
-        {tools.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center py-24">
+            <Spin size="large" />
+          </div>
+        ) : tools.length === 0 ? (
           <Card>
             <Empty description="暂无远程工具，请添加 REST API 端点以扩展 Agent 的工具能力。" image={Empty.PRESENTED_IMAGE_SIMPLE}>
               <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
@@ -407,6 +414,7 @@ export default function RemoteToolManagementPage() {
                           size="small"
                           icon={tool.is_active ? <CheckCircleOutlined className="text-green-500" /> : <CloseCircleOutlined />}
                           onClick={() => handleToggle(tool.id)}
+                          loading={togglingId === tool.id}
                         />
                       </Tooltip>
                       <Tooltip title="编辑">
@@ -424,6 +432,7 @@ export default function RemoteToolManagementPage() {
                         okText="删除"
                         okType="danger"
                         cancelText="取消"
+                        okButtonProps={{ loading: deletingId === tool.id }}
                       >
                         <Tooltip title="删除">
                           <Button type="text" size="small" danger icon={<DeleteOutlined />} />
@@ -483,6 +492,7 @@ export default function RemoteToolManagementPage() {
           open={modalOpen}
           onOk={handleSave}
           onCancel={() => setModalOpen(false)}
+          confirmLoading={saving}
           destroyOnHidden
           width={720}
           okText="保存"

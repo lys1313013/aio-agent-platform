@@ -35,7 +35,7 @@ function formatDateLabel(iso: string): { primary: string; secondary: string } {
 export default function DailyMemoryTimeline() {
   const { message } = App.useApp();
   const [items, setItems] = useState<DailyMemory[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [jumpDate, setJumpDate] = useState<Dayjs | null>(null);
@@ -70,6 +70,7 @@ export default function DailyMemoryTimeline() {
       return;
     }
     // 列表里没有(可能超出最近 90 条),精确查一次
+    setLoading(true);
     try {
       const found = await dailyMemoriesApi.list({ date: day });
       if (found.length > 0) {
@@ -82,6 +83,8 @@ export default function DailyMemoryTimeline() {
       }
     } catch {
       message.error('查询失败');
+    } finally {
+      setLoading(false);
     }
   };
 

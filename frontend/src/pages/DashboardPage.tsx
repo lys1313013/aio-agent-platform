@@ -325,11 +325,11 @@ export default function DashboardPage() {
           <Col xs={12} sm={6}>
             <StatCard
               title="智能体"
-              value={agents.length}
+              value={loading ? null : agents.length}
               icon={<RobotOutlined />}
               color="#22c55e"
               bgColor="#22c55e20"
-              suffix={`${activeAgentCount} 个活跃`}
+              suffix={loading ? undefined : `${activeAgentCount} 个活跃`}
               onClick={() => navigate('/agents')}
             />
           </Col>
@@ -444,7 +444,7 @@ export default function DashboardPage() {
                 </div>
                 <div className="flex items-center justify-between">
                   <Text type="secondary" className="text-xs">启用中的定时任务</Text>
-                  <span className="text-lg font-semibold">{activeCronCount}</span>
+                  <span className="text-lg font-semibold">{loading ? '—' : activeCronCount}</span>
                 </div>
               </div>
             </Card>

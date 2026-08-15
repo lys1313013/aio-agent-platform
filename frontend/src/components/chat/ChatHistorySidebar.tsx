@@ -186,7 +186,7 @@ export default function ChatHistorySidebar() {
 
           {/* Session list */}
           <div className="flex-1 overflow-y-auto px-2 pb-4">
-            {isSessionsLoading ? (
+            {isSessionsLoading && sessions.length === 0 ? (
               <div className="px-3 py-8 text-center">
                 <Spin size="small" />
               </div>

@@ -9,7 +9,7 @@ import ChatInput from '@/components/chat/ChatInput';
 import AgentConfigSidebar from '@/components/AgentConfigSidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
 import WebpagePreviewPanel from '@/components/chat/WebpagePreviewPanel';
-import { Alert, App, Typography, Spin, Tag, Button } from 'antd';
+import { Alert, App, Typography, Spin, Tag, Button, Skeleton } from 'antd';
 import { PlusOutlined, LinkOutlined, DeleteOutlined } from '@ant-design/icons';
 import { agentsApi } from '@/lib/api';
 import type { Agent, ChatAttachment, FileAttachmentRef, StreamingState, SessionStatus } from '@/lib/types';
@@ -36,6 +36,7 @@ export default function AgentChatPage() {
   const { message, modal } = App.useApp();
   const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAMING);
   const [error, setError] = useState<string | null>(null);
+  const [creatingSession, setCreatingSession] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const [agent, setAgent] = useState<Agent | null>(null);
   const [agentLoading, setAgentLoading] = useState(true);
@@ -496,9 +497,15 @@ export default function AgentChatPage() {
   }, [activeSessionId, clearQueue]);
 
   const handleNewChat = async () => {
-    const newId = await createSession('新对话', agentId);
-    if (newId) {
-      navigate(`/agents/${agentId}/chat/${newId}`, { replace: true });
+    if (creatingSession) return;
+    setCreatingSession(true);
+    try {
+      const newId = await createSession('新对话', agentId);
+      if (newId) {
+        navigate(`/agents/${agentId}/chat/${newId}`, { replace: true });
+      }
+    } finally {
+      setCreatingSession(false);
     }
   };
 
@@ -879,18 +886,15 @@ export default function AgentChatPage() {
     [sessions, activeSessionId],
   );
 
-  if (agentLoading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Agent header */}
-      {agent && (
+      {agentLoading && (
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-card/50">
+          <Skeleton.Input active size="small" style={{ width: 180 }} />
+        </div>
+      )}
+      {!agentLoading && agent && (
         <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-card/50">
           <span className="text-xl">{getAgentIcon(agent.icon)}</span>
           <Text strong>{agent.name}</Text>
@@ -917,6 +921,7 @@ export default function AgentChatPage() {
             type="primary"
             icon={<PlusOutlined />}
             onClick={handleNewChat}
+            loading={creatingSession}
             className="!bg-brand-gradient !border-none shadow-brand hover:shadow-brand-lg"
           >
             新对话
@@ -933,7 +938,7 @@ export default function AgentChatPage() {
 
         {/* Chat area */}
         <div className="flex flex-1 flex-col overflow-hidden">
-          {messagesLoading && currentMessages.length === 0 ? (
+          {(messagesLoading || agentLoading) && currentMessages.length === 0 ? (
             <div className="flex flex-1 items-center justify-center">
               <Spin size="large" />
             </div>

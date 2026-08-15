@@ -153,14 +153,6 @@ export default function WebToolSettingsPage() {
     );
   };
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="w-full max-w-3xl px-6 py-8">
@@ -175,7 +167,12 @@ export default function WebToolSettingsPage() {
           </Text>
         </div>
 
-        <Form form={form} layout="vertical" disabled={saving}>
+        {loading ? (
+          <div className="flex items-center justify-center py-24">
+            <Spin size="large" />
+          </div>
+        ) : (
+          <Form form={form} layout="vertical" disabled={saving}>
           <Card title="基本设置" className="mb-4">
             <Form.Item
               name="enabled"
@@ -279,6 +276,7 @@ export default function WebToolSettingsPage() {
             保存
           </Button>
         </Form>
+        )}
       </div>
     </div>
   );

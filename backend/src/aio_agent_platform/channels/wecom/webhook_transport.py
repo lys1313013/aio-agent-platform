@@ -67,7 +67,9 @@ class WeComWebhookTransport(Transport):
 
     def _check_signature(self, request: Request, encrypt: str) -> None:
         if not self.token:
-            return  # 未配置回调 Token 时不验签（测试/内网直连场景）
+            # 回调 Token 未配置：企微的 URL 验证与消息签名都依赖它，缺失时拒绝
+            # 而非放行，避免「无验签渠道」暴露后被伪造回调注入 Agent。
+            raise HTTPException(status_code=401, detail="callback token not configured")
         signature = request.query_params.get("msg_signature", "")
         timestamp = request.query_params.get("timestamp", "")
         nonce = request.query_params.get("nonce", "")

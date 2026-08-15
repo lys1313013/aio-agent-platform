@@ -56,7 +56,7 @@ export interface PetTask {
   /** 'done' = 已完成（打勾停留片刻再移除）；undefined = 进行中 */
   status?: 'done';
   doneAt?: number;
-  /** 渠道来源（feishu/dingtalk/wecom），仅远端任务有 */
+  /** 渠道来源（feishu/dingtalk/wecom/wecom_bot），仅远端任务有 */
   source?: string;
   /** 渠道会话标识，同一渠道聊天的多个 session 共享，用于同会话只保留最新一条 */
   chatKey?: string;

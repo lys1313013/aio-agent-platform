@@ -885,7 +885,8 @@ class CronJob(Base):
     tenant_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         nullable=False,
-        default=DEFAULT_TENANT_ID,
+        # 无默认值：创建时必须在 service 层显式解析（显式 → 智能体 → 用户），
+        # 禁止静默回退到默认租户，否则任务会归错租户而在管理页不可见。
         comment="所属租户ID",
     )
     user_id: Mapped[UUID] = mapped_column(

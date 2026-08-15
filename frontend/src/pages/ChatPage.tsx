@@ -30,6 +30,7 @@ export default function ChatPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAMING);
   const [error, setError] = useState<string | null>(null);
+  const [creatingSession, setCreatingSession] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   // True when the current SSE turn is a slash command (no assistant message).
   const gotCommandResultRef = useRef(false);
@@ -478,7 +479,13 @@ export default function ChatPage() {
   }, [activeSessionId, clearQueue]);
 
   const handleNewChat = async () => {
-    await createSession('新对话');
+    if (creatingSession) return;
+    setCreatingSession(true);
+    try {
+      await createSession('新对话');
+    } finally {
+      setCreatingSession(false);
+    }
   };
 
   const handleDeleteChat = () => {
@@ -535,6 +542,7 @@ export default function ChatPage() {
           type="primary"
           icon={<PlusOutlined />}
           onClick={handleNewChat}
+          loading={creatingSession}
           className="!bg-brand-gradient !border-none shadow-brand hover:shadow-brand-lg"
         >
           新对话

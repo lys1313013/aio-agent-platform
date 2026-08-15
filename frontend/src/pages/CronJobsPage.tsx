@@ -14,7 +14,6 @@ import {
   Input,
   Button,
   Card,
-  Spin,
   App,
   Modal,
   Tag,
@@ -68,6 +67,9 @@ export default function CronJobsPage() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<CronJob | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [form] = Form.useForm();
 
   const [runsOpen, setRunsOpen] = useState(false);
@@ -137,6 +139,7 @@ export default function CronJobsPage() {
         }
       }
 
+      setSaving(true);
       const payload = {
         name: values.name,
         agent_id: values.agent_id || null,
@@ -160,26 +163,34 @@ export default function CronJobsPage() {
     } catch (err: any) {
       if (err?.errorFields) return;
       message.error(err.message || '操作失败');
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleDelete = async (id: string) => {
+    setDeletingId(id);
     try {
       await cronJobsApi.delete(id);
       message.success('任务已删除');
       fetchData();
     } catch (err: any) {
       message.error(err.message || '删除失败');
+    } finally {
+      setDeletingId(null);
     }
   };
 
   const handleToggle = async (job: CronJob) => {
+    setTogglingId(job.id);
     try {
       await cronJobsApi.update(job.id, { is_active: !job.is_active });
       message.success(job.is_active ? '任务已暂停' : '任务已启用');
       fetchData();
     } catch (err: any) {
       message.error(err.message || '操作失败');
+    } finally {
+      setTogglingId(null);
     }
   };
 
@@ -291,14 +302,6 @@ export default function CronJobsPage() {
     },
   ];
 
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
@@ -309,14 +312,20 @@ export default function CronJobsPage() {
             管理定时执行的自动化任务
           </p>
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
+        <Button type="primary" icon={<PlusOutlined />} disabled={loading} onClick={() => openModal()}>
           新建任务
         </Button>
       </div>
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-6 pb-6">
-        {jobs.length === 0 ? (
+        {loading ? (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {[0, 1, 2].map((i) => (
+              <Card key={i} loading />
+            ))}
+          </div>
+        ) : jobs.length === 0 ? (
           <Card className="flex items-center justify-center py-16">
             <Empty description="暂无定时任务">
               <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
@@ -358,6 +367,7 @@ export default function CronJobsPage() {
                         size="small"
                         type="text"
                         icon={job.is_active ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                        loading={togglingId === job.id}
                         onClick={() => handleToggle(job)}
                       />
                     </Tooltip>
@@ -374,7 +384,7 @@ export default function CronJobsPage() {
                       cancelText="取消"
                       okButtonProps={{ danger: true }}
                     >
-                      <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                      <Button size="small" type="text" danger icon={<DeleteOutlined />} loading={deletingId === job.id} />
                     </Popconfirm>
                   </div>
                 }
@@ -442,6 +452,7 @@ export default function CronJobsPage() {
         onCancel={() => setModalOpen(false)}
         okText="保存"
         cancelText="取消"
+        confirmLoading={saving}
         destroyOnHidden
         width={600}
       >

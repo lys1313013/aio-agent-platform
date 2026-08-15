@@ -77,6 +77,8 @@ export default function ChannelsPage() {
   const [tools, setTools] = useState<ToolInfo[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
+  const [actingChannelId, setActingChannelId] = useState<string | null>(null);
+  const [deletingChannelId, setDeletingChannelId] = useState<string | null>(null);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
@@ -96,21 +98,24 @@ export default function ChannelsPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [channelList, agentList, toolList, userList] = await Promise.all([
-        channelsApi.list(),
-        agentsApi.list(),
-        toolsApi.list().catch(() => [] as ToolInfo[]),
-        usersApi.list().catch(() => [] as AdminUser[]),
-      ]);
+      // 主列表数据先行加载，渠道列表不依赖下拉选项数据
+      const channelList = await channelsApi.list();
       setChannels(channelList);
-      setAgents(agentList);
-      setTools(toolList);
-      setUsers(userList);
     } catch (err: any) {
       message.error(`加载渠道失败：${err.message}`);
     } finally {
       setLoading(false);
     }
+
+    // 次要数据（Agent/工具/用户下拉选项）并行加载，失败兜底为空数组，不阻塞主内容
+    const [agentList, toolList, userList] = await Promise.all([
+      agentsApi.list().catch(() => [] as Agent[]),
+      toolsApi.list().catch(() => [] as ToolInfo[]),
+      usersApi.list().catch(() => [] as AdminUser[]),
+    ]);
+    setAgents(agentList);
+    setTools(toolList);
+    setUsers(userList);
   }, [message]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
@@ -176,8 +181,13 @@ export default function ChannelsPage() {
           enable_streaming: values.enable_streaming,
           tool_blacklist: values.tool_blacklist ?? [],
         };
-        if (isWecom) {
-          payload.extra_config = { agentid: Number(values.agentid) };
+        if (isWecom && values.agentid) {
+          // 合并而非整体覆盖，避免丢弃 extra_config 中 agentid 之外的键；编辑态
+          // 未填 AgentID（如 API 直建、无 agentid 的旧渠道改名）时不提交，保留原值。
+          payload.extra_config = {
+            ...(editingChannel.extra_config ?? {}),
+            agentid: Number(values.agentid),
+          };
         }
         if (secretsBeingEdited.has('app_secret') && values.app_secret) {
           payload.app_secret = values.app_secret;
@@ -217,6 +227,7 @@ export default function ChannelsPage() {
   };
 
   const handleEnable = async (channel: Channel) => {
+    setActingChannelId(channel.id);
     try {
       const result = await channelsApi.enable(channel.id);
       message.success(`渠道「${channel.name}」已启用`);
@@ -228,26 +239,34 @@ export default function ChannelsPage() {
     } catch (err: any) {
       message.error(err.message || '启用失败');
       fetchData();
+    } finally {
+      setActingChannelId(null);
     }
   };
 
   const handleDisable = async (channel: Channel) => {
+    setActingChannelId(channel.id);
     try {
       await channelsApi.disable(channel.id);
       message.success(`渠道「${channel.name}」已停用`);
       fetchData();
     } catch (err: any) {
       message.error(err.message || '停用失败');
+    } finally {
+      setActingChannelId(null);
     }
   };
 
   const handleDelete = async (channel: Channel) => {
+    setDeletingChannelId(channel.id);
     try {
       await channelsApi.delete(channel.id);
       message.success('渠道已删除');
       fetchData();
     } catch (err: any) {
       message.error(`删除失败：${err.message}`);
+    } finally {
+      setDeletingChannelId(null);
     }
   };
 
@@ -294,14 +313,6 @@ export default function ChannelsPage() {
         verificationToken: { label: 'Verification Token', placeholder: '事件订阅 Verification Token' },
       };
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="w-full px-6 py-8">
@@ -332,7 +343,11 @@ export default function ChannelsPage() {
         </div>
 
         {/* Empty state */}
-        {channels.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center py-24">
+            <Spin size="large" />
+          </div>
+        ) : channels.length === 0 ? (
           <Card>
             <Empty
               description="暂无渠道。添加渠道后，用户可在 IM 中直接与 Agent 对话。"
@@ -370,6 +385,7 @@ export default function ChannelsPage() {
                             size="small"
                             icon={<PoweroffOutlined className="text-green-500" />}
                             onClick={() => handleDisable(channel)}
+                            loading={actingChannelId === channel.id}
                           />
                         </Tooltip>
                       ) : (
@@ -379,6 +395,7 @@ export default function ChannelsPage() {
                             size="small"
                             icon={<PlayCircleOutlined />}
                             onClick={() => handleEnable(channel)}
+                            loading={actingChannelId === channel.id}
                           />
                         </Tooltip>
                       )}
@@ -405,6 +422,7 @@ export default function ChannelsPage() {
                         okText="删除"
                         okType="danger"
                         cancelText="取消"
+                        okButtonProps={{ loading: deletingChannelId === channel.id }}
                       >
                         <Tooltip title="删除">
                           <Button type="text" size="small" danger icon={<DeleteOutlined />} />
@@ -483,7 +501,9 @@ export default function ChannelsPage() {
                     if (v === 'wecom') {
                       form.setFieldValue('mode', 'webhook');
                       setMode('webhook');
-                    } else if (v === 'wecom_bot') {
+                    } else {
+                      // 切回 feishu 等其它类型时重置为默认 websocket，避免上次选择
+                      // wecom 强置的 webhook 残留，导致飞书静默以回调模式创建。
                       form.setFieldValue('mode', 'websocket');
                       setMode('websocket');
                     }
@@ -573,7 +593,13 @@ export default function ChannelsPage() {
               <Form.Item
                 name="agentid"
                 label="应用 AgentID"
-                rules={[{ required: true, message: '请输入数字应用 AgentID' }]}
+                rules={[
+                  {
+                    // 新建必须填；编辑 API 直建、无 agentid 的渠道时豁免，允许改名/换 Agent。
+                    required: !(editingChannel && !editingChannel.extra_config?.agentid),
+                    message: '请输入数字应用 AgentID',
+                  },
+                ]}
                 tooltip="企业微信自建应用的 AgentId（数字），见「应用管理 → 应用详情」"
               >
                 <Input type="number" placeholder="例如 1000002" />
@@ -639,7 +665,6 @@ export default function ChannelsPage() {
                   <Form.Item
                     name="encrypt_key"
                     label={fields.encryptKey.label}
-                    rules={isWecom ? [{ required: true, message: `请输入${fields.encryptKey.label}` }] : undefined}
                     className="flex-1"
                   >
                     <Input.Password {...SECRET_INPUT_PROPS} placeholder={fields.encryptKey.placeholder} />

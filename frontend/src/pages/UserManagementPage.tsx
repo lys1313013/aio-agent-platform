@@ -255,7 +255,7 @@ export default function UserManagementPage() {
 
         <Card>
           {loading ? (
-            <div className="flex min-h-64 items-center justify-center"><Spin /></div>
+            <div className="flex min-h-64 items-center justify-center"><Spin size="large" /></div>
           ) : users.length === 0 ? (
             <Empty description="暂无用户">
               <Button type="primary" onClick={() => openModal()}>新建用户</Button>

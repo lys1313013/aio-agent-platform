@@ -266,6 +266,7 @@ function PackageCard({
   pkg,
   mine,
   adopted,
+  adopting,
   agents,
   onAdopt,
   onChanged,
@@ -277,6 +278,7 @@ function PackageCard({
   pkg: PetPackage;
   mine?: boolean;
   adopted?: boolean;
+  adopting?: boolean;
   agents: Agent[];
   onAdopt?: (pkg: PetPackage) => void;
   onChanged?: (pkg: PetPackage) => void;
@@ -286,14 +288,20 @@ function PackageCard({
   onDefaultAgent?: (pkg: PetPackage, agentId: string | null) => void;
 }) {
   const { message } = App.useApp();
+  const [savingVisibility, setSavingVisibility] = useState(false);
+  const [savingDefaultAgent, setSavingDefaultAgent] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const handleVisibility = async (v: PetVisibility) => {
+    setSavingVisibility(true);
     try {
       const updated = await petsApi.setVisibility(pkg.id, v);
       message.success('可见性已更新');
       onChanged?.(updated);
     } catch (e) {
       message.error(e instanceof Error ? e.message : '更新失败');
+    } finally {
+      setSavingVisibility(false);
     }
   };
 
@@ -331,12 +339,16 @@ function PackageCard({
                 key="delete"
                 title="删除该宠物包？"
                 description="已领养的用户不受影响"
+                okButtonProps={{ loading: deleting }}
                 onConfirm={async () => {
                   try {
+                    setDeleting(true);
                     await petsApi.deletePackage(pkg.id);
                     onDeleted?.(pkg);
                   } catch (e) {
                     message.error(e instanceof Error ? e.message : '删除失败');
+                  } finally {
+                    setDeleting(false);
                   }
                 }}
               >
@@ -351,6 +363,7 @@ function PackageCard({
                 type="link"
                 size="small"
                 disabled={adopted}
+                loading={adopting}
                 onClick={() => onAdopt?.(pkg)}
               >
                 {adopted ? '已领养' : '领养'}
@@ -374,14 +387,23 @@ function PackageCard({
                 placeholder="默认人设智能体"
                 value={pkg.default_agent_id ?? undefined}
                 allowClear
+                loading={savingDefaultAgent}
                 options={agents.map((a) => ({ value: a.id, label: a.name }))}
-                onChange={(v) => onDefaultAgent?.(pkg, v ?? null)}
+                onChange={async (v) => {
+                  setSavingDefaultAgent(true);
+                  try {
+                    await onDefaultAgent?.(pkg, v ?? null);
+                  } finally {
+                    setSavingDefaultAgent(false);
+                  }
+                }}
               />
             )}
             {mine && pkg.visibility !== 'official' && (
               <Select
                 size="small"
                 value={pkg.visibility}
+                loading={savingVisibility}
                 options={VISIBILITY_OPTIONS}
                 onChange={handleVisibility}
               />
@@ -403,6 +425,7 @@ export default function PetsPage() {
   const [market, setMarket] = useState<PetPackage[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [busyAdoptId, setBusyAdoptId] = useState<string | null>(null);
   const [mappingPkg, setMappingPkg] = useState<PetPackage | null>(null);
   const [actionNameTarget, setActionNameTarget] = useState<{
     pkg: PetPackage;
@@ -491,12 +514,15 @@ export default function PetsPage() {
   };
 
   const handleAdopt = async (pkg: PetPackage) => {
+    setBusyAdoptId(pkg.id);
     try {
       await petsApi.adopt(pkg.id);
       message.success(`已领养「${pkg.display_name}」`);
       void reload();
     } catch (e) {
       message.error(e instanceof Error ? e.message : '领养失败');
+    } finally {
+      setBusyAdoptId(null);
     }
   };
 
@@ -544,6 +570,7 @@ export default function PetsPage() {
   };
 
   const handleBindAgent = async (pet: UserPet, agentId: string | null) => {
+    setBusyAction(`${pet.id}:bind`);
     try {
       const updated = await petsApi.bindAgent(pet.id, agentId);
       message.success(agentId ? '已绑定智能体' : '已解绑智能体');
@@ -551,6 +578,8 @@ export default function PetsPage() {
       if (pet.is_active) await loadActive();
     } catch (e) {
       message.error(e instanceof Error ? e.message : '绑定失败');
+    } finally {
+      setBusyAction(null);
     }
   };
 
@@ -572,14 +601,6 @@ export default function PetsPage() {
       setMyPackages((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
     }
   };
-
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Spin />
-      </div>
-    );
-  }
 
   const adoptedIds = new Set(myPets.map((p) => p.package_id));
 
@@ -630,6 +651,11 @@ export default function PetsPage() {
         </div>
       </div>
 
+      {loading ? (
+        <div className="flex h-64 items-center justify-center">
+          <Spin size="large" />
+        </div>
+      ) : (
       <Tabs
         items={[
           {
@@ -706,6 +732,7 @@ export default function PetsPage() {
                                 placeholder="绑定智能体"
                                 value={pet.agent?.id ?? undefined}
                                 allowClear
+                                loading={busyAction === `${pet.id}:bind`}
                                 options={agents.map((a) => ({ value: a.id, label: a.name }))}
                                 onChange={(v) => void handleBindAgent(pet, v ?? null)}
                               />
@@ -790,6 +817,7 @@ export default function PetsPage() {
                       pkg={pkg}
                       agents={agents}
                       adopted={adoptedIds.has(pkg.id)}
+                      adopting={busyAdoptId === pkg.id}
                       onAdopt={handleAdopt}
                     />
                   ))}
@@ -798,6 +826,7 @@ export default function PetsPage() {
           },
         ]}
       />
+      )}
 
       {mappingPkg && (
         <RowMappingModal

@@ -60,6 +60,25 @@ async def _verify_channel_credentials(
         raise HTTPException(status_code=400, detail=f"{label}凭证无效，请检查凭证配置")
 
 
+def _validate_wecom_agentid(extra_config: dict) -> int:
+    """Return the wecom app AgentID after asserting it's a positive integer.
+
+    A missing / non-numeric / non-positive value is a config error (400), not
+    a crash — the spec layer would otherwise ``int()``-raise a ValueError that
+    surfaces as a 500.
+    """
+    agentid = (extra_config or {}).get("agentid")
+    if agentid in (None, ""):
+        raise HTTPException(status_code=400, detail="企微渠道缺少应用 AgentID")
+    try:
+        value = int(agentid)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="企微渠道 AgentID 必须为正整数")
+    if value <= 0:
+        raise HTTPException(status_code=400, detail="企微渠道 AgentID 必须为正整数")
+    return value
+
+
 # ---- Pydantic Schemas ----
 
 
@@ -223,8 +242,10 @@ async def create_channel(
 
     # Validate credentials + mode through the channel-type spec.
     _validate_channel_mode(req.channel_type, req.mode)
-    if req.channel_type == "wecom" and not (req.extra_config or {}).get("agentid"):
-        raise HTTPException(status_code=400, detail="企微渠道缺少应用 AgentID")
+    if req.channel_type == "wecom":
+        _validate_wecom_agentid(req.extra_config or {})
+        if not req.verification_token:
+            raise HTTPException(status_code=400, detail="企微渠道必须配置回调 Token")
     await _verify_channel_credentials(
         req.channel_type, req.app_id, req.app_secret, req.extra_config
     )
@@ -337,6 +358,10 @@ async def enable_channel(
 
     try:
         _validate_channel_mode(channel.channel_type, channel.mode)
+        if channel.channel_type == "wecom":
+            _validate_wecom_agentid(channel.extra_config or {})
+            if not channel.verification_token_encrypted:
+                raise HTTPException(status_code=400, detail="企微渠道必须配置回调 Token")
         await _verify_channel_credentials(
             channel.channel_type,
             channel.app_id,

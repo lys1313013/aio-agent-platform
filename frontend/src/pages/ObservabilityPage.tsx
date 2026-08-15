@@ -15,6 +15,7 @@ import {
   Segmented,
   Skeleton,
   Space,
+  Spin,
   Table,
   Tabs,
   Tag,
@@ -188,39 +189,41 @@ function OverviewTab({ range }: { range: ObsRangeQuery }) {
   const c = data.cards;
   const s = data.series;
   return (
-    <div className="obs-tab-content">
-      <div className="obs-section-heading">
-        <div>
-          <Text strong>核心指标</Text>
-          <Text type="secondary">统计范围随右上角时间筛选同步</Text>
+    <Spin spinning={loading}>
+      <div className="obs-tab-content">
+        <div className="obs-section-heading">
+          <div>
+            <Text strong>核心指标</Text>
+            <Text type="secondary">统计范围随右上角时间筛选同步</Text>
+          </div>
+          <Space size={10}>
+            <Text type="secondary">{updatedAt ? `${updatedAt.format('HH:mm:ss')} 更新` : ''}</Text>
+            <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={() => load()}>刷新</Button>
+          </Space>
         </div>
-        <Space size={10}>
-          <Text type="secondary">{updatedAt ? `${updatedAt.format('HH:mm:ss')} 更新` : ''}</Text>
-          <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={() => load()}>刷新</Button>
-        </Space>
+        {error && <Alert type="warning" showIcon message="自动刷新失败，当前展示上次成功数据" />}
+        <Row gutter={[12, 12]}>
+          <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="LLM 调用" value={fmt(c.llm_requests)} hint="模型请求总数" /></Col>
+          <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="工具调用" value={fmt(c.tool_requests)} hint="工具执行总数" /></Col>
+          <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="LLM 失败率" value={c.llm_error_rate} suffix="%" tone={c.llm_error_rate > 5 ? 'danger' : 'success'} hint="失败请求 / 全部请求" /></Col>
+          <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="工具错误率" value={c.tool_error_rate} suffix="%" tone={c.tool_error_rate > 20 ? 'danger' : 'success'} hint="失败执行 / 全部执行" /></Col>
+          <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="平均 TTFT" value={dur(c.avg_ttft_ms)} hint="首 Token 平均延迟" /></Col>
+          <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="P95 模型耗时" value={dur(c.p95_latency_ms)} hint="95% 请求低于此值" /></Col>
+          <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="Token 消耗" value={fmt(c.total_tokens)} hint={`输入 ${fmt(c.prompt_tokens)} · 输出 ${fmt(c.completion_tokens)}`} /></Col>
+          <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="输入缓存命中率" value={c.cache_hit_rate} suffix="%" tone={c.cache_hit_rate < 20 ? 'warning' : 'success'} hint={`命中 ${fmt(c.cache_read_tokens)} Token`} /></Col>
+        </Row>
+        <div className="obs-section-heading obs-section-heading--charts">
+          <div><Text strong>趋势</Text><Text type="secondary">时间按本地时区展示，空档补零</Text></div>
+        </div>
+        <Row gutter={[16, 16]}>
+          <Col xs={24} xl={12}><TrendCard title="LLM 调用量" data={s.llm_requests ?? []} window={window} color="#1677ff" empty={c.llm_requests === 0} /></Col>
+          <Col xs={24} xl={12}><TrendCard title="工具调用量" data={s.tool_requests ?? []} window={window} color="#7c3aed" empty={c.tool_requests === 0} /></Col>
+          <Col xs={24} xl={12}><TrendCard title="LLM 失败率" data={s.llm_error_rate ?? []} window={window} color="#dc2626" empty={c.llm_requests === 0} suffix="%" /></Col>
+          <Col xs={24} xl={12}><TrendCard title="工具错误率" data={s.tool_error_rate ?? []} window={window} color="#ea580c" empty={c.tool_requests === 0} suffix="%" /></Col>
+          <Col xs={24}><TrendCard title="Token 消耗" data={s.tokens ?? []} window={window} color="#0891b2" empty={c.llm_requests === 0} /></Col>
+        </Row>
       </div>
-      {error && <Alert type="warning" showIcon message="自动刷新失败，当前展示上次成功数据" />}
-      <Row gutter={[12, 12]}>
-        <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="LLM 调用" value={fmt(c.llm_requests)} hint="模型请求总数" /></Col>
-        <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="工具调用" value={fmt(c.tool_requests)} hint="工具执行总数" /></Col>
-        <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="LLM 失败率" value={c.llm_error_rate} suffix="%" tone={c.llm_error_rate > 5 ? 'danger' : 'success'} hint="失败请求 / 全部请求" /></Col>
-        <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="工具错误率" value={c.tool_error_rate} suffix="%" tone={c.tool_error_rate > 20 ? 'danger' : 'success'} hint="失败执行 / 全部执行" /></Col>
-        <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="平均 TTFT" value={dur(c.avg_ttft_ms)} hint="首 Token 平均延迟" /></Col>
-        <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="P95 模型耗时" value={dur(c.p95_latency_ms)} hint="95% 请求低于此值" /></Col>
-        <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="Token 消耗" value={fmt(c.total_tokens)} hint={`输入 ${fmt(c.prompt_tokens)} · 输出 ${fmt(c.completion_tokens)}`} /></Col>
-        <Col xs={12} sm={8} lg={6} xl={3}><StatCard title="输入缓存命中率" value={c.cache_hit_rate} suffix="%" tone={c.cache_hit_rate < 20 ? 'warning' : 'success'} hint={`命中 ${fmt(c.cache_read_tokens)} Token`} /></Col>
-      </Row>
-      <div className="obs-section-heading obs-section-heading--charts">
-        <div><Text strong>趋势</Text><Text type="secondary">时间按本地时区展示，空档补零</Text></div>
-      </div>
-      <Row gutter={[16, 16]}>
-        <Col xs={24} xl={12}><TrendCard title="LLM 调用量" data={s.llm_requests ?? []} window={window} color="#1677ff" empty={c.llm_requests === 0} /></Col>
-        <Col xs={24} xl={12}><TrendCard title="工具调用量" data={s.tool_requests ?? []} window={window} color="#7c3aed" empty={c.tool_requests === 0} /></Col>
-        <Col xs={24} xl={12}><TrendCard title="LLM 失败率" data={s.llm_error_rate ?? []} window={window} color="#dc2626" empty={c.llm_requests === 0} suffix="%" /></Col>
-        <Col xs={24} xl={12}><TrendCard title="工具错误率" data={s.tool_error_rate ?? []} window={window} color="#ea580c" empty={c.tool_requests === 0} suffix="%" /></Col>
-        <Col xs={24}><TrendCard title="Token 消耗" data={s.tokens ?? []} window={window} color="#0891b2" empty={c.llm_requests === 0} /></Col>
-      </Row>
-    </div>
+    </Spin>
   );
 }
 

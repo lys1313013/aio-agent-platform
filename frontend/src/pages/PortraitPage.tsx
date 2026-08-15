@@ -141,14 +141,6 @@ export default function PortraitPage() {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
 
-  if (initLoading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Header */}
@@ -178,13 +170,17 @@ export default function PortraitPage() {
             </Button>
           </div>
         ) : (
-          <Button type="primary" icon={<EditOutlined />} onClick={() => setEditing(true)}>
+          <Button type="primary" icon={<EditOutlined />} disabled={initLoading} onClick={() => setEditing(true)}>
             编辑
           </Button>
         )}
       </div>
 
-      {editing ? (
+      {initLoading ? (
+        <div className="flex-1 flex items-center justify-center">
+          <Spin size="large" />
+        </div>
+      ) : editing ? (
         /* Edit mode: split pane */
         <div className="flex-1 flex overflow-hidden">
           <div className="flex-1 flex flex-col border-r border-border">

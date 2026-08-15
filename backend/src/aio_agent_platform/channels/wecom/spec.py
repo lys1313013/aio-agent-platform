@@ -14,6 +14,19 @@ from aio_agent_platform.db.models import ChannelConfig
 from aio_agent_platform.tools.executor import ToolExecutor
 
 
+def _parse_agentid(extra_config: dict[str, Any] | None) -> int:
+    """Parse the wecom app AgentID defensively; 0 on missing/invalid values.
+
+    Routes already reject non-positive agentids with a 400, but rows written
+    before that check (or via other paths) must not crash ``int()`` at enable
+    time — they degrade to agentid=0 instead of a 500.
+    """
+    try:
+        return max(0, int((extra_config or {}).get("agentid") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _build(channel: ChannelConfig, tool_executor: ToolExecutor):
     """Build the full runtime chain for a WeCom channel row.
 
@@ -29,7 +42,7 @@ def _build(channel: ChannelConfig, tool_executor: ToolExecutor):
         WeComWebhookTransport,
     )
 
-    agentid = int((getattr(channel, "extra_config", None) or {}).get("agentid", 0))
+    agentid = _parse_agentid(getattr(channel, "extra_config", None))
     client = WeComClient(
         corpid=channel.app_id,
         corpsecret=channel.app_secret_encrypted,
@@ -58,7 +71,7 @@ async def _verify_credentials(
 ) -> bool:
     from aio_agent_platform.channels.wecom.client import WeComClient
 
-    agentid = int(extra_config.get("agentid") or 0)
+    agentid = _parse_agentid(extra_config)
     client = WeComClient(corpid=app_id, corpsecret=app_secret, agentid=agentid)
     try:
         return await client.verify_credentials()

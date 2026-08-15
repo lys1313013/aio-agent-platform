@@ -36,6 +36,7 @@ export default function AgentsPage() {
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [allTools, setAllTools] = useState<ToolInfo[]>([]);
 
   const fetchData = useCallback(async () => {
@@ -43,7 +44,8 @@ export default function AgentsPage() {
     try {
       const [a, t] = await Promise.all([
         agentsApi.adminList(),
-        toolsApi.list(),
+        // 工具列表仅用于卡片上的内建工具计数，失败兜底为空数组，不阻塞主列表
+        toolsApi.list().catch(() => [] as ToolInfo[]),
       ]);
       setAgents(a);
       setAllTools(t);
@@ -81,6 +83,7 @@ export default function AgentsPage() {
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
+      setSaving(true);
       const payload = {
         name: values.name,
         description: values.description || undefined,
@@ -102,6 +105,8 @@ export default function AgentsPage() {
     } catch (err: any) {
       if (err?.errorFields) return;
       message.error(err.message || '操作失败');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -114,15 +119,6 @@ export default function AgentsPage() {
       message.error(err.message || '删除失败');
     }
   };
-
-  // ---- Loading state ----
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
 
   const displayAgents = agents;
 
@@ -146,7 +142,11 @@ export default function AgentsPage() {
           </Text>
         </div>
 
-        {displayAgents.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center py-24">
+            <Spin size="large" />
+          </div>
+        ) : displayAgents.length === 0 ? (
           <div className="flex flex-col items-center gap-4">
             <Empty description="还没有智能体" />
             <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
@@ -298,6 +298,7 @@ export default function AgentsPage() {
           open={modalOpen}
           onOk={handleSave}
           onCancel={() => setModalOpen(false)}
+          confirmLoading={saving}
           width={480}
           destroyOnHidden
           okText={editingAgent ? '保存' : '创建并配置'}

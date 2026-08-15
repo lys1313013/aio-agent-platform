@@ -9,7 +9,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.db.models import CronJob
+from aio_agent_platform.db.models import Agent, CronJob, User
 
 logger = structlog.get_logger()
 
@@ -48,7 +48,7 @@ class CronJobService:
     @staticmethod
     async def create_job(
         db: AsyncSession,
-        tenant_id: UUID,
+        tenant_id: UUID | None,
         user_id: UUID,
         name: str,
         task_config: dict,
@@ -59,6 +59,10 @@ class CronJobService:
         channel_id: UUID | None = None,
         is_active: bool = True,
     ) -> CronJob:
+        # 租户必须显式解析，禁止静默回退到默认租户（否则任务归错租户、管理页不可见）。
+        tenant_id = await CronJobService._resolve_tenant(
+            db, tenant_id, user_id, agent_id
+        )
         job = CronJob(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -76,6 +80,38 @@ class CronJobService:
         await db.refresh(job)
         logger.info("cron_job_created", job_id=str(job.id), name=name)
         return job
+
+    @staticmethod
+    async def _resolve_tenant(
+        db: AsyncSession,
+        tenant_id: UUID | None,
+        user_id: UUID,
+        agent_id: UUID | None,
+    ) -> UUID:
+        """解析定时任务所属租户。
+
+        优先级：显式传入 → 任务对应智能体的租户 → 用户的租户。
+        均解析不到时抛错（响亮失败），绝不回退到默认租户。
+        """
+        if tenant_id is not None:
+            return tenant_id
+
+        if agent_id is not None:
+            agent_tenant = await db.scalar(
+                select(Agent.tenant_id).where(Agent.id == agent_id)
+            )
+            if agent_tenant is not None:
+                return agent_tenant
+
+        user_tenant = await db.scalar(
+            select(User.tenant_id).where(User.id == user_id)
+        )
+        if user_tenant is not None:
+            return user_tenant
+
+        raise ValueError(
+            f"无法解析定时任务租户: 用户 {user_id} 与智能体 {agent_id} 均无有效租户"
+        )
 
     @staticmethod
     async def update_job(

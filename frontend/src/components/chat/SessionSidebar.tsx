@@ -19,6 +19,7 @@ import {
   ReloadOutlined,
   HistoryOutlined,
   FolderOutlined,
+  LoadingOutlined,
 } from '@ant-design/icons';
 import { Input, Dropdown, App, Tooltip, Spin, Select } from 'antd';
 import type { MenuProps } from 'antd';
@@ -48,6 +49,7 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
   const [panelOpen, setPanelOpen] = useState(false);
+  const [creatingSession, setCreatingSession] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   // Load workspaces on mount
@@ -79,7 +81,13 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
   }, [panelOpen]);
 
   const handleNewChat = async () => {
-    await createSession('新对话', agentId);
+    if (creatingSession) return;
+    setCreatingSession(true);
+    try {
+      await createSession('新对话', agentId);
+    } finally {
+      setCreatingSession(false);
+    }
   };
 
   const handleDelete = (id: string) => {
@@ -199,9 +207,10 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
         <Tooltip title="新对话" placement="right" mouseEnterDelay={0.5}>
           <button
             onClick={handleNewChat}
-            className="flex items-center justify-center w-9 h-9 rounded-lg bg-brand-gradient text-white shadow-brand transition-all hover:shadow-brand-lg hover:-translate-y-[1px] active:translate-y-0"
+            disabled={creatingSession}
+            className="flex items-center justify-center w-9 h-9 rounded-lg bg-brand-gradient text-white shadow-brand transition-all hover:shadow-brand-lg hover:-translate-y-[1px] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:shadow-brand disabled:hover:translate-y-0"
           >
-            <PlusOutlined />
+            {creatingSession ? <LoadingOutlined className="text-sm" spin /> : <PlusOutlined />}
           </button>
         </Tooltip>
 
@@ -274,7 +283,7 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
 
           {/* Session list */}
           <div className="flex-1 overflow-y-auto px-2 pb-4">
-            {isSessionsLoading ? (
+            {isSessionsLoading && sessions.length === 0 ? (
               <div className="px-3 py-8 text-center">
                 <Spin size="small" />
               </div>

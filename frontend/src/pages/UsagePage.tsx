@@ -8,6 +8,7 @@ import {
   Row,
   Segmented,
   Skeleton,
+  Spin,
   Statistic,
   Table,
   Typography,
@@ -72,6 +73,7 @@ export default function UsagePage() {
     total: 0,
   });
   const [detailPage, setDetailPage] = useState(1);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const [start, end] = rangeOf(preset, customRange);
   const query = useMemo(() => ({ start, end, scope }), [start, end, scope]);
@@ -104,10 +106,12 @@ export default function UsagePage() {
 
   const loadDetail = useCallback(
     (page: number) => {
+      setDetailLoading(true);
       analyticsApi
         .detail({ ...query, page, page_size: 10 })
         .then(setDetail)
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => setDetailLoading(false));
     },
     [query],
   );
@@ -184,7 +188,7 @@ export default function UsagePage() {
       {loading && !summary ? (
         <Skeleton active paragraph={{ rows: 8 }} />
       ) : (
-        <>
+        <Spin spinning={loading}>
           <Row gutter={[16, 16]}>
             {cards.map((c) => (
               <Col xs={12} md={6} key={c.title}>
@@ -246,6 +250,7 @@ export default function UsagePage() {
           <Card title="用量明细" size="small" style={{ marginTop: 16 }}>
             <Table
               rowKey={(r) => `${r.date}-${r.model}`}
+              loading={detailLoading}
               columns={detailColumns}
               dataSource={detail.items}
               size="small"
@@ -261,7 +266,7 @@ export default function UsagePage() {
               }}
             />
           </Card>
-        </>
+        </Spin>
       )}
       </div>
     </div>

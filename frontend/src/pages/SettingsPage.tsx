@@ -371,6 +371,7 @@ function ChannelBindings() {
   const [bindings, setBindings] = useState<ChannelBinding[]>([]);
   const [loading, setLoading] = useState(true);
   const [bindLoading, setBindLoading] = useState(false);
+  const [unbindingId, setUnbindingId] = useState<string | null>(null);
 
   const fetchBindings = () => {
     channelBindingsApi
@@ -397,12 +398,15 @@ function ChannelBindings() {
   };
 
   const handleUnbind = async (id: string) => {
+    setUnbindingId(id);
     try {
       await channelBindingsApi.unbind(id);
       message.success('已解绑');
       fetchBindings();
     } catch (err: any) {
       message.error(err.message || '解绑失败');
+    } finally {
+      setUnbindingId(null);
     }
   };
 
@@ -476,6 +480,7 @@ function ChannelBindings() {
                   okText="解绑"
                   okType="danger"
                   cancelText="取消"
+                  okButtonProps={{ danger: true, loading: unbindingId === record.id }}
                 >
                   <Button type="text" size="small" danger icon={<DisconnectOutlined />}>
                     解绑

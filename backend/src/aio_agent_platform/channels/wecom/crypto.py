@@ -43,10 +43,18 @@ def decrypt(encoding_aes_key: str, encrypted: str) -> str:
     cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
     decryptor = cipher.decryptor()
     plaintext = decryptor.update(base64.b64decode(encrypted)) + decryptor.finalize()
+    if len(plaintext) < 21:  # random16 + len4 + at least 1 byte message
+        raise ValueError("decrypted payload too short")
     pad_len = plaintext[-1]
+    if not 1 <= pad_len <= 32:  # PKCS#7 on a 32-byte block
+        raise ValueError(f"invalid PKCS#7 padding: {pad_len}")
     plaintext = plaintext[:-pad_len]
+    if len(plaintext) < 20:
+        raise ValueError("decrypted payload too short")
 
     random16 = plaintext[:16]  # noqa: F841 — fixed 16-byte random prefix
     msg_len = struct.unpack(">I", plaintext[16:20])[0]
+    if 20 + msg_len > len(plaintext):
+        raise ValueError("message length exceeds payload")
     msg = plaintext[20 : 20 + msg_len]
     return msg.decode("utf-8")

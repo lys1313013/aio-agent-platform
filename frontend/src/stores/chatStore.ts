@@ -46,7 +46,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadSessions: async (agentId) => {
     // Full reset — only use on initial page load / navigation
-    set({ sessions: [], activeSessionId: null, messages: {}, isSessionsLoading: true });
+    set({ sessions: [], activeSessionId: null, messages: {}, isSessionsLoading: true, messagesLoading: false });
     try {
       const sessions = await sessionsApi.list(agentId);
       set({ sessions, isSessionsLoading: false });
@@ -72,6 +72,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       sessions: [session, ...state.sessions],
       activeSessionId: session.id,
+      // 新会话无历史消息可加载，复位可能残留的加载指示
+      messagesLoading: false,
     }));
     return session.id;
   },

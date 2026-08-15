@@ -67,7 +67,7 @@ export default function SkillsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [skills, setSkills] = useState<Skill[]>([]);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<EditorMode>('view');

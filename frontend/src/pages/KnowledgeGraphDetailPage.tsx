@@ -79,25 +79,7 @@ export default function KnowledgeGraphDetailPage() {
       .finally(() => setLoading(false));
   }, [kbId, message]);
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
-
-  if (!kb) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Empty description="图谱知识库不存在或已被删除">
-          <Button onClick={() => navigate('/knowledge-graph')}>返回列表</Button>
-        </Empty>
-      </div>
-    );
-  }
-
-  const kbIdStr = kb.id;
+  const kbIdStr = kb?.id ?? kbId;
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -106,43 +88,61 @@ export default function KnowledgeGraphDetailPage() {
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/knowledge-graph')}>
             返回
           </Button>
-          <h1 className="text-xl font-bold flex items-center gap-2">
-            <ApartmentOutlined className="text-primary" />
-            {kb.name}
-          </h1>
-          {!kb.is_active && <Tag>已禁用</Tag>}
-          {kb.description && (
-            <Text type="secondary" className="truncate max-w-md">{kb.description}</Text>
+          {kb && (
+            <>
+              <h1 className="text-xl font-bold flex items-center gap-2">
+                <ApartmentOutlined className="text-primary" />
+                {kb.name}
+              </h1>
+              {!kb.is_active && <Tag>已禁用</Tag>}
+              {kb.description && (
+                <Text type="secondary" className="truncate max-w-md">{kb.description}</Text>
+              )}
+            </>
           )}
         </div>
 
-        <div className="mb-4 grid grid-cols-4 gap-4 max-w-2xl">
-          <Card size="small">
-            <Statistic title="实体" value={kb.entity_count} prefix={<TagsOutlined />} />
-          </Card>
-          <Card size="small">
-            <Statistic title="关系" value={kb.relationship_count} prefix={<ApartmentOutlined />} />
-          </Card>
-          <Card size="small">
-            <Statistic title="文档" value={kb.document_count} prefix={<FileTextOutlined />} />
-          </Card>
-          <Card size="small">
-            <Statistic title="图谱状态" value={kb.entity_count > 0 ? '已构建' : '待构建'} />
-          </Card>
-        </div>
+        {loading ? (
+          <div className="py-24 flex items-center justify-center">
+            <Spin size="large" />
+          </div>
+        ) : !kb ? (
+          <div className="py-24 flex items-center justify-center">
+            <Empty description="图谱知识库不存在或已被删除">
+              <Button onClick={() => navigate('/knowledge-graph')}>返回列表</Button>
+            </Empty>
+          </div>
+        ) : (
+          <>
+            <div className="mb-4 grid grid-cols-4 gap-4 max-w-2xl">
+              <Card size="small">
+                <Statistic title="实体" value={kb.entity_count} prefix={<TagsOutlined />} />
+              </Card>
+              <Card size="small">
+                <Statistic title="关系" value={kb.relationship_count} prefix={<ApartmentOutlined />} />
+              </Card>
+              <Card size="small">
+                <Statistic title="文档" value={kb.document_count} prefix={<FileTextOutlined />} />
+              </Card>
+              <Card size="small">
+                <Statistic title="图谱状态" value={kb.entity_count > 0 ? '已构建' : '待构建'} />
+              </Card>
+            </div>
 
-        <Tabs
-          activeKey={activeTab}
-          onChange={setActiveTab}
-          items={[
-            { key: 'graph', label: '图谱', children: <GraphViewTab kbId={kbIdStr} /> },
-            { key: 'documents', label: '文档', children: <DocumentsTab kbId={kbIdStr} /> },
-            { key: 'entities', label: '实体', children: <EntitiesTab kbId={kbIdStr} /> },
-            { key: 'relationships', label: '关系', children: <RelationshipsTab kbId={kbIdStr} /> },
-            { key: 'retrieve', label: '检索测试', children: <RetrieveTab kbId={kbIdStr} /> },
-            { key: 'jobs', label: '抽取任务', children: <JobsTab kbId={kbIdStr} /> },
-          ]}
-        />
+            <Tabs
+              activeKey={activeTab}
+              onChange={setActiveTab}
+              items={[
+                { key: 'graph', label: '图谱', children: <GraphViewTab kbId={kbIdStr} /> },
+                { key: 'documents', label: '文档', children: <DocumentsTab kbId={kbIdStr} /> },
+                { key: 'entities', label: '实体', children: <EntitiesTab kbId={kbIdStr} /> },
+                { key: 'relationships', label: '关系', children: <RelationshipsTab kbId={kbIdStr} /> },
+                { key: 'retrieve', label: '检索测试', children: <RetrieveTab kbId={kbIdStr} /> },
+                { key: 'jobs', label: '抽取任务', children: <JobsTab kbId={kbIdStr} /> },
+              ]}
+            />
+          </>
+        )}
       </div>
     </div>
   );
@@ -379,6 +379,7 @@ function DocumentsTab({ kbId }: { kbId: string }) {
       setChunks(await graphKnowledgeApi.chunks(kbId, doc.id));
     } catch (err: any) {
       message.error(`加载分块失败：${err.message}`);
+      setChunks([]);
     }
   };
 
@@ -553,6 +554,8 @@ function EntitiesTab({ kbId }: { kbId: string }) {
   const [editing, setEditing] = useState<GraphEntity | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [editForm] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+  const [approving, setApproving] = useState(false);
 
   const fetchEntities = useCallback(async () => {
     setLoading(true);
@@ -587,6 +590,7 @@ function EntitiesTab({ kbId }: { kbId: string }) {
     if (!editing) return;
     try {
       const values = await editForm.validateFields();
+      setSaving(true);
       await graphKnowledgeApi.updateEntity(kbId, editing.id, {
         name: values.name,
         type: values.type,
@@ -598,6 +602,8 @@ function EntitiesTab({ kbId }: { kbId: string }) {
     } catch (err: any) {
       if (err?.errorFields) return;
       message.error(err.message || '更新失败');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -614,12 +620,15 @@ function EntitiesTab({ kbId }: { kbId: string }) {
   const handleApprove = async () => {
     if (selected.length === 0) return;
     try {
+      setApproving(true);
       const { approved } = await graphKnowledgeApi.approveEntities(kbId, selected);
       message.success(`已采纳 ${approved} 个实体`);
       setSelected([]);
       fetchEntities();
     } catch (err: any) {
       message.error(err.message || '采纳失败');
+    } finally {
+      setApproving(false);
     }
   };
 
@@ -664,6 +673,7 @@ function EntitiesTab({ kbId }: { kbId: string }) {
           <Button
             icon={<CheckCircleOutlined />}
             disabled={selected.length === 0}
+            loading={approving}
             onClick={handleApprove}
           >
             采纳选中（{selected.length}）
@@ -693,6 +703,7 @@ function EntitiesTab({ kbId }: { kbId: string }) {
         open={editOpen}
         onOk={handleEditSave}
         onCancel={() => setEditOpen(false)}
+        confirmLoading={saving}
         destroyOnHidden
         width={520}
       >
@@ -726,6 +737,8 @@ function RelationshipsTab({ kbId }: { kbId: string }) {
   const [editing, setEditing] = useState<GraphRelationship | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [editForm] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+  const [approving, setApproving] = useState(false);
 
   const fetchRels = useCallback(async () => {
     setLoading(true);
@@ -760,6 +773,7 @@ function RelationshipsTab({ kbId }: { kbId: string }) {
     if (!editing) return;
     try {
       const values = await editForm.validateFields();
+      setSaving(true);
       await graphKnowledgeApi.updateRelationship(kbId, editing.id, {
         relation_type: values.relation_type,
         confidence: values.confidence,
@@ -771,6 +785,8 @@ function RelationshipsTab({ kbId }: { kbId: string }) {
     } catch (err: any) {
       if (err?.errorFields) return;
       message.error(err.message || '更新失败');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -787,12 +803,15 @@ function RelationshipsTab({ kbId }: { kbId: string }) {
   const handleApprove = async () => {
     if (selected.length === 0) return;
     try {
+      setApproving(true);
       const { approved } = await graphKnowledgeApi.approveRelationships(kbId, selected);
       message.success(`已采纳 ${approved} 条关系`);
       setSelected([]);
       fetchRels();
     } catch (err: any) {
       message.error(err.message || '采纳失败');
+    } finally {
+      setApproving(false);
     }
   };
 
@@ -848,6 +867,7 @@ function RelationshipsTab({ kbId }: { kbId: string }) {
           <Button
             icon={<CheckCircleOutlined />}
             disabled={selected.length === 0}
+            loading={approving}
             onClick={handleApprove}
           >
             采纳选中（{selected.length}）
@@ -877,6 +897,7 @@ function RelationshipsTab({ kbId }: { kbId: string }) {
         open={editOpen}
         onOk={handleEditSave}
         onCancel={() => setEditOpen(false)}
+        confirmLoading={saving}
         destroyOnHidden
         width={520}
       >
@@ -1082,6 +1103,7 @@ function JobsTab({ kbId }: { kbId: string }) {
   const [jobs, setJobs] = useState<GraphExtractionJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
 
   const fetchJobs = useCallback(async () => {
     setLoading(true);
@@ -1118,12 +1140,15 @@ function JobsTab({ kbId }: { kbId: string }) {
   };
 
   const handleRetry = async (jobId: string) => {
+    setRetryingId(jobId);
     try {
       await graphKnowledgeApi.retryJob(kbId, jobId);
       message.success('已重新启动抽取');
       fetchJobs();
     } catch (err: any) {
       message.error(err.message || '重试失败');
+    } finally {
+      setRetryingId(null);
     }
   };
 
@@ -1176,7 +1201,13 @@ function JobsTab({ kbId }: { kbId: string }) {
               width: 90,
               render: (_, job) =>
                 job.status === 'failed' ? (
-                  <Button type="text" size="small" icon={<ReloadOutlined />} onClick={() => handleRetry(job.id)}>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<ReloadOutlined />}
+                    loading={retryingId === job.id}
+                    onClick={() => handleRetry(job.id)}
+                  >
                     重试
                   </Button>
                 ) : null,

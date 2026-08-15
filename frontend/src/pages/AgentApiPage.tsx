@@ -33,22 +33,6 @@ export default function AgentApiPage() {
     loadAgent();
   }, [loadAgent]);
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
-
-  if (!agent || !agentId) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Text type="secondary">智能体未找到</Text>
-      </div>
-    );
-  }
-
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-card">
       {/* Header */}
@@ -59,19 +43,36 @@ export default function AgentApiPage() {
           onClick={() => navigate(-1)}
           className="!text-muted-foreground hover:!text-foreground"
         />
-        <span className="text-2xl">{getAgentIcon(agent.icon)}</span>
-        <div className="min-w-0">
-          <div className="font-semibold text-base">{agent.name}</div>
-          <Text type="secondary" className="text-xs">API 文档</Text>
-        </div>
+        {agent ? (
+          <>
+            <span className="text-2xl">{getAgentIcon(agent.icon)}</span>
+            <div className="min-w-0">
+              <div className="font-semibold text-base">{agent.name}</div>
+              <Text type="secondary" className="text-xs">API 文档</Text>
+            </div>
+          </>
+        ) : (
+          <div className="min-w-0">
+            <div className="font-semibold text-base">API 文档</div>
+          </div>
+        )}
       </div>
 
-      {/* API Doc content — wider layout for standalone page */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto py-6 px-6">
-          <ApiDocPanel agentId={agentId} onClose={() => navigate(-1)} embedded />
+      {loading ? (
+        <div className="flex-1 flex items-center justify-center">
+          <Spin size="large" />
         </div>
-      </div>
+      ) : !agent || !agentId ? (
+        <div className="flex-1 flex items-center justify-center">
+          <Text type="secondary">智能体未找到</Text>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-3xl mx-auto py-6 px-6">
+            <ApiDocPanel agentId={agentId} onClose={() => navigate(-1)} embedded />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -34,7 +34,12 @@ function pickBubble(): string {
 }
 
 /** 渠道来源标识（任务条前缀） */
-const SOURCE_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企微' };
+const SOURCE_LABELS: Record<string, string> = {
+  feishu: '飞书',
+  dingtalk: '钉钉',
+  wecom: '企微',
+  wecom_bot: '企微机器人',
+};
 
 interface Pos {
   x: number;

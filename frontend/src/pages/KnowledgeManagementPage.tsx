@@ -52,6 +52,7 @@ export default function KnowledgeManagementPage() {
 
   // ---- RAGFlow settings ----
   const [settings, setSettings] = useState<RagflowSettings>({ base_url: '', has_api_key: false });
+  const [settingsLoading, setSettingsLoading] = useState(true);
   const [settingsForm] = Form.useForm();
   const [settingsSaving, setSettingsSaving] = useState(false);
 
@@ -78,11 +79,18 @@ export default function KnowledgeManagementPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [kbs, ragSettings] = await Promise.all([
-        knowledgeApi.list(),
-        ragflowSettingsApi.get(),
-      ]);
-      setKnowledgeBases(kbs);
+      setKnowledgeBases(await knowledgeApi.list());
+    } catch (err: any) {
+      message.error(`加载数据失败：${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [message]);
+
+  const fetchSettings = useCallback(async () => {
+    setSettingsLoading(true);
+    try {
+      const ragSettings = await ragflowSettingsApi.get();
       setSettings(ragSettings);
       settingsForm.setFieldsValue({
         base_url: ragSettings.base_url,
@@ -91,11 +99,11 @@ export default function KnowledgeManagementPage() {
     } catch (err: any) {
       message.error(`加载数据失败：${err.message}`);
     } finally {
-      setLoading(false);
+      setSettingsLoading(false);
     }
   }, [message, settingsForm]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { fetchData(); fetchSettings(); }, [fetchData, fetchSettings]);
 
   // ---- Save RAGFlow settings ----
   const handleSaveSettings = async () => {
@@ -217,15 +225,7 @@ export default function KnowledgeManagementPage() {
     }
   };
 
-  // ---- Loading state ----
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
-
+  // ---- Rendering ----
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="w-full px-6 py-8">
@@ -260,38 +260,48 @@ export default function KnowledgeManagementPage() {
           }
           className="mb-6"
         >
-          <Form form={settingsForm} layout="vertical" className="max-w-2xl">
-            <Form.Item
-              name="base_url"
-              label="服务地址 (Base URL)"
-              tooltip="RAGFlow 服务的访问地址，例如 http://localhost:9380"
-            >
-              <Input placeholder="http://localhost:9380" />
-            </Form.Item>
+          {settingsLoading ? (
+            <div className="py-8 flex items-center justify-center">
+              <Spin size="large" />
+            </div>
+          ) : (
+            <Form form={settingsForm} layout="vertical" className="max-w-2xl">
+              <Form.Item
+                name="base_url"
+                label="服务地址 (Base URL)"
+                tooltip="RAGFlow 服务的访问地址，例如 http://localhost:9380"
+              >
+                <Input placeholder="http://localhost:9380" />
+              </Form.Item>
 
-            <Form.Item
-              name="api_key"
-              label={`API 密钥 ${settings.has_api_key ? '(留空保持不变)' : ''}`}
-              tooltip="RAGFlow 的 API Key，用于认证访问"
-            >
-              <Input.Password
-                placeholder={settings.has_api_key ? '输入新密钥以更新（留空保持不变）' : '输入 RAGFlow API Key'}
-              />
-            </Form.Item>
+              <Form.Item
+                name="api_key"
+                label={`API 密钥 ${settings.has_api_key ? '(留空保持不变)' : ''}`}
+                tooltip="RAGFlow 的 API Key，用于认证访问"
+              >
+                <Input.Password
+                  placeholder={settings.has_api_key ? '输入新密钥以更新（留空保持不变）' : '输入 RAGFlow API Key'}
+                />
+              </Form.Item>
 
-            <Button
-              type="primary"
-              icon={<SaveOutlined />}
-              onClick={handleSaveSettings}
-              loading={settingsSaving}
-            >
-              保存配置
-            </Button>
-          </Form>
+              <Button
+                type="primary"
+                icon={<SaveOutlined />}
+                onClick={handleSaveSettings}
+                loading={settingsSaving}
+              >
+                保存配置
+              </Button>
+            </Form>
+          )}
         </Card>
 
         {/* Knowledge Base List */}
-        {knowledgeBases.length === 0 ? (
+        {loading ? (
+          <div className="py-16 flex items-center justify-center">
+            <Spin size="large" />
+          </div>
+        ) : knowledgeBases.length === 0 ? (
           <Card>
             <Empty description="暂无知识库，请添加以扩展 Agent 的知识检索能力。" image={Empty.PRESENTED_IMAGE_SIMPLE}>
               <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>

@@ -59,6 +59,9 @@ export default function McpManagementPage() {
   // ---- List state ----
   const [servers, setServers] = useState<McpServer[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
 
   // ---- Edit/Create modal ----
   const [modalOpen, setModalOpen] = useState(false);
@@ -133,6 +136,7 @@ export default function McpManagementPage() {
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
+      setSaving(true);
       const payload = {
         name: values.name,
         transport_type: values.transport_type as TransportType,
@@ -155,28 +159,36 @@ export default function McpManagementPage() {
     } catch (err: any) {
       if (err?.errorFields) return; // form validation error
       message.error(err.message || '操作失败');
+    } finally {
+      setSaving(false);
     }
   };
 
   // ---- Delete ----
   const handleDelete = async (id: string) => {
+    setDeletingId(id);
     try {
       await mcpApi.delete(id);
       message.success('MCP Server 已删除');
       fetchData();
     } catch (err: any) {
       message.error(`删除失败：${err.message}`);
+    } finally {
+      setDeletingId(null);
     }
   };
 
   // ---- Refresh ----
   const handleRefresh = async (id: string) => {
+    setRefreshingId(id);
     try {
       await mcpApi.refresh(id);
       message.success('MCP Server 已刷新');
       fetchData();
     } catch (err: any) {
       message.error(`刷新失败：${err.message}`);
+    } finally {
+      setRefreshingId(null);
     }
   };
 
@@ -185,15 +197,6 @@ export default function McpManagementPage() {
     setToolsModalServer(server);
     setToolsModalOpen(true);
   };
-
-  // ---- Loading state ----
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -215,7 +218,11 @@ export default function McpManagementPage() {
         </div>
 
         {/* Empty state */}
-        {servers.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center py-24">
+            <Spin size="large" />
+          </div>
+        ) : servers.length === 0 ? (
           <Card>
             <Empty description="暂无 MCP Server，请添加以扩展 Agent 的工具能力。" image={Empty.PRESENTED_IMAGE_SIMPLE}>
               <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
@@ -256,6 +263,7 @@ export default function McpManagementPage() {
                           icon={<ReloadOutlined />}
                           onClick={() => handleRefresh(server.id)}
                           disabled={!server.is_active}
+                          loading={refreshingId === server.id}
                         />
                       </Tooltip>
                       <Tooltip title="编辑">
@@ -273,6 +281,7 @@ export default function McpManagementPage() {
                         okText="删除"
                         okType="danger"
                         cancelText="取消"
+                        okButtonProps={{ loading: deletingId === server.id }}
                       >
                         <Tooltip title="删除">
                           <Button type="text" size="small" danger icon={<DeleteOutlined />} />
@@ -349,6 +358,7 @@ export default function McpManagementPage() {
           open={modalOpen}
           onOk={handleSave}
           onCancel={() => setModalOpen(false)}
+          confirmLoading={saving}
           destroyOnHidden
           width={600}
         >

@@ -87,12 +87,13 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
     async with factory() as db:
         current_user_id.set(user_id)
         await _set_rls_context(db, user_id)
-        tenant_id = await _get_tenant_id(db, uid)
-        if tenant_id is None:
+        # 租户由 create_job 解析：优先任务对应智能体的租户，其次用户租户，
+        # 绝不回退默认租户。这里仅校验用户存在，避免解析失败时产生误导性错误。
+        if await _get_tenant_id(db, uid) is None:
             return f"Error: user {uid} not found"
         job = await CronJobService.create_job(
             db=db,
-            tenant_id=tenant_id,
+            tenant_id=None,
             user_id=uid,
             name=name,
             agent_id=agent_id,

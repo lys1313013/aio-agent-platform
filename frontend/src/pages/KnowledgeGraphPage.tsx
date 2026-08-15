@@ -120,14 +120,6 @@ export default function KnowledgeGraphPage() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="w-full px-6 py-8">
@@ -147,7 +139,11 @@ export default function KnowledgeGraphPage() {
           </Button>
         </div>
 
-        {knowledgeBases.length === 0 ? (
+        {loading ? (
+          <div className="py-16 flex items-center justify-center">
+            <Spin size="large" />
+          </div>
+        ) : knowledgeBases.length === 0 ? (
           <Card>
             <Empty description="暂无图谱知识库，创建后上传文档并触发抽取，构建实体-关系图谱。" image={Empty.PRESENTED_IMAGE_SIMPLE}>
               <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>

@@ -88,7 +88,7 @@ export default function MemoryPage() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [scores, setScores] = useState<Record<string, number>>({});
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [counts, setCounts] = useState<Record<MemoryLayer, number>>({ L1: 0, L2: 0, L3: 0 });
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchDeleting, setBatchDeleting] = useState(false);

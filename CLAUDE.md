@@ -82,6 +82,18 @@ docker compose --profile build up sandbox-build  # 构建沙箱镜像
 - `stores/chatStore.ts` 管理会话状态，`stores/authStore.ts` 管理 JWT 认证
 - `/api` 请求由 Vite proxy 转发到后端 8100 端口
 
+### 前端 Loading 规范
+
+数据加载必须有视觉反馈，且 feedback 应尽量局部化，避免把整页换成空白 spinner。
+
+1. **局部优先，不整页空白**：不要用 `if (loading) return <整页 Spin/>` 把整个页面（含 Header、操作区）替换成空白。页面 Header（标题、新建/添加按钮）与筛选区应常驻，只对数据内容区（列表、卡片、图表、表格）显示 loading。典型反例与正确做法见 `ChannelsPage` / `KnowledgeGraphDetailPage` / `PetsPage`（已按此规范改造）。
+2. **首屏加载状态三态**：数据未到时内容区显示 `<Spin size="large">` 居中或 `<Skeleton>`；加载完成但为空显示 `<Empty>`；正常渲染数据。`loading` 初始值设为 `true`，避免首帧空态闪烁（见 `SkillsPage` / `MemoryPage`）。
+3. **多数据源不互相阻塞**：多个请求并行（`Promise.all`）时，次要数据（如表单下拉选项、独立配置）不应阻塞主内容渲染。主数据先渲染，次要数据单独 loading 或用空数组兜底。反例：`ChannelsPage` 曾用 4 个数据源的 `Promise.all` 驱动整页 loading，其中 tools/users 只是表单下拉却阻塞了渠道列表。正确做法见 `KnowledgeManagementPage`（知识库列表与 RAGFlow 设置拆分为两个独立请求）。
+4. **表格**：用 Table 的 `loading` prop，不要额外整页 Spin（如渠道绑定列表、任务列表）。
+5. **异步操作反馈**：保存/提交用 Modal `confirmLoading` 或按钮 `loading`；删除/停用等破坏性操作在 Popconfirm `okButtonProps={{ loading }}` 反馈；上传、下载、切换租户等长操作也要有进行中反馈。新建/创建类操作加防重守卫（`if (busy) return`），避免慢网络下重复提交（见 `ChatPage` / `SessionSidebar` 的新对话按钮）。
+6. **loading 状态复位**：所有异步 loading state 必须在 `finally` 中复位，保证失败路径不残留 loading；切换会话/数据源时同步复位可能残留的加载标记（见 `chatStore.ts` 的 `messagesLoading`）。
+7. 只加 loading 反馈，不改变业务逻辑、数据结构与文案。
+
 ### 配置系统
 
 `core/config.py` — `pydantic-settings`，`AppSettings` 组合多个子配置类（DB、JWT、LLM、Agent、Sandbox、Storage、Langfuse、Server）。LLM 模型不在 .env 配置，而是通过管理后台动态管理（`llm_providers` / `llm_models` 表）。

@@ -72,6 +72,12 @@ export default function ModelManagementPage() {
   const [providers, setProviders] = useState<LLMProvider[]>([]);
   const [models, setModels] = useState<LLMModel[]>([]);
   const [loading, setLoading] = useState(true);
+  const [providerSaving, setProviderSaving] = useState(false);
+  const [modelSaving, setModelSaving] = useState(false);
+  const [deletingProviderId, setDeletingProviderId] = useState<string | null>(null);
+  const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
+  const [defaultingModelId, setDefaultingModelId] = useState<string | null>(null);
+  const [togglingModelId, setTogglingModelId] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -122,6 +128,7 @@ export default function ModelManagementPage() {
   const handleProviderSave = async () => {
     try {
       const values = await providerForm.validateFields();
+      setProviderSaving(true);
       const payload = {
         name: values.name,
         provider_type: values.provider_type,
@@ -141,16 +148,21 @@ export default function ModelManagementPage() {
     } catch (err: any) {
       if (err?.errorFields) return;
       message.error(err.message || '操作失败');
+    } finally {
+      setProviderSaving(false);
     }
   };
 
   const handleDeleteProvider = async (id: string) => {
+    setDeletingProviderId(id);
     try {
       await adminApi.deleteProvider(id);
       message.success('供应商已删除');
       fetchData();
     } catch (err: any) {
       message.error(err.message || '删除失败');
+    } finally {
+      setDeletingProviderId(null);
     }
   };
 
@@ -181,6 +193,7 @@ export default function ModelManagementPage() {
   const handleModelSave = async () => {
     try {
       const values = await modelForm.validateFields();
+      setModelSaving(true);
       const payload = {
         provider_id: values.provider_id,
         name: values.name,
@@ -200,35 +213,46 @@ export default function ModelManagementPage() {
     } catch (err: any) {
       if (err?.errorFields) return;
       message.error(err.message || '操作失败');
+    } finally {
+      setModelSaving(false);
     }
   };
 
   const handleDeleteModel = async (id: string) => {
+    setDeletingModelId(id);
     try {
       await adminApi.deleteModel(id);
       message.success('模型已删除');
       fetchData();
     } catch (err: any) {
       message.error(err.message || '删除失败');
+    } finally {
+      setDeletingModelId(null);
     }
   };
 
   const handleSetDefault = async (id: string) => {
+    setDefaultingModelId(id);
     try {
       await adminApi.setDefaultModel(id);
       message.success('已设为默认模型');
       fetchData();
     } catch (err: any) {
       message.error(err.message || '操作失败');
+    } finally {
+      setDefaultingModelId(null);
     }
   };
 
   const handleToggleModelActive = async (id: string, active: boolean) => {
+    setTogglingModelId(id);
     try {
       await adminApi.updateModel(id, { is_active: active });
       fetchData();
     } catch (err: any) {
       message.error(err.message || '操作失败');
+    } finally {
+      setTogglingModelId(null);
     }
   };
 
@@ -286,14 +310,6 @@ export default function ModelManagementPage() {
     return <Navigate to="/" replace />;
   }
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="w-full px-6 py-8">
@@ -313,7 +329,11 @@ export default function ModelManagementPage() {
           </Button>
         </div>
 
-        {providers.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center py-24">
+            <Spin size="large" />
+          </div>
+        ) : providers.length === 0 ? (
           <Card>
             <Empty
               description="暂无供应商，请先添加 LLM 供应商。"
@@ -362,6 +382,7 @@ export default function ModelManagementPage() {
                         okText="删除"
                         okType="danger"
                         cancelText="取消"
+                        okButtonProps={{ loading: deletingProviderId === provider.id }}
                       >
                         <Tooltip title="删除供应商">
                           <Button
@@ -460,8 +481,11 @@ export default function ModelManagementPage() {
                                     <button
                                       onClick={() => !model.is_default && handleSetDefault(model.id)}
                                       className="flex-shrink-0"
+                                      disabled={defaultingModelId === model.id}
                                     >
-                                      {model.is_default ? (
+                                      {defaultingModelId === model.id ? (
+                                        <Spin size="small" />
+                                      ) : model.is_default ? (
                                         <StarFilled style={{ color: '#fadb14', fontSize: 16 }} />
                                       ) : (
                                         <StarOutlined style={{ color: '#999', fontSize: 16 }} />
@@ -489,6 +513,7 @@ export default function ModelManagementPage() {
                                     <Switch
                                       size="small"
                                       checked={model.is_active}
+                                      loading={togglingModelId === model.id}
                                       onChange={(checked) =>
                                         handleToggleModelActive(model.id, checked)
                                       }
@@ -508,6 +533,7 @@ export default function ModelManagementPage() {
                                     okText="删除"
                                     okType="danger"
                                     cancelText="取消"
+                                    okButtonProps={{ loading: deletingModelId === model.id }}
                                   >
                                     <Button
                                       type="text"
@@ -556,6 +582,7 @@ export default function ModelManagementPage() {
           open={providerModalOpen}
           onOk={handleProviderSave}
           onCancel={() => setProviderModalOpen(false)}
+          confirmLoading={providerSaving}
           destroyOnHidden
         >
           <Form form={providerForm} layout="vertical" initialValues={{ provider_type: 'openai', is_active: true }}>
@@ -586,6 +613,7 @@ export default function ModelManagementPage() {
           open={modelModalOpen}
           onOk={handleModelSave}
           onCancel={() => setModelModalOpen(false)}
+          confirmLoading={modelSaving}
           destroyOnHidden
         >
           <Form form={modelForm} layout="vertical" initialValues={{ is_active: true, is_multimodal: false }}>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { SaveOutlined } from '@ant-design/icons';
-import { Form, Select, Button, Card, Typography, Spin, App, Input } from 'antd';
+import { Form, Select, Button, Card, Typography, Skeleton, App, Input } from 'antd';
 import { systemConfigApi, adminApi } from '@/lib/api';
 import type { LLMModel } from '@/lib/api';
 
@@ -55,14 +55,6 @@ export default function SystemConfigPage() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Spin size="large" />
-      </div>
-    );
-  }
-
   return (
     <div className="mx-auto w-full max-w-3xl p-6">
       <Card
@@ -72,12 +64,16 @@ export default function SystemConfigPage() {
             type="primary"
             icon={<SaveOutlined />}
             loading={saving}
+            disabled={loading}
             onClick={handleSave}
           >
             保存
           </Button>
         }
       >
+        {loading ? (
+          <Skeleton active paragraph={{ rows: 6 }} />
+        ) : (
         <Form form={form} layout="vertical">
           <Form.Item
             name="model_id"
@@ -113,6 +109,7 @@ export default function SystemConfigPage() {
             </Button>
           </Form.Item>
         </Form>
+        )}
       </Card>
     </div>
   );

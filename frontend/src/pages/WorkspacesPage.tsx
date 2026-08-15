@@ -46,6 +46,9 @@ export default function WorkspacesPage() {
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
 
   const fetchWorkspaces = useCallback(async () => {
     setLoadingWs(true);
@@ -121,12 +124,15 @@ export default function WorkspacesPage() {
   };
 
   const handleDeleteWorkspace = async (ws: Workspace) => {
+    setDeletingKey(`ws:${ws.id}`);
     try {
       await workspacesApi.delete(ws.id);
       message.success('工作区已删除');
       fetchWorkspaces();
     } catch (e) {
       message.error(e instanceof Error ? e.message : '删除失败');
+    } finally {
+      setDeletingKey(null);
     }
   };
 
@@ -135,6 +141,7 @@ export default function WorkspacesPage() {
   const handleDownload = async (entry: WorkspaceFileEntry) => {
     if (!selectedId) return;
     const fullPath = joinPath(currentPath, entry.path);
+    setDownloadingPath(entry.path);
     try {
       const blob = await workspacesApi.downloadFile(selectedId, fullPath);
       const url = URL.createObjectURL(blob);
@@ -145,18 +152,23 @@ export default function WorkspacesPage() {
       URL.revokeObjectURL(url);
     } catch {
       message.error('下载失败');
+    } finally {
+      setDownloadingPath(null);
     }
   };
 
   const handleDeleteFile = async (entry: WorkspaceFileEntry) => {
     if (!selectedId) return;
     const fullPath = joinPath(currentPath, entry.path);
+    setDeletingKey(`file:${entry.path}`);
     try {
       await workspacesApi.deleteFile(selectedId, fullPath);
       message.success('已删除');
       fetchFiles(selectedId, currentPath);
     } catch {
       message.error('删除失败');
+    } finally {
+      setDeletingKey(null);
     }
   };
 
@@ -201,6 +213,7 @@ export default function WorkspacesPage() {
               type="text"
               size="small"
               icon={<DownloadOutlined />}
+              loading={downloadingPath === record.path}
               onClick={() => handleDownload(record)}
             />
           )}
@@ -208,7 +221,7 @@ export default function WorkspacesPage() {
             title={`删除${record.is_dir ? '文件夹' : '文件'} "${record.path}"？`}
             okText="删除"
             cancelText="取消"
-            okButtonProps={{ danger: true }}
+            okButtonProps={{ danger: true, loading: deletingKey === `file:${record.path}` }}
             onConfirm={() => handleDeleteFile(record)}
           >
             <Button type="text" size="small" danger icon={<DeleteOutlined />} />
@@ -277,7 +290,7 @@ export default function WorkspacesPage() {
                       title={`删除工作区 "${ws.name}" 及其全部文件？`}
                       okText="删除"
                       cancelText="取消"
-                      okButtonProps={{ danger: true }}
+                      okButtonProps={{ danger: true, loading: deletingKey === `ws:${ws.id}` }}
                       onConfirm={() => handleDeleteWorkspace(ws)}
                     >
                       <Button
@@ -327,6 +340,7 @@ export default function WorkspacesPage() {
                     <Upload
                       showUploadList={false}
                       customRequest={async ({ file, onSuccess, onError }) => {
+                        setUploading(true);
                         try {
                           const target = joinPath(currentPath, (file as File).name);
                           await workspacesApi.uploadFile(selectedWorkspace.id, target, file as File);
@@ -336,10 +350,12 @@ export default function WorkspacesPage() {
                         } catch (e) {
                           message.error('上传失败');
                           onError?.(e as Error);
+                        } finally {
+                          setUploading(false);
                         }
                       }}
                     >
-                      <Button size="small" icon={<UploadOutlined />}>
+                      <Button size="small" icon={<UploadOutlined />} loading={uploading}>
                         上传
                       </Button>
                     </Upload>

@@ -49,8 +49,10 @@ export default function TenantManagementPage() {
   const [users, setUsers] = useState<TenantUser[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
   const [memberModalOpen, setMemberModalOpen] = useState(false);
+  const [memberLoading, setMemberLoading] = useState(false);
   const [allUsers, setAllUsers] = useState<AdminUser[]>([]);
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [tenantForm] = Form.useForm();
 
   const loadTenants = useCallback(async () => {
@@ -141,11 +143,14 @@ export default function TenantManagementPage() {
 
   const openMemberModal = async () => {
     try {
+      setMemberLoading(true);
       setAllUsers(await usersApi.list());
       setSelectedUserIds([]);
       setMemberModalOpen(true);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '加载用户失败');
+    } finally {
+      setMemberLoading(false);
     }
   };
 
@@ -212,13 +217,17 @@ export default function TenantManagementPage() {
             okText="删除"
             okType="danger"
             cancelText="取消"
+            okButtonProps={{ loading: deletingKey === `tenant:${tenant.id}` }}
             onConfirm={async () => {
               try {
+                setDeletingKey(`tenant:${tenant.id}`);
                 await tenantsApi.delete(tenant.id);
                 message.success('租户已删除');
                 await loadTenants();
               } catch (error) {
                 message.error(error instanceof Error ? error.message : '删除失败');
+              } finally {
+                setDeletingKey(null);
               }
             }}
           >
@@ -281,14 +290,18 @@ export default function TenantManagementPage() {
           okText="移出"
           okType="danger"
           cancelText="取消"
+          okButtonProps={{ loading: deletingKey === `member:${user.id}` }}
           onConfirm={async () => {
             if (!selectedTenant) return;
             try {
+              setDeletingKey(`member:${user.id}`);
               await tenantsApi.removeUser(selectedTenant.id, user.id);
               message.success('用户已移出租户');
               await Promise.all([loadUsers(selectedTenant), loadTenants()]);
             } catch (error) {
               message.error(error instanceof Error ? error.message : '移出失败');
+            } finally {
+              setDeletingKey(null);
             }
           }}
         >
@@ -339,7 +352,7 @@ export default function TenantManagementPage() {
 
         <Card>
           {loading ? (
-            <div className="flex min-h-64 items-center justify-center"><Spin /></div>
+            <div className="flex min-h-64 items-center justify-center"><Spin size="large" /></div>
           ) : tenants.length === 0 ? (
             <Empty description="暂无租户">
               <Button type="primary" onClick={() => openTenantModal()}>新建租户</Button>
@@ -397,6 +410,7 @@ export default function TenantManagementPage() {
             type="primary"
             icon={<UserAddOutlined />}
             disabled={!selectedTenant?.is_active}
+            loading={memberLoading}
             onClick={() => void openMemberModal()}
           >
             选择用户
