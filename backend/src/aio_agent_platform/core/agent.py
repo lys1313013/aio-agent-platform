@@ -27,6 +27,7 @@ from aio_agent_platform.hooks import get_hook_manager
 from aio_agent_platform.llm import (
     LLMMessage,
     LLMProvider,
+    LLMStreamError,
     ToolCall,
 )
 from aio_agent_platform.observation import get_current_observation, get_langfuse_client
@@ -42,6 +43,11 @@ logger = structlog.get_logger(__name__)
 
 # user_id -> tenant_id 的进程内缓存，避免每次 Agent.run 重复查库
 _tenant_cache: dict[str, UUID | None] = {}
+
+# 流式断连重试：仅当本次迭代零产出（连接刚建立就断）时安全重试，
+# 已产出文本/工具调用则上抛，避免前端收到重复内容。
+_STREAM_RETRY_MAX = 2  # 最多重试 2 次（共 3 次尝试）
+_STREAM_RETRY_BASE_DELAY = 1.0  # 秒，线性退避: 1s → 2s
 
 
 async def _resolve_tenant_id(user_id: UUID) -> UUID | None:
@@ -387,35 +393,58 @@ class AgentLoop:
             # Usage reported by the provider's final stream event
             step_usage: dict | None = None
 
-            # Call LLM (streaming)
+            # Call LLM (streaming), with mid-stream disconnect retry.
+            # Retry only when this iteration produced nothing yet — replaying
+            # a partially-streamed iteration would duplicate content on the client.
             logger.debug(
                 "agent_loop_llm_call",
                 session_id=str(session_id),
                 iteration=step_num,
             )
-            async for chunk in self.provider.stream(messages, tools=tools):
-                if chunk.type == "text_delta" and chunk.content:
-                    step.thinking += chunk.content
-                    text_chunks.append(chunk.content)
+            for stream_attempt in range(1, _STREAM_RETRY_MAX + 2):  # 1, 2, 3
+                try:
+                    async for chunk in self.provider.stream(messages, tools=tools):
+                        if chunk.type == "text_delta" and chunk.content:
+                            step.thinking += chunk.content
+                            text_chunks.append(chunk.content)
 
-                elif chunk.type == "tool_call_start" and chunk.tool_call:
-                    # New tool call starting
-                    tc = chunk.tool_call
-                    idx = len(pending_tool_calls)
-                    pending_tool_calls[idx] = {
-                        "id": tc.id,
-                        "name": tc.name,
-                        "args_str": chunk.argument_delta or "",
-                    }
+                        elif chunk.type == "tool_call_start" and chunk.tool_call:
+                            # New tool call starting
+                            tc = chunk.tool_call
+                            idx = len(pending_tool_calls)
+                            pending_tool_calls[idx] = {
+                                "id": tc.id,
+                                "name": tc.name,
+                                "args_str": chunk.argument_delta or "",
+                            }
 
-                elif chunk.type == "tool_call_delta" and chunk.argument_delta:
-                    # Accumulate argument string delta
-                    if pending_tool_calls:
-                        last_idx = max(pending_tool_calls.keys())
-                        pending_tool_calls[last_idx]["args_str"] += chunk.argument_delta
+                        elif chunk.type == "tool_call_delta" and chunk.argument_delta:
+                            # Accumulate argument string delta
+                            if pending_tool_calls:
+                                last_idx = max(pending_tool_calls.keys())
+                                pending_tool_calls[last_idx]["args_str"] += chunk.argument_delta
 
-                elif chunk.type == "done" and chunk.usage:
-                    step_usage = chunk.usage
+                        elif chunk.type == "done" and chunk.usage:
+                            step_usage = chunk.usage
+                    break  # stream completed normally
+                except LLMStreamError:
+                    produced = bool(text_chunks) or bool(pending_tool_calls)
+                    if produced or stream_attempt > _STREAM_RETRY_MAX:
+                        raise
+                    delay = _STREAM_RETRY_BASE_DELAY * stream_attempt
+                    logger.warning(
+                        "agent_loop_stream_retry",
+                        session_id=str(session_id),
+                        iteration=step_num,
+                        attempt=stream_attempt,
+                        delay=delay,
+                    )
+                    await asyncio.sleep(delay)
+                    # Discard partial state and reopen a fresh stream
+                    step.thinking = ""
+                    text_chunks = []
+                    pending_tool_calls = {}
+                    step_usage = None
 
             if step_usage:
                 record_llm_usage(user_id, self.provider.model, step_usage)
