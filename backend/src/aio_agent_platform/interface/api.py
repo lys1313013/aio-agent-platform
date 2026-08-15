@@ -435,7 +435,7 @@ async def lifespan(app: FastAPI):
             tool_executor, agent, extra_blacklist={"delegate_task"}
         )
 
-        # 配置了渠道时，注入 notify_channel 工具让 agent 决定是否主动通知（默认静默）
+        # 配置了渠道时，注入 notify_channel 工具让 agent 执行后推送结果（默认通知）
         if job.channel_id:
             from aio_agent_platform.channels.cron_notify import (
                 NOTIFY_CHANNEL_TOOL_NAME,
@@ -449,9 +449,10 @@ async def lifespan(app: FastAPI):
         )
         if job.channel_id:
             system_prompt += (
-                "\n\n[通知规则] 你可以调用 notify_channel 工具主动把消息推送到用户的 IM 渠道。"
-                "默认保持静默：只有当发现需要用户关注的问题、或任务要求必须报告结果时才调用；"
-                "一切正常、无需打扰用户时不要调用。"
+                "\n\n[通知规则] 执行结束后必须调用 notify_channel 工具把结果推送到用户的 IM 渠道。"
+                "默认总是通知，不要在『一切正常』时选择不推。"
+                "唯一例外：任务 message 中用户明确写明了不通知的条件（如『仅异常时通知』、"
+                "『结果正常时不用推送』），才按用户说明的条件判断是否通知；没有写明就一律推送。"
             )
         loop = await build_agent_loop(
             tool_executor, system_prompt, db,

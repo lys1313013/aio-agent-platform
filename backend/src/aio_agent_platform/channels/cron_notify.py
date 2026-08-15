@@ -1,9 +1,11 @@
-"""notify_channel tool — lets a cron agent decide whether to push a result to the bound IM channel.
+"""notify_channel tool — lets a cron agent push a result to the bound IM channel.
 
 The cron executor sets ``current_cron_notify_ctx`` around the AgentLoop run and injects
 the tool schema only when the job has a ``channel_id``. When the agent calls the tool,
-the executor pushes the given text to the job owner's bound account. If the agent never
-calls it, nothing is pushed — that is the "silent when there's nothing to report" mode.
+the executor pushes the given text to the job owner's bound account. Default behaviour
+is to always notify; the agent only skips calling it when the job message explicitly
+states conditions under which the user does not want to be notified (e.g. "notify on
+errors only"). If the agent never calls it, nothing is pushed.
 """
 
 from __future__ import annotations
@@ -23,9 +25,10 @@ NOTIFY_CHANNEL_TOOL_SCHEMA: dict = {
     "function": {
         "name": NOTIFY_CHANNEL_TOOL_NAME,
         "description": (
-            "将一条消息推送到用户绑定的 IM 渠道（如飞书），用于定时任务主动通知用户。"
-            "只有当任务发现问题、需要用户关注或明确要求报告时才调用；"
-            "如果一切正常、没有需要用户知晓的内容，不要调用本工具，直接结束。"
+            "将一条消息推送到用户绑定的 IM 渠道（如飞书），用于定时任务通知用户结果。"
+            "默认必须在任务执行结束后调用本工具推送结果；"
+            "只有当任务 message 中用户明确写明了不通知的条件（如『仅异常时通知』）时，"
+            "才按用户说明的条件判断是否调用，否则一律调用。"
         ),
         "parameters": {
             "type": "object",
