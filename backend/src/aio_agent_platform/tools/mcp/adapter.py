@@ -8,6 +8,7 @@ import sys
 from dataclasses import dataclass, field
 from uuid import UUID
 
+import httpx
 import structlog
 
 logger = structlog.get_logger()
@@ -220,38 +221,104 @@ class MCPServerConnection:
 
         Returns:
             Text output from the tool
+
+        If the server has reclaimed the session — streamable-http idle
+        timeouts recycle sessions, so a stale session fails with "Session
+        terminated" — transparently re-establish the connection and retry
+        once before giving up. Without this, a single expired session
+        fails every subsequent call until someone manually refreshes the
+        server.
         """
         if not self.session:
             raise RuntimeError(f"MCP Server not connected: {self.config.get('name')}")
 
         try:
-            result = await self.session.call_tool(tool_name, arguments)
-
-            if result.isError:
-                # Extract error text
-                error_parts = []
-                if result.content:
-                    for item in result.content:
-                        if hasattr(item, "text"):
-                            error_parts.append(item.text)
-                error_text = "\n".join(error_parts) if error_parts else "Unknown MCP error"
-                raise RuntimeError(f"MCP tool error: {error_text}")
-
-            # Extract text content from result
-            if result.content:
-                text_parts = []
-                for item in result.content:
-                    if hasattr(item, "text"):
-                        text_parts.append(item.text)
-                return "\n".join(text_parts) if text_parts else "(no output)"
-
-            return "(no output)"
-
+            return await self._call_tool_once(tool_name, arguments)
         except Exception as e:
-            logger.error(
-                "mcp_tool_call_failed",
+            if not self._is_reconnectable(e):
+                logger.error(
+                    "mcp_tool_call_failed",
+                    server_id=str(self.server_id),
+                    name=self.config.get("name"),
+                    tool_name=tool_name,
+                    error=str(e),
+                )
+                raise
+            logger.warning(
+                "mcp_session_stale_reconnecting",
                 server_id=str(self.server_id),
+                name=self.config.get("name"),
                 tool_name=tool_name,
                 error=str(e),
             )
-            raise
+            try:
+                await self._reconnect()
+            except Exception:
+                logger.exception(
+                    "mcp_reconnect_failed",
+                    server_id=str(self.server_id),
+                    name=self.config.get("name"),
+                    tool_name=tool_name,
+                )
+                raise
+            # 重建成功，重试一次；若仍失败则原样上抛并记录。
+            try:
+                return await self._call_tool_once(tool_name, arguments)
+            except Exception as e2:
+                logger.error(
+                    "mcp_tool_call_failed",
+                    server_id=str(self.server_id),
+                    name=self.config.get("name"),
+                    tool_name=tool_name,
+                    error=str(e2),
+                )
+                raise
+
+    async def _call_tool_once(self, tool_name: str, arguments: dict) -> str:
+        """Single tool invocation on the current session (no retry logic)."""
+        result = await self.session.call_tool(tool_name, arguments)
+
+        if result.isError:
+            # Extract error text
+            error_parts = []
+            if result.content:
+                for item in result.content:
+                    if hasattr(item, "text"):
+                        error_parts.append(item.text)
+            error_text = "\n".join(error_parts) if error_parts else "Unknown MCP error"
+            raise RuntimeError(f"MCP tool error: {error_text}")
+
+        # Extract text content from result
+        if result.content:
+            text_parts = []
+            for item in result.content:
+                if hasattr(item, "text"):
+                    text_parts.append(item.text)
+            return "\n".join(text_parts) if text_parts else "(no output)"
+
+        return "(no output)"
+
+    def _is_reconnectable(self, exc: Exception) -> bool:
+        """Whether an exception is worth recovering from by reconnecting.
+
+        Two cases qualify:
+        - The server reclaimed our session. For streamable-http the server
+          answers a stale session with HTTP 404, which the MCP SDK turns into
+          ``McpError`` (code 32600, "Session terminated"). ``mcp`` is an
+          optional dependency, so match by name instead of importing it.
+        - A transport-level network failure (connection dropped, connect
+          timeout) — rebuilding the session typically restores service.
+        """
+        if type(exc).__name__ == "McpError":
+            code = getattr(getattr(exc, "error", None), "code", None)
+            if code == 32600 or "session terminated" in str(exc).lower():
+                return True
+        if isinstance(exc, httpx.RequestError):
+            return True
+        return False
+
+    async def _reconnect(self) -> None:
+        """Tear down the stale connection and establish a fresh session."""
+        await self._cleanup()
+        self._connected = False
+        await self.connect()

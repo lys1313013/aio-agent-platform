@@ -38,6 +38,9 @@ from aio_agent_platform.tools.mcp.adapter import MCPServerConnection
 from aio_agent_platform.tools.mcp.manager import MCPManager
 from aio_agent_platform.tools.registry import ToolRegistry
 
+from mcp.shared.exceptions import McpError
+from mcp.types import ErrorData
+
 
 # --------------------------------------------------------------------------- #
 # Fake MCP Server (SSE transport, one test tool)                              #
@@ -161,6 +164,88 @@ class TestMCPAdapterAndManager:
             await conn.connect()
             result = await conn.call_tool("fake_weather", {"city": "Berlin"})
             assert "FAKE_WEATHER:Berlin" in result
+        finally:
+            await conn.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_call_tool_recovers_from_expired_session(self, fake_mcp_server):
+        """A stale session ("Session terminated") must trigger an automatic
+        reconnect + retry instead of failing every call.
+
+        This pins down the aiolife outage: the streamable-http server recycled
+        the session, so every call kept hitting the same dead session. After
+        this fix the first failure re-establishes the connection and the retry
+        succeeds.
+        """
+        conn = MCPServerConnection(
+            server_id=uuid.uuid4(),
+            config={
+                "name": "fake-weather",
+                "transport_type": "sse",
+                "url": fake_mcp_server,
+                "headers": {},
+                "tool_prefix": "",
+                "timeout": 10,
+            },
+        )
+        try:
+            await conn.connect()
+            original_session = conn.session
+            stale_calls = {"count": 0}
+
+            async def stale_session_call(*a, **kw):
+                stale_calls["count"] += 1
+                raise McpError(
+                    ErrorData(code=32600, message="Session terminated")
+                )
+
+            conn.session.call_tool = stale_session_call
+
+            result = await conn.call_tool("fake_weather", {"city": "Berlin"})
+            assert "FAKE_WEATHER:Berlin" in result
+            # 旧 session 只被调用了一次：抛错后重建，重试走的是新 session
+            assert stale_calls["count"] == 1
+            assert conn.session is not original_session, "should have reconnected"
+            assert conn.connected
+        finally:
+            await conn.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_call_tool_does_not_reconnect_on_business_error(
+        self, fake_mcp_server
+    ):
+        """Non-session failures (e.g. a tool's own error) must propagate
+        directly without reconnecting."""
+        conn = MCPServerConnection(
+            server_id=uuid.uuid4(),
+            config={
+                "name": "fake-weather",
+                "transport_type": "sse",
+                "url": fake_mcp_server,
+                "headers": {},
+                "tool_prefix": "",
+                "timeout": 10,
+            },
+        )
+        try:
+            await conn.connect()
+            reconnects = {"count": 0}
+            orig_reconnect = conn._reconnect
+
+            async def spy_reconnect():
+                reconnects["count"] += 1
+                await orig_reconnect()
+
+            conn._reconnect = spy_reconnect
+
+            async def business_error(*a, **kw):
+                raise RuntimeError("tool business failure")
+
+            conn.session.call_tool = business_error
+
+            with pytest.raises(RuntimeError, match="business failure"):
+                await conn.call_tool("fake_weather", {"city": "X"})
+            assert reconnects["count"] == 0, "business errors must not reconnect"
         finally:
             await conn.disconnect()
 
