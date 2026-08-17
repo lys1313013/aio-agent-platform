@@ -581,7 +581,7 @@ class Session(Base):
     title: Mapped[str | None] = mapped_column(String(512), comment="会话标题")
     source: Mapped[str] = mapped_column(
         String(16), nullable=False, default="chat", server_default="chat",
-        comment="会话来源: chat(常规)/pet(宠物闲聊)",
+        comment="会话来源: chat(界面触发)/pet(宠物闲聊)/api(接口触发)/cron(定时任务)/feishu(飞书)/wecom(企微)/wecom_bot(企微机器人)",
     )
     pet_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), comment="宠物闲聊会话关联的用户宠物ID"

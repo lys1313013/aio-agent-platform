@@ -468,6 +468,7 @@ async def lifespan(app: FastAPI):
             user_id=job.user_id,
             agent_id=job.agent_id,
             title=job.name,
+            source="cron",
         )
         db.add(new_session)
         await db.flush()

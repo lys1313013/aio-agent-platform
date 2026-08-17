@@ -102,6 +102,7 @@ class CronJobRunOut(BaseModel):
     duration_ms: int | None = None
     output: str | None = None
     error: str | None = None
+    job_name: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -174,6 +175,59 @@ async def create_cron_job(
     return CronJobOut.from_model(job).model_dump(mode="json")
 
 
+@router.get("/runs", response_model=CronJobRunListResponse)
+async def list_all_cron_job_runs(
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    job_id: UUID | None = Query(default=None),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """List run records across all cron jobs of the current tenant.
+
+    Supports filtering by job (tenant-validated) and status, with
+    server-side pagination. LEFT JOINs CronJob so the job name survives
+    even after the job itself is deleted.
+    """
+    filters = [CronJobRun.tenant_id == user.tenant_id]
+
+    if job_id is not None:
+        job = await CronJobService.get_job(db, job_id, user.tenant_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Cron job not found")
+        filters.append(CronJobRun.job_id == job_id)
+
+    if status:
+        filters.append(CronJobRun.status == status)
+
+    runs_stmt = (
+        select(CronJobRun, CronJob.name)
+        .outerjoin(CronJob, CronJob.id == CronJobRun.job_id)
+        .where(*filters)
+        .order_by(CronJobRun.started_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = (await db.execute(runs_stmt)).all()
+
+    count_stmt = (
+        select(func.count()).select_from(CronJobRun).where(*filters)
+    )
+    total = (await db.execute(count_stmt)).scalar()
+
+    items: list[CronJobRunOut] = []
+    for run, job_name in rows:
+        item = CronJobRunOut.model_validate(run)
+        item.job_name = job_name
+        items.append(item)
+
+    return CronJobRunListResponse(
+        items=items,
+        total=total or 0,
+    ).model_dump(mode="json")
+
+
 @router.get("/{job_id}", response_model=CronJobOut)
 async def get_cron_job(
     job_id: UUID,
@@ -239,6 +293,30 @@ async def delete_cron_job(
     scheduler = getattr(request.app.state, "scheduler", None)
     if scheduler is not None:
         scheduler.remove_job(job_id)
+
+
+@router.post("/{job_id}/run", status_code=200)
+async def run_cron_job_now(
+    job_id: UUID,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    request: Request,
+) -> dict:
+    """Manually trigger a single execution of a cron job.
+
+    Reuses the exact same pipeline as the scheduler trigger: creates a run
+    record, runs the job's agent, and finalizes the record with output/error.
+    """
+    job = await CronJobService.get_job(db, job_id, user.tenant_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Cron job not found")
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="调度器未初始化")
+
+    await scheduler.run_now(job_id)
+    return {"ok": True}
 
 
 @router.get("/{job_id}/runs", response_model=CronJobRunListResponse)

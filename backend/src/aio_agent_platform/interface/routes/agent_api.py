@@ -480,6 +480,7 @@ async def _execute_agent_inner(
             user_id=user.id,
             agent_id=agent_id,
             title=req.user_input[:100],
+            source="api",
         )
         db.add(session)
         await db.flush()
@@ -639,6 +640,7 @@ async def create_external_session(
         user_id=user.id,
         agent_id=agent_id,
         title=f"API Session ({req.session_type})",
+        source="api",
     )
     db.add(session)
     await db.flush()

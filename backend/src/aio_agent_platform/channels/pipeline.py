@@ -475,6 +475,7 @@ class ChannelInboundPipeline:
                 user_id=user_id,
                 agent_id=self.channel.agent_id,
                 title=f"{_channel_title_prefix(self.channel.channel_type)}{event.chat_kind.value} · {event.external_id[:8]}",
+                source=self.channel.channel_type,
             )
             db.add(session)
             await db.flush()
@@ -547,6 +548,7 @@ class ChannelInboundPipeline:
             user_id=ctx.user_id,
             agent_id=self.channel.agent_id,
             title=f"{_channel_title_prefix(self.channel.channel_type)}新对话 · {event.external_id[:8]}",
+            source=self.channel.channel_type,
         )
         db.add(session)
         await db.flush()

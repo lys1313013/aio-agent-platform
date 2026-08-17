@@ -44,6 +44,7 @@ class SessionOut(BaseModel):
     workspace_id: UUID | None = None
     is_pinned: bool
     is_archived: bool
+    source: str = "chat"
     created_at: datetime
     updated_at: datetime
 

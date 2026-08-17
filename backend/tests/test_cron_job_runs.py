@@ -278,6 +278,96 @@ async def test_rest_runs_endpoint(cron_client, db_session: AsyncSession):
     assert resp2.json()["items"][0]["output"] == "ok"
 
 
+async def test_rest_all_runs_endpoint(cron_client, db_session: AsyncSession):
+    """GET /api/cron-jobs/runs lists runs across jobs with filters + job_name."""
+    from uuid import UUID
+
+    client, _, user = cron_client
+    job_id = await _create_via_api(client)
+    job_uuid = UUID(job_id)
+
+    # no runs yet
+    resp = await client.get("/api/cron-jobs/runs")
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 0
+
+    run1 = CronJobRun(job_id=job_uuid, user_id=user.id, status="success", output="ok")
+    run2 = CronJobRun(job_id=job_uuid, user_id=user.id, status="failed", error="boom")
+    db_session.add_all([run1, run2])
+    await db_session.flush()
+
+    # all runs listed, job_name resolved from the joined job row
+    resp = await client.get("/api/cron-jobs/runs")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert {i["status"] for i in data["items"]} == {"success", "failed"}
+    assert all(i["job_name"] for i in data["items"])
+
+    # status filter
+    resp = await client.get("/api/cron-jobs/runs", params={"status": "failed"})
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 1
+    assert resp.json()["items"][0]["status"] == "failed"
+
+    # job_id filter
+    resp = await client.get("/api/cron-jobs/runs", params={"job_id": job_id})
+    assert resp.json()["total"] == 2
+
+    # job_id filter for a job outside the tenant -> 404
+    resp = await client.get("/api/cron-jobs/runs", params={"job_id": str(uuid4())})
+    assert resp.status_code == 404
+
+    # a run whose job was deleted still shows up, with job_name = null
+    orphan = CronJobRun(job_id=uuid4(), user_id=user.id, status="success", output="orphan")
+    db_session.add(orphan)
+    await db_session.flush()
+    resp = await client.get("/api/cron-jobs/runs")
+    assert resp.json()["total"] == 3
+    orphan_item = next(i for i in resp.json()["items"] if i["id"] == str(orphan.id))
+    assert orphan_item["job_name"] is None
+
+
+async def test_rest_manual_run_now(cron_client, db_session: AsyncSession):
+    """POST /api/cron-jobs/{job_id}/run triggers one run through the same pipeline.
+
+    Covers: manual run of a *paused* job still executes, creates a run record,
+    and finalizes it via the registered executor (same as scheduler trigger).
+    """
+    client, scheduler, _user = cron_client
+    job_id = await _create_via_api(client)
+
+    # pause the job first — manual run must still work on a paused job
+    resp = await client.put(f"/api/cron-jobs/{job_id}", json={"is_active": False})
+    assert resp.status_code == 200, resp.text
+
+    captured: dict = {}
+
+    async def fake_executor(job, db, run_id):
+        run = await db.get(CronJobRun, run_id)
+        run.status = "success"
+        run.output = "manual run output"
+        await db.commit()
+        captured["run_id"] = run_id
+
+    scheduler.set_executor(fake_executor)
+
+    resp = await client.post(f"/api/cron-jobs/{job_id}/run")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True}
+
+    runs_resp = await client.get(f"/api/cron-jobs/{job_id}/runs")
+    data = runs_resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["status"] == "success"
+    assert data["items"][0]["output"] == "manual run output"
+    assert data["items"][0]["id"] == str(captured["run_id"])
+
+    # job remains paused (manual run must not change is_active)
+    job_resp = await client.get(f"/api/cron-jobs/{job_id}")
+    assert job_resp.json()["is_active"] is False
+
+
 # ---- notify_channel tool (silent-by-default cron notification) ----
 
 

@@ -150,10 +150,7 @@ class Scheduler:
     async def _execute(self, job_id: UUID) -> None:
         """Execute a cron job — called by APScheduler when triggered."""
         async with self._session_factory() as db:
-            result = await db.execute(
-                select(CronJob).where(CronJob.id == job_id)
-            )
-            job = result.scalar_one_or_none()
+            job = await self._load_job(db, job_id)
             if job is None:
                 logger.warning("cron_job_not_found", job_id=str(job_id))
                 return
@@ -161,68 +158,98 @@ class Scheduler:
             if not job.is_active:
                 return
 
-            # Set RLS context so future-enforced row policies see this job's owner
-            await db.execute(
-                select(func.set_config("app.current_user_id", str(job.user_id), True))
-            )
-
-            # Mark last_run_at
-            await CronJobService.mark_run(db, job_id)
-
-            # Create execution log record
-            run = CronJobRun(
-                job_id=job.id,
-                tenant_id=job.tenant_id,
-                user_id=job.user_id,
-                status="running",
-                started_at=datetime.now(UTC),
-            )
-            db.add(run)
-            await db.flush()
-            run_id = run.id
-
             # For one-shot jobs, deactivate after execution
             if job.run_at and not job.cron_expr:
                 job.is_active = False
                 self.remove_job(job_id)
 
-            await db.commit()
+            await self._execute_job(db, job)
 
-            # Execute via registered executor
-            if self._executor:
-                try:
-                    await self._executor(job, db, run_id)
-                except Exception as exc:
-                    logger.exception(
-                        "cron_job_execution_failed",
-                        job_id=str(job_id),
-                        name=job.name,
-                        error=str(exc),
+    async def run_now(self, job_id: UUID) -> None:
+        """Manually trigger a single execution of a cron job.
+
+        Reuses the exact same execution pipeline as the scheduler trigger, so
+        run records / output / errors are identical. Unlike the scheduler path
+        it does not require the job to be active (a paused job can be run once
+        on demand), and it does not deactivate one-shot jobs — those should
+        still fire at their scheduled time.
+        """
+        async with self._session_factory() as db:
+            job = await self._load_job(db, job_id)
+            if job is None:
+                raise ValueError(f"定时任务不存在: {job_id}")
+            await self._execute_job(db, job)
+
+    @staticmethod
+    async def _load_job(db: AsyncSession, job_id: UUID) -> CronJob | None:
+        result = await db.execute(select(CronJob).where(CronJob.id == job_id))
+        return result.scalar_one_or_none()
+
+    async def _execute_job(self, db: AsyncSession, job: CronJob) -> None:
+        """Core execution pipeline shared by the scheduler trigger and manual runs.
+
+        Assumes the job is already loaded. Creates the execution log record and
+        invokes the registered executor, finalizing the run on failure/timeout.
+        """
+        job_id = job.id
+
+        # Set RLS context so future-enforced row policies see this job's owner
+        await db.execute(
+            select(func.set_config("app.current_user_id", str(job.user_id), True))
+        )
+
+        # Mark last_run_at
+        await CronJobService.mark_run(db, job_id)
+
+        # Create execution log record
+        run = CronJobRun(
+            job_id=job.id,
+            tenant_id=job.tenant_id,
+            user_id=job.user_id,
+            status="running",
+            started_at=datetime.now(UTC),
+        )
+        db.add(run)
+        await db.flush()
+        run_id = run.id
+
+        await db.commit()
+
+        # Execute via registered executor
+        if self._executor:
+            try:
+                await self._executor(job, db, run_id)
+            except Exception as exc:
+                logger.exception(
+                    "cron_job_execution_failed",
+                    job_id=str(job_id),
+                    name=job.name,
+                    error=str(exc),
+                )
+                # Fallback: executor raised before it could finalize the run record
+                run.status = "failed"
+                run.error = str(exc) or "scheduler execution raised unexpectedly"
+                run.finished_at = datetime.now(UTC)
+                if run.started_at:
+                    run.duration_ms = int(
+                        (run.finished_at - run.started_at).total_seconds() * 1000
                     )
-                    # Fallback: executor raised before it could finalize the run record
+                await db.commit()
+            else:
+                # Safety net: executor returned without finalizing the run —
+                # never leave a run stuck in "running" forever.
+                if run.status == "running":
                     run.status = "failed"
-                    run.error = str(exc) or "scheduler execution raised unexpectedly"
+                    run.error = "executor returned without finalizing the run"
                     run.finished_at = datetime.now(UTC)
                     if run.started_at:
                         run.duration_ms = int(
                             (run.finished_at - run.started_at).total_seconds() * 1000
                         )
                     await db.commit()
-                else:
-                    # Safety net: executor returned without finalizing the run —
-                    # never leave a run stuck in "running" forever.
-                    if run.status == "running":
-                        run.status = "failed"
-                        run.error = "executor returned without finalizing the run"
-                        run.finished_at = datetime.now(UTC)
-                        if run.started_at:
-                            run.duration_ms = int(
-                                (run.finished_at - run.started_at).total_seconds() * 1000
-                            )
-                        await db.commit()
-            else:
-                logger.info(
-                    "cron_job_fired_no_executor",
-                    job_id=str(job_id),
-                    name=job.name,
-                )
+        else:
+            logger.info(
+                "cron_job_fired_no_executor",
+                job_id=str(job_id),
+                name=job.name,
+            )
