@@ -8,6 +8,7 @@ import {
   PlayCircleOutlined,
   RobotOutlined,
   HistoryOutlined,
+  RedoOutlined,
 } from '@ant-design/icons';
 import {
   Form,
@@ -70,12 +71,15 @@ export default function CronJobsPage() {
   const [saving, setSaving] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [runningId, setRunningId] = useState<string | null>(null);
   const [form] = Form.useForm();
 
   const [runsOpen, setRunsOpen] = useState(false);
   const [runsJob, setRunsJob] = useState<CronJob | null>(null);
   const [runs, setRuns] = useState<CronJobRun[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
+  const [runsPage, setRunsPage] = useState(1);
+  const [runsTotal, setRunsTotal] = useState(0);
 
   if (!isAdmin) {
     return <Navigate to="/" replace />;
@@ -194,18 +198,46 @@ export default function CronJobsPage() {
     }
   };
 
-  const openRuns = async (job: CronJob) => {
-    setRunsJob(job);
-    setRunsOpen(true);
+  const handleRunNow = async (job: CronJob) => {
+    if (runningId) return; // 防重复提交
+    setRunningId(job.id);
+    try {
+      await cronJobsApi.runNow(job.id);
+      message.success('任务已触发执行');
+      fetchData();
+    } catch (err: any) {
+      message.error(err.message || '手动执行失败');
+    } finally {
+      setRunningId(null);
+    }
+  };
+
+  const loadRuns = async (job: CronJob, pageNum: number) => {
     setRunsLoading(true);
     try {
-      const result = await cronJobsApi.runs(job.id);
+      const result = await cronJobsApi.runs(job.id, {
+        limit: 10,
+        offset: (pageNum - 1) * 10,
+      });
       setRuns(result.items);
+      setRunsTotal(result.total);
     } catch (err: any) {
       message.error(err.message || '加载运行记录失败');
     } finally {
       setRunsLoading(false);
     }
+  };
+
+  const openRuns = (job: CronJob) => {
+    setRunsJob(job);
+    setRunsPage(1);
+    setRunsOpen(true);
+    loadRuns(job, 1);
+  };
+
+  const onRunsPageChange = (pageNum: number) => {
+    setRunsPage(pageNum);
+    if (runsJob) loadRuns(runsJob, pageNum);
   };
 
   const getAgentName = (agentId: string | null): string => {
@@ -354,6 +386,15 @@ export default function CronJobsPage() {
                 }
                 extra={
                   <div className="flex items-center gap-1">
+                    <Tooltip title="手动执行一次">
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<RedoOutlined />}
+                        loading={runningId === job.id}
+                        onClick={() => handleRunNow(job)}
+                      />
+                    </Tooltip>
                     <Tooltip title="运行记录">
                       <Button
                         size="small"
@@ -554,7 +595,13 @@ export default function CronJobsPage() {
           columns={runsColumns}
           dataSource={runs}
           size="small"
-          pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 条` }}
+          pagination={{
+            current: runsPage,
+            pageSize: 10,
+            total: runsTotal,
+            showTotal: (t) => `共 ${t} 条`,
+            onChange: onRunsPageChange,
+          }}
           locale={{ emptyText: '暂无运行记录' }}
         />
       </Modal>

@@ -29,6 +29,7 @@ export interface Session {
   workspace_id: string | null;
   is_pinned: boolean;
   is_archived: boolean;
+  source: string;
   created_at: string;
   updated_at: string;
 }
@@ -648,6 +649,8 @@ export interface CronJobRun {
   duration_ms: number | null;
   output: string | null;
   error: string | null;
+  /** 任务名（全任务记录接口 LEFT JOIN 填充；任务已删除时为 null） */
+  job_name?: string | null;
 }
 
 export interface CronJobRunListResponse {

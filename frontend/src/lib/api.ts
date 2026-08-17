@@ -1952,6 +1952,20 @@ export const cronJobsApi = {
     const qs = searchParams.toString();
     return request<CronJobRunListResponse>(`/cron-jobs/${jobId}/runs${qs ? `?${qs}` : ''}`);
   },
+
+  runsAll(params?: { job_id?: string; status?: string; limit?: number; offset?: number }) {
+    const searchParams = new URLSearchParams();
+    if (params?.job_id) searchParams.set('job_id', params.job_id);
+    if (params?.status) searchParams.set('status', params.status);
+    if (params?.limit) searchParams.set('limit', String(params.limit));
+    if (params?.offset) searchParams.set('offset', String(params.offset));
+    const qs = searchParams.toString();
+    return request<CronJobRunListResponse>(`/cron-jobs/runs${qs ? `?${qs}` : ''}`);
+  },
+
+  runNow(id: string) {
+    return request<{ ok: boolean }>(`/cron-jobs/${id}/run`, { method: 'POST' });
+  },
 };
 
 // ---- Workspaces ----

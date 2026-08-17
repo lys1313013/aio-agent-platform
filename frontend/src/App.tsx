@@ -26,6 +26,7 @@ import WebToolSettingsPage from '@/pages/WebToolSettingsPage';
 import SystemConfigPage from '@/pages/SystemConfigPage';
 import ChannelsPage from '@/pages/ChannelsPage';
 import CronJobsPage from '@/pages/CronJobsPage';
+import CronJobRunsPage from '@/pages/CronJobRunsPage';
 import TenantManagementPage from '@/pages/TenantManagementPage';
 import UserManagementPage from '@/pages/UserManagementPage';
 import AppLayout from '@/components/layout/AppLayout';
@@ -109,6 +110,7 @@ export default function App() {
         <Route path="/web-tools" element={<WebToolSettingsPage />} />
         <Route path="/channels" element={<ChannelsPage />} />
         <Route path="/cron-jobs" element={<CronJobsPage />} />
+        <Route path="/cron-jobs/runs" element={<CronJobRunsPage />} />
         <Route path="/tenants" element={<TenantManagementPage />} />
         <Route path="/users" element={<UserManagementPage />} />
       </Route>

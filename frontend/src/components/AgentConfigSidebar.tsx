@@ -59,6 +59,16 @@ const { Text } = Typography;
 const { TextArea } = Input;
 const { Option } = Select;
 
+const SESSION_SOURCE_LABELS: Record<string, string> = {
+  chat: '界面',
+  pet: '宠物',
+  api: '接口',
+  cron: '定时任务',
+  feishu: '飞书',
+  wecom: '企微',
+  wecom_bot: '企微机器人',
+};
+
 const TOOL_CATEGORY_LABELS: Record<string, string> = {
   sandbox: '沙箱执行',
   memory: '记忆',
@@ -2822,8 +2832,11 @@ function SessionItem({
             >
               {session.title || '无标题'}
             </div>
-            <div className="mt-0.5 truncate text-[10px] text-muted-foreground/60">
-              {formatRelativeTime(session.updated_at)}
+            <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
+              <span className="truncate">{formatRelativeTime(session.updated_at)}</span>
+              <span className="flex-shrink-0 rounded bg-muted/60 px-1 py-px text-[9px] leading-none">
+                {SESSION_SOURCE_LABELS[session.source] ?? session.source}
+              </span>
             </div>
           </div>
 

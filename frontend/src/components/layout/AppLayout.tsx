@@ -28,6 +28,7 @@ import {
   SmileOutlined,
   RightOutlined,
   BgColorsOutlined,
+  HistoryOutlined,
 } from '@ant-design/icons';
 import { Dropdown, Avatar, Select, Modal } from 'antd';
 import type { MenuProps } from 'antd';
@@ -61,6 +62,8 @@ export default function AppLayout() {
     label: string;
     path?: string;
     icon?: ReactNode;
+    /** 仅精确匹配该路径（用于有同级子路由的列表项，避免子路由高亮父项） */
+    exact?: boolean;
     children?: NavItem[];
   }
   interface NavGroup {
@@ -90,7 +93,16 @@ export default function AppLayout() {
         { path: '/memory', icon: <BulbOutlined />, label: '记忆' },
         { path: '/pets', icon: <SmileOutlined />, label: '宠物' },
         ...(isAdmin
-          ? [{ path: '/cron-jobs', icon: <ClockCircleOutlined />, label: '定时任务' }]
+          ? [
+              {
+                label: '定时任务',
+                icon: <ClockCircleOutlined />,
+                children: [
+                  { path: '/cron-jobs', icon: <ClockCircleOutlined />, label: '任务列表', exact: true },
+                  { path: '/cron-jobs/runs', icon: <HistoryOutlined />, label: '执行记录' },
+                ],
+              },
+            ]
           : []),
       ],
     },
@@ -150,18 +162,18 @@ export default function AppLayout() {
   ];
 
   // 精确匹配或按路径段前缀匹配，避免 /knowledge 误匹配 /knowledge-graph
-  const isPathActive = (path: string) => {
+  const isPathActive = (path: string, exact?: boolean) => {
     if (!path) return false;
-    return path === '/'
-      ? location.pathname === '/'
-      : location.pathname === path || location.pathname.startsWith(`${path}/`);
+    if (path === '/') return location.pathname === '/';
+    if (exact) return location.pathname === path;
+    return location.pathname === path || location.pathname.startsWith(`${path}/`);
   };
 
   const isItemActive = (item: NavItem) => {
     if (item.path) {
-      return isPathActive(item.path);
+      return isPathActive(item.path, item.exact);
     }
-    return item.children?.some((child) => isPathActive(child.path ?? '')) ?? false;
+    return item.children?.some((child) => isPathActive(child.path ?? '', child.exact)) ?? false;
   };
 
   const activeGroupKey =
@@ -347,7 +359,7 @@ export default function AppLayout() {
                                 >
                                   <div className="overflow-hidden">
                                     {item.children.map((child) => {
-                                      const childActive = isPathActive(child.path ?? '');
+                                      const childActive = isPathActive(child.path ?? '', child.exact);
 
                                       return (
                                         <NavLink
@@ -381,7 +393,7 @@ export default function AppLayout() {
                             );
                           }
 
-                          const isActive = isPathActive(item.path ?? '');
+                          const isActive = isPathActive(item.path ?? '', item.exact);
 
                           return (
                             <NavLink
@@ -435,7 +447,7 @@ export default function AppLayout() {
                     item.children && item.children.length ? item.children : [item],
                   )
                   .map((item) => {
-                    const isActive = isPathActive(item.path ?? '');
+                    const isActive = isPathActive(item.path ?? '', item.exact);
 
                     return (
                       <NavLink
