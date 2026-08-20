@@ -2,10 +2,18 @@ name: aio-agent-platform
 
 # Application deployment (external PostgreSQL and object storage):
 #   1. Create a .env file with DATABASE_URL, JWT_SECRET and STORAGE_* settings.
-#   2. Optionally set BACKEND_IMAGE / FRONTEND_IMAGE to use Alibaba Cloud ACR.
+#   2. Optionally override BACKEND_IMAGE / FRONTEND_IMAGE / SANDBOX_IMAGE.
 #   3. Run: docker compose pull && docker compose up -d
 
 services:
+  # Pre-pull the image into the host Docker daemon. The backend later creates
+  # ephemeral containers from the same image through /var/run/docker.sock.
+  sandbox-image:
+    image: ${SANDBOX_IMAGE:-crpi-yvha9coypdedaafa.cn-beijing.personal.cr.aliyuncs.com/lys1313013/aio-agent-platform-sandbox:latest}
+    pull_policy: always
+    command: ["/bin/true"]
+    restart: "no"
+
   backend:
     image: ${BACKEND_IMAGE:-crpi-yvha9coypdedaafa.cn-beijing.personal.cr.aliyuncs.com/lys1313013/aio-agent-platform-backend:latest}
     pull_policy: always
@@ -25,7 +33,7 @@ services:
       AGENT_TEMPERATURE: ${AGENT_TEMPERATURE:-0.7}
       AGENT_TRUST_LEVEL: ${AGENT_TRUST_LEVEL:-ask_dangerous}
       AGENT_MEMORY_TOP_K: ${AGENT_MEMORY_TOP_K:-5}
-      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-aio-agent-platform/sandbox:latest}
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-crpi-yvha9coypdedaafa.cn-beijing.personal.cr.aliyuncs.com/lys1313013/aio-agent-platform-sandbox:latest}
       SANDBOX_CPU_LIMIT: ${SANDBOX_CPU_LIMIT:-1.0}
       SANDBOX_MEMORY_LIMIT: ${SANDBOX_MEMORY_LIMIT:-512m}
       SANDBOX_SESSION_TTL: ${SANDBOX_SESSION_TTL:-3600}
@@ -51,6 +59,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      sandbox-image:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8100/health"]
       interval: 15s
