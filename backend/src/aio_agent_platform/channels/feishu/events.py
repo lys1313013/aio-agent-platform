@@ -123,3 +123,43 @@ def normalize_event(
         attachment=attachment,
         raw=event,
     )
+
+
+def normalize_recall_event(
+    channel_id: UUID,
+    event_id: str,
+    event: dict,
+) -> InboundEvent | None:
+    """Convert a Feishu ``im.message.recalled_v1`` payload into an InboundEvent.
+
+    The pipeline uses the recalled ``message_id`` to locate and cancel the
+    in-flight agent run the message triggered. The payload shape is::
+
+        {"event": {"message_id": "om_x", "chat_id": "oc_x",
+                   "recall_time": "...", "operator_id": {"open_id": "ou_x"?}}}
+
+    Operator identity is extracted defensively — whether Feishu includes it
+    (and how admin-recalled messages are presented) varies; the pipeline must
+    not rely on it being present.
+    """
+    body = event.get("event", {}) or {}
+    message_id = body.get("message_id", "")
+    chat_id = body.get("chat_id", "")
+    if not message_id or not chat_id:
+        logger.warning("feishu_recall_missing_fields", event_id=event_id)
+        return None
+
+    # Operator (who recalled) — may be absent; empty string when unknown.
+    operator = body.get("operator_id") or body.get("operator") or {}
+    operator_id = operator.get("open_id", "") if isinstance(operator, dict) else ""
+
+    return InboundEvent(
+        channel_id=channel_id,
+        event_id=event_id,
+        chat_id=chat_id,
+        external_id=operator_id,
+        text="",
+        kind="recall",
+        message_id=message_id,
+        raw=event,
+    )

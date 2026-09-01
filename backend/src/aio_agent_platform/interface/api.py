@@ -330,7 +330,6 @@ async def lifespan(app: FastAPI):
             select(ChannelBinding).where(
                 ChannelBinding.tenant_id == channel.tenant_id,
                 ChannelBinding.user_id == job.user_id,
-                ChannelBinding.bind_type == "bound",
             )
         )
         binding = binding_result.scalars().first()

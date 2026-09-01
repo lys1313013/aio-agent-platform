@@ -69,7 +69,6 @@ from aio_agent_platform.channels.pipeline import (
     _StreamingReply,
     _strip_internal_keys,
 )
-from aio_agent_platform.db import Session as ChatSession
 from aio_agent_platform.db.models import ChannelBinding, User
 from aio_agent_platform.interface.routes.channels import (
     ChannelCreate,
@@ -1353,45 +1352,28 @@ async def test_manager_stop_unknown_channel_is_noop() -> None:
 async def test_resolve_external_user_unbound_and_bound(db_session) -> None:
     tenant_id = uuid4()
 
-    # 无任何绑定 → unbound，且不创建任何账户
-    user_id, bind_type = await resolve_external_user(db_session, tenant_id, "ou_ext1")
-    assert user_id is None
-    assert bind_type == "unbound"
+    # 无任何绑定 → None，且不创建任何账户
+    assert await resolve_external_user(db_session, tenant_id, "ou_ext1") is None
     assert (await db_session.execute(select(User))).scalars().all() == []
 
-    # 建立 bound 绑定后 → bound
+    # 建立绑定后 → 返回平台 user_id
     real_user = User(username="real_ext", email="real_ext@test.com", password_hash="x")
     db_session.add(real_user)
     await db_session.flush()
     db_session.add(ChannelBinding(
-        tenant_id=tenant_id, external_id="ou_ext1", user_id=real_user.id, bind_type="bound",
+        tenant_id=tenant_id, external_id="ou_ext1", user_id=real_user.id,
     ))
     await db_session.flush()
 
-    user_id2, bind_type2 = await resolve_external_user(db_session, tenant_id, "ou_ext1")
-    assert user_id2 == real_user.id
-    assert bind_type2 == "bound"
+    assert await resolve_external_user(db_session, tenant_id, "ou_ext1") == real_user.id
 
     # 其他租户查不到该绑定
-    user_id_x, bind_type_x = await resolve_external_user(db_session, uuid4(), "ou_ext1")
-    assert user_id_x is None
-    assert bind_type_x == "unbound"
+    assert await resolve_external_user(db_session, uuid4(), "ou_ext1") is None
 
-    # 存量影子账号绑定 → 仍视为 unbound，引导绑定
-    shadow = User(
-        username="feishu_legacy", email="feishu_legacy@channels.internal",
-        password_hash="!", is_shadow=True,
-    )
-    db_session.add(shadow)
+    # 绑定用户被停用 → 视为未绑定
+    real_user.is_active = False
     await db_session.flush()
-    db_session.add(ChannelBinding(
-        tenant_id=tenant_id, external_id="ou_legacy", user_id=shadow.id, bind_type="shadow",
-    ))
-    await db_session.flush()
-
-    user_id3, bind_type3 = await resolve_external_user(db_session, tenant_id, "ou_legacy")
-    assert user_id3 is None
-    assert bind_type3 == "unbound"
+    assert await resolve_external_user(db_session, tenant_id, "ou_ext1") is None
 
 
 async def test_issue_bind_code_invalidates_previous(db_session) -> None:
@@ -1417,61 +1399,6 @@ async def test_issue_bind_code_rate_limited(db_session) -> None:
         await issue_bind_code(db_session, channel_id, "ou_spammer", tenant_id)
 
 
-async def test_consume_bind_code_merges_legacy_shadow(db_session) -> None:
-    channel_id = uuid4()
-    tenant_id = uuid4()
-
-    # 存量影子账号 + 绑定 + 会话
-    shadow = User(
-        username="feishu_merger", email="feishu_merger@channels.internal",
-        password_hash="!", is_shadow=True,
-    )
-    db_session.add(shadow)
-    await db_session.flush()
-    shadow_id = shadow.id
-    db_session.add(ChannelBinding(
-        tenant_id=tenant_id, external_id="ou_merger", user_id=shadow_id, bind_type="shadow",
-    ))
-    await db_session.flush()
-
-    session = ChatSession(user_id=shadow_id, title="渠道会话")
-    db_session.add(session)
-    await db_session.flush()
-
-    code, _ = await issue_bind_code(db_session, channel_id, "ou_merger", tenant_id)
-
-    real_user = User(username="real_merger", email="real_merger@test.com", password_hash="x")
-    db_session.add(real_user)
-    await db_session.flush()
-
-    merged_id = await consume_bind_code(db_session, code, real_user.id, tenant_id)
-    assert merged_id == shadow_id
-
-    # 绑定关系翻转
-    binding = (
-        await db_session.execute(
-            select(ChannelBinding).where(
-                ChannelBinding.tenant_id == tenant_id,
-                ChannelBinding.external_id == "ou_merger",
-            )
-        )
-    ).scalar_one()
-    assert binding.user_id == real_user.id
-    assert binding.bind_type == "bound"
-
-    # 会话转移给真实账号
-    await db_session.refresh(session)
-    assert session.user_id == real_user.id
-
-    # 影子账号被禁用
-    shadow = (await db_session.execute(select(User).where(User.id == shadow_id))).scalar_one()
-    assert shadow.is_active is False
-
-    # 绑定码不能重复使用
-    with pytest.raises(BindCodeInvalid):
-        await consume_bind_code(db_session, code, real_user.id, tenant_id)
-
-
 async def test_consume_bind_code_creates_binding(db_session) -> None:
     channel_id = uuid4()
     tenant_id = uuid4()
@@ -1483,8 +1410,7 @@ async def test_consume_bind_code_creates_binding(db_session) -> None:
     db_session.add(real_user)
     await db_session.flush()
 
-    merged_id = await consume_bind_code(db_session, code, real_user.id, tenant_id)
-    assert merged_id is None
+    await consume_bind_code(db_session, code, real_user.id, tenant_id)
 
     binding = (
         await db_session.execute(
@@ -1495,11 +1421,6 @@ async def test_consume_bind_code_creates_binding(db_session) -> None:
         )
     ).scalar_one()
     assert binding.user_id == real_user.id
-    assert binding.bind_type == "bound"
-
-    # 未创建任何影子账号
-    shadows = (await db_session.execute(select(User).where(User.is_shadow.is_(True)))).scalars().all()
-    assert shadows == []
 
 
 async def test_consume_bind_code_rejects_cross_tenant(db_session) -> None:
@@ -1517,8 +1438,7 @@ async def test_consume_bind_code_rejects_cross_tenant(db_session) -> None:
         await consume_bind_code(db_session, code, real_user.id, uuid4())
 
     # 码未被消费，同租户仍可正常使用
-    merged_id = await consume_bind_code(db_session, code, real_user.id, tenant_id)
-    assert merged_id is None
+    await consume_bind_code(db_session, code, real_user.id, tenant_id)
 
 
 async def test_consume_bind_code_rejects_invalid(db_session) -> None:
@@ -1550,7 +1470,7 @@ async def test_consume_bind_code_rejects_already_bound(db_session) -> None:
     db_session.add(real_user)
     await db_session.flush()
     db_session.add(ChannelBinding(
-        tenant_id=tenant_id, external_id="ou_self", user_id=real_user.id, bind_type="bound",
+        tenant_id=tenant_id, external_id="ou_self", user_id=real_user.id,
     ))
     await db_session.flush()
 
@@ -1568,16 +1488,13 @@ async def test_consume_bind_code_rejects_already_bound(db_session) -> None:
         await consume_bind_code(db_session, code2, other.id, tenant_id)
 
 
-async def test_unbind_external_disables_shadow(db_session) -> None:
+async def test_unbind_external(db_session) -> None:
     tenant_id = uuid4()
-    shadow = User(
-        username="feishu_unbind", email="feishu_unbind@channels.internal",
-        password_hash="!", is_shadow=True,
-    )
-    db_session.add(shadow)
+    real_user = User(username="real_unbind", email="real_unbind@test.com", password_hash="x")
+    db_session.add(real_user)
     await db_session.flush()
     db_session.add(ChannelBinding(
-        tenant_id=tenant_id, external_id="ou_unbind", user_id=shadow.id, bind_type="shadow",
+        tenant_id=tenant_id, external_id="ou_unbind", user_id=real_user.id,
     ))
     await db_session.flush()
 
@@ -1592,8 +1509,9 @@ async def test_unbind_external_disables_shadow(db_session) -> None:
         )
     ).scalar_one_or_none()
     assert binding is None
-    shadow = (await db_session.execute(select(User).where(User.id == shadow.id))).scalar_one()
-    assert shadow.is_active is False
+    # 平台账号保留且不受影响
+    await db_session.refresh(real_user)
+    assert real_user.is_active is True
 
     # 再次解绑是 no-op
     await unbind_external(db_session, tenant_id, "ou_unbind")

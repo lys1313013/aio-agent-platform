@@ -23,7 +23,7 @@ from fastapi import HTTPException, Request, Response
 
 from aio_agent_platform.channels.adapter import Transport, TransportState
 from aio_agent_platform.channels.feishu.crypto import decrypt_event, verify_signature
-from aio_agent_platform.channels.feishu.events import normalize_event
+from aio_agent_platform.channels.feishu.events import normalize_event, normalize_recall_event
 from aio_agent_platform.channels.pipeline import ChannelInboundPipeline
 from aio_agent_platform.channels.webhook import (
     _webhook_registry,  # noqa: F401  (re-exported for test compatibility)
@@ -111,16 +111,22 @@ class FeishuWebhookTransport(Transport):
         event_type = header.get("event_type", "")
         event_id = header.get("event_id", "")
 
-        if event_type != "im.message.receive_v1":
+        if event_type == "im.message.receive_v1":
+            inbound = normalize_event(
+                channel_id=channel.id,
+                event_id=event_id,
+                event=payload,
+                bot_app_id=channel.app_id,
+            )
+        elif event_type == "im.message.recalled_v1":
+            inbound = normalize_recall_event(
+                channel_id=channel.id,
+                event_id=event_id,
+                event=payload,
+            )
+        else:
             return Response(status_code=200)
 
-        # 5. Normalize and submit to the pipeline.
-        inbound = normalize_event(
-            channel_id=channel.id,
-            event_id=event_id,
-            event=payload,
-            bot_app_id=channel.app_id,
-        )
         if inbound is None:
             return Response(status_code=200)
 

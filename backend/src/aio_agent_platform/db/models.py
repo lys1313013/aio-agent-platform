@@ -90,10 +90,6 @@ class User(Base):
         String(16), default="user", comment="角色: user/admin/superadmin"
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否激活")
-    is_shadow: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="false",
-        comment="是否影子账号(由渠道自动创建，不可登录 Web 端)",
-    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="创建时间")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now(), onupdate=func.now(), comment="更新时间"
@@ -1562,10 +1558,6 @@ class ChannelBinding(Base):
     )
     external_id: Mapped[str] = mapped_column(String(128), nullable=False, comment="外部用户 ID(飞书 open_id)")
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, comment="绑定的平台 user ID")
-    bind_type: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="shadow",
-        comment="绑定类型: shadow(影子账号) / bound(已关联真实账号)",
-    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now(), server_default=func.now(), comment="创建时间"
     )

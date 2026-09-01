@@ -22,7 +22,7 @@ import websockets
 from lark_oapi.ws.pb.pbbp2_pb2 import Frame
 
 from aio_agent_platform.channels.adapter import Transport, TransportState
-from aio_agent_platform.channels.feishu.events import normalize_event
+from aio_agent_platform.channels.feishu.events import normalize_event, normalize_recall_event
 from aio_agent_platform.channels.pipeline import ChannelInboundPipeline
 
 logger = structlog.get_logger()
@@ -217,15 +217,24 @@ class FeishuWebSocketTransport(Transport):
         try:
             event = json.loads(payload)
             header = event.get("header", {})
-            if header.get("event_type") == "im.message.receive_v1":
+            event_type = header.get("event_type")
+            if event_type == "im.message.receive_v1":
                 inbound = normalize_event(
                     channel_id=self.pipeline.channel.id,
                     event_id=header.get("event_id", ""),
                     event=event,
                     bot_app_id=self.app_id,
                 )
-                if inbound is not None:
-                    self.pipeline.submit(inbound)
+            elif event_type == "im.message.recalled_v1":
+                inbound = normalize_recall_event(
+                    channel_id=self.pipeline.channel.id,
+                    event_id=header.get("event_id", ""),
+                    event=event,
+                )
+            else:
+                inbound = None
+            if inbound is not None:
+                self.pipeline.submit(inbound)
         except Exception:
             logger.exception("feishu_ws_event_handle_failed")
             code = 500

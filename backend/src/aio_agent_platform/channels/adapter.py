@@ -50,7 +50,8 @@ class InboundEvent:
     external_id: str                  # 发送者的外部 ID（飞书 open_id）
     text: str                         # 纯文本内容（已剥离 @ 占位符等）
     chat_kind: ChatKind = ChatKind.DIRECT
-    message_id: str | None = None     # 原始消息 ID（用于回复/引用）
+    kind: str = "message"             # message | recall（消息撤回）
+    message_id: str | None = None     # 原始消息 ID（用于回复/引用）；recall 事件为被撤回的消息 ID
     mentions_bot: bool = False        # 群聊中是否 @ 了本机器人
     attachment: AttachmentInfo | None = None  # 文件/图片消息的附件信息
     raw: dict[str, Any] = field(default_factory=dict)  # 原始 payload，需要时可用

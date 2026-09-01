@@ -455,7 +455,6 @@ export interface ChannelBinding {
   tenant_id: string;
   external_id: string;
   user_id: string;
-  bind_type: 'shadow' | 'bound';
   created_at: string;
   updated_at: string;
 }

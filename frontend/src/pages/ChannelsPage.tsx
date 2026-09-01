@@ -762,13 +762,6 @@ export default function ChannelsPage() {
                 render: (v: string) => <Text className="font-mono text-xs">{v}</Text>,
               },
               {
-                title: '绑定类型',
-                dataIndex: 'bind_type',
-                width: 120,
-                render: (v: string) =>
-                  v === 'bound' ? <Tag color="green">已绑定账号</Tag> : <Tag>影子账号</Tag>,
-              },
-              {
                 title: '平台用户',
                 dataIndex: 'user_id',
                 render: (userId: string) => {

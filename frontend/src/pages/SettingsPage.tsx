@@ -22,7 +22,6 @@ import {
   Spin,
   App,
   Table,
-  Tag,
   Popconfirm,
 } from 'antd';
 import type { TabsProps } from 'antd';
@@ -454,13 +453,6 @@ function ChannelBindings() {
               title: '外部用户 ID',
               dataIndex: 'external_id',
               render: (v: string) => <Text className="font-mono text-xs">{v}</Text>,
-            },
-            {
-              title: '绑定类型',
-              dataIndex: 'bind_type',
-              width: 120,
-              render: (v: string) =>
-                v === 'bound' ? <Tag color="green">已绑定</Tag> : <Tag>影子账号</Tag>,
             },
             {
               title: '绑定时间',

@@ -133,7 +133,6 @@ class ChannelBindingOut(BaseModel):
     tenant_id: UUID
     external_id: str
     user_id: UUID
-    bind_type: str
     created_at: str
     updated_at: str
 
@@ -182,7 +181,6 @@ def _binding_to_dict(b: ChannelBinding) -> dict:
         "tenant_id": b.tenant_id,
         "external_id": b.external_id,
         "user_id": b.user_id,
-        "bind_type": b.bind_type,
         "created_at": b.created_at.isoformat() if b.created_at else "",
         "updated_at": b.updated_at.isoformat() if b.updated_at else "",
     }

@@ -6,10 +6,13 @@ The pipeline is shared by all transports for a given channel. It:
 2. Resolves the external user to a platform ``User`` via their binding — if
    unbound, replies with a bind-code guide instead of creating an account.
 3. Maps ``(channel_id, chat_id, external_id)`` to a platform session.
-4. Intercepts built-in commands (``/bind``, ``/new``, ``/help``) before they
-   reach the Agent.
+4. Intercepts built-in commands (``/bind``, ``/new``, ``/help``, ``/stop``)
+   before they reach the Agent.
 5. Drives ``AgentLoop`` for normal messages, streaming deltas back through the
    adapter's send/update methods.
+
+同一 chat 的消息经 chat 级队列串行驱动；``/stop`` 与消息撤回
+（``im.message.recalled_v1``）即时取消该 chat 在跑的 AgentLoop。
 """
 
 from __future__ import annotations
@@ -18,7 +21,9 @@ import asyncio
 import base64
 import json
 import time
+from collections.abc import Coroutine
 from dataclasses import dataclass, field
+from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
@@ -26,7 +31,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from aio_agent_platform.channels.adapter import ChannelAdapter, InboundEvent
+from aio_agent_platform.channels.adapter import ChannelAdapter, ChatKind, InboundEvent
 from aio_agent_platform.channels.binding import (
     BindCodeError,
     BindCodeRateLimited,
@@ -360,7 +365,44 @@ def _strip_internal_keys(refs: list[dict]) -> list[dict]:
 class _ResolvedContext:
     user_id: UUID | None  # None when the external user is not bound yet
     session_id: UUID | None
-    bind_type: str  # "bound" or "unbound"
+
+
+# --- Task interruption (/stop + recall-to-stop) ---
+
+# 「已撤回 message_id」集合：撤回事件可能先于任务登记（甚至先于消息出队）
+# 到达，先记录再在登记/出队时自查，保证「先撤回后登记」也能拦下。
+_recalled_messages: dict[str, float] = {}
+_RECALLED_TTL_SECONDS = 600
+_CHAT_QUEUE_IDLE_SECONDS = 3600  # 队列空闲多久后回收消费者
+
+
+def _mark_recalled(message_id: str) -> None:
+    now = time.monotonic()
+    if len(_recalled_messages) > 10_000:
+        cutoff = now - _RECALLED_TTL_SECONDS
+        for k in [k for k, v in _recalled_messages.items() if v < cutoff]:
+            _recalled_messages.pop(k, None)
+    _recalled_messages[message_id] = now
+
+
+def _is_recalled(message_id: str | None) -> bool:
+    if not message_id:
+        return False
+    ts = _recalled_messages.get(message_id)
+    if ts is None:
+        return False
+    if time.monotonic() - ts > _RECALLED_TTL_SECONDS:
+        _recalled_messages.pop(message_id, None)
+        return False
+    return True
+
+
+@dataclass
+class _RunningTask:
+    """An in-flight event-processing task for one chat."""
+
+    task: asyncio.Task
+    trigger_message_id: str | None
 
 
 class ChannelInboundPipeline:
@@ -371,16 +413,172 @@ class ChannelInboundPipeline:
         self.adapter = adapter
         self.tool_executor = tool_executor
         self._processing_tasks: set[asyncio.Task] = set()
+        # chat 级串行队列：同一 chat_key 的消息逐条驱动，不并发执行。
+        self._chat_queues: dict[str, asyncio.Queue[InboundEvent]] = {}
+        self._chat_consumers: dict[str, asyncio.Task] = {}
+        # 在跑任务登记：chat_key → 当前处理任务；trigger_message_id → chat_key 反查。
+        self._running: dict[str, _RunningTask] = {}
+        self._trigger_index: dict[str, str] = {}
+
+    def _chat_key(self, event: InboundEvent) -> str:
+        return f"{self.channel.id}:{event.chat_id}:{event.external_id}"
+
+    def _spawn(self, coro: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(coro)
+        self._processing_tasks.add(task)
+        task.add_done_callback(self._processing_tasks.discard)
 
     def submit(self, event: InboundEvent) -> None:
         """Schedule an event for processing. Returns immediately.
 
         Callers (transports) should ACK the inbound request before or after
         calling this — the pipeline does all heavy work asynchronously.
+
+        路由：去重后，撤回事件与 /stop 直接处理（需即时取消，不能排在队列里）；
+        普通消息进入 chat 级队列串行消费。
         """
-        task = asyncio.create_task(self._safe_handle(event))
-        self._processing_tasks.add(task)
-        task.add_done_callback(self._processing_tasks.discard)
+        if _dedup(event.event_id):
+            logger.info("pipeline_duplicate_event", event_id=event.event_id)
+            return
+
+        if event.kind == "recall":
+            self._spawn(self._safe_handle_recall(event))
+            return
+
+        # 群聊中 /stop 同样要求 @ 机器人（与消息处理规则一致）。
+        if event.text.strip() == "/stop" and (
+            event.chat_kind != ChatKind.GROUP or event.mentions_bot
+        ):
+            self._spawn(self._safe_handle_stop(event))
+            return
+
+        chat_key = self._chat_key(event)
+        queue = self._chat_queues.get(chat_key)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._chat_queues[chat_key] = queue
+            self._chat_consumers[chat_key] = asyncio.create_task(
+                self._chat_consumer(chat_key, queue)
+            )
+        queue.put_nowait(event)
+
+    async def _chat_consumer(
+        self, chat_key: str, queue: asyncio.Queue[InboundEvent]
+    ) -> None:
+        """Drain one chat's queue serially; each event runs in a child task so
+        /stop can cancel the in-flight turn without killing the consumer."""
+        while True:
+            try:
+                event = await asyncio.wait_for(
+                    queue.get(), timeout=_CHAT_QUEUE_IDLE_SECONDS
+                )
+            except TimeoutError:
+                # 空闲回收：仅当队列仍是自己且为空时注销，避免与 submit 竞态。
+                if queue.empty() and self._chat_queues.get(chat_key) is queue:
+                    self._chat_queues.pop(chat_key, None)
+                    self._chat_consumers.pop(chat_key, None)
+                    if queue.empty():
+                        return
+                    # 注销瞬间又有消息入队：重新注册继续消费。
+                    self._chat_queues[chat_key] = queue
+                    self._chat_consumers[chat_key] = asyncio.current_task()  # type: ignore[assignment]
+                continue
+
+            # 出队前自查：消息在排队期间被撤回 → 跳过。
+            if _is_recalled(event.message_id):
+                logger.info(
+                    "pipeline_recalled_message_skipped",
+                    channel_id=str(self.channel.id),
+                    message_id=event.message_id,
+                )
+                queue.task_done()
+                continue
+
+            inner = asyncio.create_task(self._safe_handle(event))
+            running = _RunningTask(task=inner, trigger_message_id=event.message_id)
+            self._running[chat_key] = running
+            if event.message_id:
+                self._trigger_index[event.message_id] = chat_key
+            try:
+                await inner
+            except asyncio.CancelledError:
+                # 两种来源都表现为 CancelledError，必须区分：
+                # - inner 被 /stop / 撤回取消 → 冒泡到此处，但消费者自身
+                #   cancelling() 为 0，吞掉继续消费下一条；
+                # - 消费者自身被取消（关闭流程）→ cancelling() > 0，传播。
+                # 不能用 inner.cancelled() 区分：取消消费者时其 await 的
+                # inner 会被连带取消，两种场景下它都为 True。
+                current = asyncio.current_task()
+                if current is not None and current.cancelling() > 0:
+                    raise
+            finally:
+                if self._running.get(chat_key) is running:
+                    self._running.pop(chat_key, None)
+                    if running.trigger_message_id:
+                        self._trigger_index.pop(running.trigger_message_id, None)
+                queue.task_done()
+
+    def _clear_queue(self, chat_key: str) -> int:
+        """Drop all queued (not yet started) events for a chat. Returns count."""
+        queue = self._chat_queues.get(chat_key)
+        if queue is None:
+            return 0
+        dropped = 0
+        while True:
+            try:
+                queue.get_nowait()
+                queue.task_done()
+                dropped += 1
+            except asyncio.QueueEmpty:
+                return dropped
+
+    async def _safe_handle_stop(self, event: InboundEvent) -> None:
+        try:
+            chat_key = self._chat_key(event)
+            dropped = self._clear_queue(chat_key)
+            running = self._running.get(chat_key)
+            if running is None:
+                await self.adapter.send(event, "当前没有进行中的回复。")
+                return
+            running.task.cancel()
+            reply = "⏹ 已中断当前回复。"
+            if dropped:
+                reply += f"（同时丢弃 {dropped} 条排队消息）"
+            await self.adapter.send(event, reply)
+        except Exception:
+            logger.exception(
+                "pipeline_stop_failed",
+                channel_id=str(self.channel.id),
+                event_id=event.event_id,
+            )
+
+    async def _safe_handle_recall(self, event: InboundEvent) -> None:
+        """Recall-to-stop: cancel the in-flight run triggered by the recalled
+        message. Unknown/completed recalls are silently ignored."""
+        try:
+            if event.message_id:
+                _mark_recalled(event.message_id)
+            chat_key = self._trigger_index.get(event.message_id or "")
+            if chat_key is None:
+                return  # 任务已结束或撤回的不是触发消息
+            running = self._running.get(chat_key)
+            if running is None or running.trigger_message_id != event.message_id:
+                return
+            logger.info(
+                "pipeline_recall_cancel",
+                channel_id=str(self.channel.id),
+                message_id=event.message_id,
+                # 撤回方类别：message_owner / group_owner / group_manager /
+                # enterprise_manager（事件不含操作人身份，仅记录类别）
+                recall_type=(event.raw.get("event") or {}).get("recall_type"),
+            )
+            running.task.cancel()
+        except Exception:
+            logger.exception(
+                "pipeline_recall_failed",
+                channel_id=str(self.channel.id),
+                event_id=event.event_id,
+            )
 
     async def _safe_handle(self, event: InboundEvent) -> None:
         try:
@@ -397,16 +595,12 @@ class ChannelInboundPipeline:
                 pass
 
     async def _handle(self, event: InboundEvent) -> None:
-        # 1. Dedup.
-        if _dedup(event.event_id):
-            logger.info("pipeline_duplicate_event", event_id=event.event_id)
-            return
-
-        # 2. Group chat: only respond when the bot is @-mentioned.
+        # 1. Group chat: only respond when the bot is @-mentioned.
+        #    （去重已上移到 submit，/stop 与撤回事件也需去重。）
         if event.chat_kind.value == "group" and not event.mentions_bot:
             return
 
-        # 3. Resolve user + session.
+        # 2. Resolve user + session.
         factory = get_session_factory()
         async with factory() as db:
             # 渠道配置实时从 DB 读取，不缓存进程内存：管理后台更换 agent 等
@@ -453,11 +647,11 @@ class ChannelInboundPipeline:
     # --- Context resolution ---
 
     async def _resolve_context(self, db: AsyncSession, event: InboundEvent) -> _ResolvedContext:
-        user_id, bind_type = await resolve_external_user(
+        user_id = await resolve_external_user(
             db, self.channel.tenant_id, event.external_id
         )
         if user_id is None:
-            return _ResolvedContext(user_id=None, session_id=None, bind_type=bind_type)
+            return _ResolvedContext(user_id=None, session_id=None)
 
         # Resolve session mapping.
         result = await db.execute(
@@ -489,7 +683,7 @@ class ChannelInboundPipeline:
             await db.flush()
         session_id = mapping.session_id
 
-        return _ResolvedContext(user_id=user_id, session_id=session_id, bind_type=bind_type)
+        return _ResolvedContext(user_id=user_id, session_id=session_id)
 
     # --- Commands ---
 
@@ -506,7 +700,7 @@ class ChannelInboundPipeline:
     async def _handle_bind(
         self, db: AsyncSession, event: InboundEvent, ctx: _ResolvedContext
     ) -> None:
-        if ctx.bind_type == "bound":
+        if ctx.user_id is not None:
             await self.adapter.send(event, "✅ 该渠道已绑定到你的账号，无需重复绑定。")
             return
         try:
@@ -959,6 +1153,22 @@ class ChannelInboundPipeline:
                                 tc["result"] = tool_results_map[tc["id"]]
 
             await stream_reply.finish(final_output)
+        except asyncio.CancelledError:
+            # /stop 或撤回即停触发的取消。CancelledError 是 BaseException，
+            # 不会被下面的 except Exception 吞掉；在这里做中断收尾后继续传播。
+            logger.info(
+                "agent_loop_cancelled",
+                channel_id=str(self.channel.id),
+                chat_id=event.chat_id,
+            )
+            if title_task is not None:
+                title_task.cancel()
+            await asyncio.shield(
+                self._finalize_interrupted(
+                    stream_reply, event_logger, ctx, final_output, tool_calls_list
+                )
+            )
+            raise
         except Exception as e:
             logger.exception("agent_loop_failed", channel_id=str(self.channel.id))
             try:
@@ -1006,17 +1216,15 @@ class ChannelInboundPipeline:
         })
         await event_logger.drain()
 
-        # Fire-and-forget: memory extraction (skip for shadow accounts — they
-        # don't write L2 long-term memory) and context summary update.
-        if ctx.bind_type != "shadow":
-            fire_memory_extraction(
-                ctx.user_id,
-                ctx.session_id,
-                history,
-                event.text,
-                final_output,
-                enable=agent.enable_memory_extraction if agent else True,
-            )
+        # Fire-and-forget: memory extraction and context summary update.
+        fire_memory_extraction(
+            ctx.user_id,
+            ctx.session_id,
+            history,
+            event.text,
+            final_output,
+            enable=agent.enable_memory_extraction if agent else True,
+        )
         summary_task = asyncio.create_task(
             update_context_summary(
                 ctx.session_id, history, event.text, final_output, agent_loop.provider
@@ -1024,6 +1232,66 @@ class ChannelInboundPipeline:
         )
         background_tasks.add(summary_task)
         summary_task.add_done_callback(background_tasks.discard)
+
+    async def _finalize_interrupted(
+        self,
+        stream_reply: _StreamingReply,
+        event_logger: _BufferedEventLogger,
+        ctx: _ResolvedContext,
+        final_output: str,
+        tool_calls_list: list[dict],
+    ) -> None:
+        """中断收尾：部分结果写入消息历史、回放流收尾、卡片标记「已中断」。
+
+        在 CancelledError 分支中被 asyncio.shield 包裹调用；原 DB session 随
+        被取消的请求上下文关闭，持久化使用新 session。
+        """
+        assert ctx.user_id is not None and ctx.session_id is not None
+        interrupted_text = f"{final_output}\n\n⏹ 已中断" if final_output else "⏹ 已中断"
+
+        # 1. 部分 assistant 消息落库（新 session，原 session 已随取消关闭）。
+        message_id: str | None = None
+        try:
+            factory = get_session_factory()
+            async with factory() as db:
+                assistant_msg = Message(
+                    session_id=ctx.session_id,
+                    user_id=ctx.user_id,
+                    role="assistant",
+                    content=interrupted_text,
+                    tool_calls=tool_calls_list if tool_calls_list else None,
+                )
+                db.add(assistant_msg)
+                await db.commit()
+                message_id = str(assistant_msg.id)
+        except Exception:
+            logger.exception(
+                "agent_loop_cancelled_persist_failed", session_id=str(ctx.session_id)
+            )
+
+        # 2. 回放事件流收尾（Web 端「重新连接」据此渲染中断终态）。
+        try:
+            event_logger.submit({"type": "text", "content": interrupted_text})
+            event_logger.submit({
+                "type": "done",
+                "message_id": message_id,
+                "content": interrupted_text,
+                "tool_calls": tool_calls_list,
+                "interrupted": True,
+            })
+            await event_logger.drain()
+        except Exception:
+            logger.exception(
+                "agent_loop_cancelled_drain_failed", session_id=str(ctx.session_id)
+            )
+
+        # 3. 流式卡片标记中断并关闭 streaming_mode；非流式降级为普通消息。
+        try:
+            await stream_reply.finish(interrupted_text)
+        except Exception:
+            logger.exception(
+                "agent_loop_cancelled_card_failed", session_id=str(ctx.session_id)
+            )
 
 # --- Utilities ---
 

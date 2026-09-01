@@ -1,18 +1,15 @@
-"""Channel binding — external-user resolution, bind-code lifecycle, account merge.
+"""Channel binding — external-user resolution, bind-code lifecycle.
 
 Bindings are scoped by tenant: an external user binds once per tenant and the
 binding is shared by every channel in that tenant.
 
 Flow overview:
   1. External user sends first message → ``resolve_external_user`` finds no
-     live binding → the pipeline replies with a bind-code guide instead of
-     creating a shadow account.
+     live binding → the pipeline replies with a bind-code guide.
   2. User sends ``/bind`` → ``issue_bind_code`` writes a 6-digit code valid
      for 10 minutes. Rate-limited to 3 per minute per external_id.
   3. Web user submits the code via ``consume_bind_code``. The code is only
-     valid within the channel's tenant. On success a ``bound`` binding is
-     created; legacy shadow accounts are merged into the real account
-     (sessions re-assigned) and disabled.
+     valid within the channel's tenant. On success a binding is created.
 """
 
 from __future__ import annotations
@@ -23,10 +20,9 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import structlog
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.db import Session as ChatSession
 from aio_agent_platform.db.models import (
     ChannelBindCode,
     ChannelBinding,
@@ -47,14 +43,12 @@ async def resolve_external_user(
     db: AsyncSession,
     tenant_id: UUID,
     external_id: str,
-) -> tuple[UUID | None, str]:
-    """Return (user_id, bind_type) for an external user within a tenant.
+) -> UUID | None:
+    """Return the bound platform user_id for an external user within a tenant.
 
-    Never creates a ``User`` row. Returns ``(None, "unbound")`` when the
-    external user has no live binding — the pipeline then guides them through
-    the bind-code flow instead of creating a shadow account. A stale legacy
-    ``shadow`` binding also resolves as unbound so the user is nudged to bind
-    their real account.
+    Never creates a ``User`` row. Returns ``None`` when the external user has
+    no live binding — the pipeline then guides them through the bind-code
+    flow.
     """
     result = await db.execute(
         select(ChannelBinding).where(
@@ -63,12 +57,12 @@ async def resolve_external_user(
         )
     )
     binding = result.scalar_one_or_none()
-    if binding is None or binding.bind_type != "bound":
-        return None, "unbound"
+    if binding is None:
+        return None
     user = await db.scalar(select(User).where(User.id == binding.user_id))
     if user is None or not user.is_active:
-        return None, "unbound"
-    return binding.user_id, "bound"
+        return None
+    return binding.user_id
 
 
 async def issue_bind_code(
@@ -126,16 +120,13 @@ async def consume_bind_code(
     code: str,
     real_user_id: UUID,
     real_tenant_id: UUID,
-) -> UUID | None:
+) -> None:
     """Consume a bind code and link the external user to ``real_user_id``.
 
     The code is only valid within the tenant whose channel issued it —
-    cross-tenant consumption is rejected. Creates a ``bound``
-    ``ChannelBinding`` (scoped to the tenant) on first link; merges a legacy
-    shadow account (re-assigning its sessions and disabling it) if one exists.
-    Returns the shadow user_id that was merged, or None. Raises
-    BindCodeInvalid on any failure (expired / already used / unknown code /
-    tenant mismatch).
+    cross-tenant consumption is rejected. Creates a ``ChannelBinding``
+    (scoped to the tenant) on success. Raises BindCodeInvalid on any failure
+    (expired / already used / unknown code / tenant mismatch / already bound).
     """
     now = datetime.now(UTC)
     result = await db.execute(
@@ -160,37 +151,18 @@ async def consume_bind_code(
         )
     )
 
-    merged_shadow_id: UUID | None = None
-    if binding is not None and binding.bind_type == "bound":
+    if binding is not None:
         if binding.user_id == real_user_id:
             raise BindCodeInvalid("该渠道已绑定到当前账号")
         raise BindCodeInvalid("该渠道已绑定到其他账号，请先在 Web 端解绑")
 
-    if binding is not None:
-        # Legacy shadow binding: reassign its sessions to the real user,
-        # disable the shadow account (keep row for audit), flip the binding.
-        shadow_user_id = binding.user_id
-        await db.execute(
-            update(ChatSession)
-            .where(ChatSession.user_id == shadow_user_id)
-            .values(user_id=real_user_id)
+    db.add(
+        ChannelBinding(
+            tenant_id=record.tenant_id,
+            external_id=record.external_id,
+            user_id=real_user_id,
         )
-        binding.user_id = real_user_id
-        binding.bind_type = "bound"
-        await db.execute(
-            update(User).where(User.id == shadow_user_id).values(is_active=False)
-        )
-        merged_shadow_id = shadow_user_id
-    else:
-        # First-time link — no shadow account was ever created.
-        db.add(
-            ChannelBinding(
-                tenant_id=record.tenant_id,
-                external_id=record.external_id,
-                user_id=real_user_id,
-                bind_type="bound",
-            )
-        )
+    )
 
     record.used_by = real_user_id
     record.used_at = now
@@ -200,11 +172,9 @@ async def consume_bind_code(
         "bind_code_consumed",
         tenant_id=str(record.tenant_id),
         channel_id=str(record.channel_id),
-        external_id=record.external_id,
+        external_id=str(record.external_id),
         real_user_id=str(real_user_id),
-        merged_shadow_id=str(merged_shadow_id) if merged_shadow_id else None,
     )
-    return merged_shadow_id
 
 
 async def unbind_external(
@@ -212,8 +182,8 @@ async def unbind_external(
     tenant_id: UUID,
     external_id: str,
 ) -> None:
-    """Remove the binding for an external user. If the linked account is a
-    shadow account, also disable it. Real accounts are unlinked but kept.
+    """Remove the binding for an external user. The linked platform account
+    is unlinked but kept.
     """
     result = await db.execute(
         select(ChannelBinding).where(
@@ -224,11 +194,6 @@ async def unbind_external(
     binding = result.scalar_one_or_none()
     if binding is None:
         return
-
-    if binding.bind_type == "shadow":
-        await db.execute(
-            update(User).where(User.id == binding.user_id).values(is_active=False)
-        )
 
     from sqlalchemy import delete as sql_delete
     await db.execute(sql_delete(ChannelBinding).where(ChannelBinding.id == binding.id))
