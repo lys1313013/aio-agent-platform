@@ -184,6 +184,20 @@ def filter_tools_by_agent(
             kb_count=len(gkb_names),
         )
 
+    # Auto-inject frontend-execution tools (ui_*): available to every agent in
+    # SSE browser sessions regardless of the enabled_tools allow-list — the
+    # injection dimension is the execution channel, not per-agent opt-in
+    # (docs/22-浏览器页面自动化 §2.2). Non-SSE callers (cron / channels /
+    # version preview / non-streaming chat) exclude them via extra_blacklist,
+    # and delegation child agents hard-exclude them in _build_child_tools.
+    for t in all_tools:
+        if (
+            getattr(t, "execution_location", "sandbox") == "frontend"
+            and t.name not in blacklist
+            and t not in filtered
+        ):
+            filtered.append(t)
+
     # Auto-inject delegate_task so the agent can delegate to existing children
     # OR dynamically spawn temp sub-agents, within the depth limit. Available to
     # every agent (not just ones with pre-associated children).

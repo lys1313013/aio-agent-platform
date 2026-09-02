@@ -19,6 +19,10 @@ from aio_agent_platform.core.context import (
     compress_early_tool_results,
     estimate_messages_tokens,
 )
+from aio_agent_platform.core.ui_action import (
+    REF_FAILURE_BREAKER_THRESHOLD,
+    ui_action_manager,
+)
 from aio_agent_platform.core.usage import record_llm_usage
 from aio_agent_platform.db.connection import get_session_factory
 from aio_agent_platform.db.models import Session as ChatSession
@@ -248,6 +252,7 @@ class AgentLoop:
         self.workspace_id = workspace_id
         self.workspace_slug = workspace_slug
         self._last_ask_user_output: str = ""
+        self._last_ui_action_output: str = ""
         # Tool permission whitelist: None means all tools allowed (parent agent),
         # set of tool names means only those tools can be executed (child agents).
         self.allowed_tools = allowed_tools
@@ -611,6 +616,42 @@ class AgentLoop:
 
                     output_preview = ask_output[:500]
                     yield f"tool_result:{tc.id}:{tc.name}:ok:{json.dumps(output_preview, ensure_ascii=False)}"
+                    continue
+
+                # ============================================================
+                # Frontend UI tools (ui_*): 拦截下发浏览器执行，避免死锁
+                # （与 AskUserQuestion 同理，不能进 tool_executor 阻塞）
+                # ============================================================
+                tool_def = self.tool_executor.registry.get(tc.name)
+                if tool_def is not None and tool_def.execution_location == "frontend":
+                    ui_t_start = time.monotonic()
+                    async for evt in self._run_ui_action_flow(tc, ctx):
+                        yield evt
+
+                    ui_output = self._last_ui_action_output or ""
+                    ui_ok = not ui_output.startswith("Error")
+                    result = ToolResult(
+                        tool_call_id=tc.id,
+                        name=tc.name,
+                        arguments=tc.arguments,
+                        output=ui_output if ui_ok else "",
+                        success=ui_ok,
+                        error=None if ui_ok else ui_output,
+                        duration_ms=(time.monotonic() - ui_t_start) * 1000,
+                    )
+                    step.tool_results.append(result)
+                    get_recorder().record_tool_call(
+                        tool_name=tc.name,
+                        exec_type="direct",
+                        duration_ms=result.duration_ms,
+                        is_error=not ui_ok,
+                        user_id=str(ctx.user_id),
+                        session_id=str(ctx.session_id),
+                    )
+
+                    output_preview = ui_output[:500]
+                    status = "ok" if ui_ok else "err"
+                    yield f"tool_result:{tc.id}:{tc.name}:{status}:{json.dumps(output_preview, ensure_ascii=False)}"
                     continue
 
                 logger.debug(
@@ -1026,3 +1067,253 @@ class AgentLoop:
         self._last_ask_user_output = _format_ask_user_output(
             response, mode, options, table_schema
         )
+
+    async def _run_ui_action_flow(
+        self,
+        tc: ToolCall,
+        ctx: ToolContext,
+    ) -> AsyncIterator[str]:
+        """
+        处理前端 UI 工具（ui_*）的完整执行流程（async generator）。
+
+        与 _run_ask_user_flow 同构：推事件 → yield 让 SSE drain → 阻塞等前端
+        REST 回包 → 推 resolved 事件。关键差异（见 docs/22-浏览器页面自动化）：
+        - 等待必须带超时（默认 60s），且分片等待 + 心跳让 SSE 持续 drain；
+        - 写操作命中 dangerous_refs（或清单缺失）时先走合成确认流程；
+        - 幻觉 ref 熔断：连续 stale_ref/element_not_found 超阈值即终止；
+        - finally 清理 pending（SSE 断开即整个 run 被 CancelledError 取消）。
+        """
+        from datetime import datetime
+
+        from aio_agent_platform.llm.client import supports_vision
+
+        self._last_ui_action_output = ""
+        session_key = str(ctx.session_id)
+        args = tc.arguments or {}
+        t_start = time.monotonic()
+
+        # ---- Step 0: 前置快速失败 ----
+        if self.event_queue is None:
+            # 无 SSE 前端（cron/渠道/WebSocket/非流式/预览）——永不等待
+            self._last_ui_action_output = (
+                "Error(no_frontend): UI tools require an online browser session. "
+                "This execution context has no frontend attached; do not retry "
+                "ui_* tools."
+            )
+            return
+
+        if tc.name == "ui_screenshot" and not supports_vision(
+            getattr(self.provider, "provider_type", ""), self.provider.model
+        ):
+            self._last_ui_action_output = (
+                "Error(vision_not_supported): the current model cannot accept "
+                "image content. Use ui_read_screen (mode='full') instead."
+            )
+            return
+
+        if ui_action_manager.ref_failures(session_key) >= REF_FAILURE_BREAKER_THRESHOLD:
+            self._last_ui_action_output = (
+                "Error(circuit_breaker): too many consecutive invalid element "
+                "references. STOP attempting ui_* operations in this turn; "
+                "explain the failure to the user instead."
+            )
+            return
+
+        # ---- Step 1: 危险确认（第一道闸门；前端执行时复检为最终闸门）----
+        ref = args.get("ref") or args.get("action_ref") or ""
+        write_tool = tc.name in ("ui_click", "ui_input")
+        confirmed = False
+        if write_tool:
+            cached = ui_action_manager.get_session_context(session_key) or {}
+            dangerous_refs = cached.get("dangerous_refs")
+            # 清单缺失时保守按危险处理；清单存在但未命中则放行
+            need_confirm = dangerous_refs is None or ref in dangerous_refs
+            if need_confirm:
+                confirmation = confirmation_manager.create_confirmation(
+                    session_id=session_key,
+                    user_id=str(ctx.user_id),
+                    question="智能体请求执行页面写操作，请在确认卡片中核对目标元素后批准",
+                    mode="approve",
+                    options=[
+                        {"id": "approve", "label": "批准"},
+                        {"id": "reject", "label": "拒绝"},
+                    ],
+                    context={
+                        "risk_level": "high",
+                        "ui_action": {"action": tc.name, "ref": ref},
+                    },
+                )
+                await self.event_queue.put({
+                    "type": "confirmation_required",
+                    "confirmation_id": confirmation.id,
+                    "question": confirmation.question,
+                    "mode": "approve",
+                    "options": confirmation.options,
+                    "table_schema": None,
+                    "context": {
+                        **confirmation.context,
+                        "timeout_seconds": confirmation.timeout_seconds,
+                    },
+                    "created_at": confirmation.created_at.isoformat(),
+                })
+                yield f"confirmation_flow:{tc.id}:waiting"
+
+                confirmation = await confirmation_manager.wait_for_response(
+                    confirmation.id
+                )
+                if not confirmation:
+                    self._last_ui_action_output = "Error: confirmation not found"
+                    return
+                status = (confirmation.response or {}).get("status", "timeout")
+                if status != "approved":
+                    self._last_ui_action_output = (
+                        f"Error({status}): the user did not approve this page "
+                        "operation. Do not retry the same operation."
+                    )
+                    return
+                confirmed = True
+
+        # ---- Step 2: 创建 pending 动作 ----
+        pending = ui_action_manager.create_action(
+            session_id=session_key,
+            user_id=str(ctx.user_id),
+            tool_call_id=tc.id,
+            action=tc.name,
+            args=args,
+            risk="write" if write_tool else "read",
+            confirmed=confirmed,
+        )
+        if pending is None:
+            self._last_ui_action_output = (
+                "Error(ui_busy): another UI action is already pending for this "
+                "session. Wait for it to finish before issuing the next one."
+            )
+            return
+
+        logger.info(
+            "ui_action_flow_start",
+            session_id=session_key,
+            action_id=pending.id,
+            action=tc.name,
+            confirmed=confirmed,
+        )
+
+        # ---- Step 3: 推事件 + yield 让 SSE drain ----
+        try:
+            await self.event_queue.put({
+                "type": "ui_action_required",
+                "action_id": pending.id,
+                "tool_call_id": tc.id,
+                "action": tc.name,
+                "args": args,
+                "risk": pending.risk,
+                "confirmed": confirmed,
+                "session_id": session_key,
+                "created_at": pending.created_at.isoformat(),
+            })
+            yield f"ui_action:{tc.id}:waiting"
+
+            # ---- Step 4: 分片等待前端回包（心跳让 SSE 持续 drain）----
+            while True:
+                state = await ui_action_manager.wait_chunk(pending.id)
+                if state != "waiting":
+                    break
+                yield f"ui_action:{tc.id}:heartbeat"
+        finally:
+            # SSE 断开 → CancelledError → 必须清理 pending，不得泄漏
+            result_payload = ui_action_manager.discard(pending.id)
+
+        # ---- Step 5: 处理结果 ----
+        res = result_payload or {"status": "error", "error": "timeout"}
+        res_status = res.get("status", "error")
+        elapsed_ms = round((time.monotonic() - t_start) * 1000, 2)
+
+        if self.event_queue:
+            await self.event_queue.put({
+                "type": "ui_action_resolved",
+                "action_id": pending.id,
+                "tool_call_id": tc.id,
+                "status": res_status,
+                "result": {
+                    k: v
+                    for k, v in res.items()
+                    if k not in ("image",)  # 截图 base64 不下发事件
+                },
+                "resolved_at": datetime.now(UTC).isoformat(),
+            })
+
+        logger.info(
+            "ui_action_flow_resolved",
+            session_id=session_key,
+            action_id=pending.id,
+            status=res_status,
+            elapsed_ms=elapsed_ms,
+        )
+
+        if res_status == "ok":
+            ui_action_manager.reset_ref_failures(session_key)
+            parts: list[str] = []
+            result_obj = res.get("result")
+            if result_obj:
+                parts.append(json.dumps(result_obj, ensure_ascii=False))
+            if res.get("delta_snapshot"):
+                parts.append(f"[delta_snapshot]\n{res['delta_snapshot']}")
+            if res.get("page_context"):
+                # 只注入页面位置；actions 清单每轮已在 system prompt（§2.6），重复注入浪费 token
+                pc = res["page_context"]
+                parts.append(
+                    f"[page] {pc.get('page_path', '')} \"{pc.get('page_title', '')}\""
+                )
+            if res.get("warning"):
+                parts.append(f"Warning: {res['warning']}")
+            self._last_ui_action_output = "\n\n".join(parts) or "ok"
+            return
+
+        # 失败路径
+        error = res.get("error", "unknown")
+        ui_action_manager.reset_ref_failures(session_key)
+        if error in ("stale_ref", "element_not_found"):
+            failures = ui_action_manager.record_ref_failure(session_key)
+            hint = (
+                "Call ui_read_screen to get a fresh snapshot before retrying."
+                if error == "stale_ref"
+                else "The element was not found; call ui_read_screen to re-locate it."
+            )
+            breaker = ""
+            if failures >= REF_FAILURE_BREAKER_THRESHOLD:
+                breaker = (
+                    " Circuit breaker tripped: STOP ui_* operations in this "
+                    "turn and explain the failure to the user."
+                )
+            self._last_ui_action_output = (
+                f"Error({error}): {hint}{breaker}"
+            )
+            return
+
+        messages_map = {
+            "cancelled": "The user aborted the page operation. Acknowledge and stop.",
+            "timeout": "The browser did not respond in time (page may be closed).",
+            "ui_busy": "Another session is currently driving the page. Tell the user.",
+            "execution_timeout": (
+                "The browser started but did not finish the operation in time. "
+                "Tell the user to keep the tab in the foreground and retry."
+            ),
+            "dangerous_not_confirmed": (
+                "The frontend re-check found this element dangerous but it was "
+                "not confirmed. Re-issue the same tool call — the backend will "
+                "run the confirmation flow."
+            ),
+            "action_not_available": (
+                "The page has changed and this action is no longer available. "
+                "Call ui_read_screen for the current state."
+            ),
+        }
+        detail = messages_map.get(error, str(error))
+        if error == "ui_busy":
+            reason = (res.get("result") or {}).get("reason")
+            if reason == "another_tab_holds_lock":
+                detail = (
+                    "Another browser tab of this app is the current page driver. "
+                    "Tell the user to operate from that tab or close it."
+                )
+        self._last_ui_action_output = f"Error({error}): {detail}"

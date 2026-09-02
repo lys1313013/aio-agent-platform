@@ -79,6 +79,7 @@ from aio_agent_platform.storage.chat_attachments import (
 )
 from aio_agent_platform.storage.client import ObjectStorage
 from aio_agent_platform.storage.workspace import WorkspaceStorage
+from aio_agent_platform.tools.builtin import FRONTEND_TOOL_NAMES
 from aio_agent_platform.tools.executor import ToolExecutor
 
 logger = structlog.get_logger()
@@ -95,6 +96,10 @@ class ChatRequest(BaseModel):
     message: str = Field("", max_length=50000)
     attachments: list[AttachmentOut] | None = None
     file_attachments: list[FileAttachmentRef] | None = None
+    # 页面上报上下文（docs/22-浏览器页面自动化）：
+    # {page_path, page_title, actions: [{name, description, risk}],
+    #  snapshot_version, dangerous_refs}
+    page_context: dict | None = None
 
     @model_validator(mode="after")
     def _require_content(self) -> ChatRequest:
@@ -110,6 +115,35 @@ class ChatResponse(BaseModel):
     tool_calls_count: int = 0
     done: bool = True
     session_title: str | None = None
+
+
+def _format_page_context_section(page_context: dict) -> str:
+    """渲染 system prompt 的「当前页面」段（docs/22-浏览器页面自动化 §2.6）。
+
+    保持短小——它每轮 ReAct 迭代都会随 system prompt 重发。
+    动作只放名称+一句话描述+risk，参数 schema 走 tools 通道不重复。
+    """
+    lines = ["", "", "## 当前页面"]
+    path = page_context.get("page_path", "")
+    title = page_context.get("page_title", "")
+    if path or title:
+        lines.append(f"用户正在浏览: {path}（{title}）")
+    actions = page_context.get("actions") or []
+    if actions:
+        lines.append(
+            "已注册的页面动作（优先用 ui_click 的 action_ref 调用，"
+            "比 ui_read_screen 读屏更省 token）："
+        )
+        for a in actions[:20]:
+            risk = a.get("risk", "write")
+            suffix = " [危险操作，需用户确认]" if risk == "dangerous" else ""
+            lines.append(f"- {a.get('name')}: {a.get('description', '')}{suffix}")
+    lines.append(
+        "页面操作工具优先级：注册动作(action_ref) > ui_read_screen 文本快照 "
+        "> ui_screenshot 截图（仅文本快照不足以决策时才用）。"
+        "复杂表单组件（Select/DatePicker 等）不能用 ui_input，请找对应注册动作。"
+    )
+    return "\n".join(lines)
 
 
 class AttachmentOut(BaseModel):
@@ -493,7 +527,10 @@ async def chat(
     )
 
     # Build system prompt with memories (using agent config)
-    tools_list, tools_schema = _filter_tools_by_agent(tool_executor, agent)
+    # 非流式路径 event_queue=None，无前端执行通道，黑名单 ui_*（docs/22 §2.2）
+    tools_list, tools_schema = _filter_tools_by_agent(
+        tool_executor, agent, extra_blacklist=set(FRONTEND_TOOL_NAMES)
+    )
     system_prompt = await _build_system_prompt_with_memories(
         db, user.id, req.message, tools_list, agent=agent,
         workspace_files=_file_refs_to_dicts(req.file_attachments),
@@ -999,12 +1036,18 @@ async def chat_stream(
                 pet_ctx = await load_pet_chat_context(gen_db, session)
                 if pet_ctx:
                     # 宠物闲聊：白名单工具（记忆类 + pet_action），人设合成，禁用高成本工具
+                    # 例外：ui_* 前端工具保留——宠物操作页面是核心场景，且无沙箱成本
                     ensure_pet_tools_registered(tool_executor)
                     tools_list, tools_schema = _filter_tools_by_agent(tool_executor, agent)
-                    tools_list = [t for t in tools_list if t.name in PET_CHAT_WHITELIST]
+                    tools_list = [
+                        t for t in tools_list
+                        if t.name in PET_CHAT_WHITELIST
+                        or getattr(t, "execution_location", "sandbox") == "frontend"
+                    ]
                     tools_schema = [
                         s for s in tools_schema
                         if s["function"]["name"] in PET_CHAT_WHITELIST
+                        or s["function"]["name"] in FRONTEND_TOOL_NAMES
                     ]
                     tools_schema.append(pet_action_tool_schema())
                     pet_ctx_pet, pet_ctx_pkg, pet_ctx_vocab = pet_ctx
@@ -1015,6 +1058,12 @@ async def chat_stream(
                         gen_db, user.id, req.message, tools_list, agent=agent,
                         workspace_files=_file_refs_to_dicts(req.file_attachments),
                     )
+                # ui_screenshot 仅视觉模型注入（§2.2 视觉能力维度）；AgentLoop 内仍有运行时门控兜底
+                if not allow_images:
+                    tools_list = [t for t in tools_list if t.name != "ui_screenshot"]
+                    tools_schema = [
+                        s for s in tools_schema if s["function"]["name"] != "ui_screenshot"
+                    ]
                 logger.info(
                     "stream_prompt_built",
                     session_id=str(session_id),
@@ -1022,13 +1071,28 @@ async def chat_stream(
                     prompt_length=len(system_prompt),
                 )
 
+                # 页面上报上下文（docs/22-浏览器页面自动化）：
+                # 1) 刷新 session 级 dangerous_refs 缓存（危险确认闸门）
+                # 2) 注入 system prompt，引导 LLM 优先使用 L0 注册动作
+                if req.page_context:
+                    from aio_agent_platform.core.ui_action import ui_action_manager
+
+                    ui_action_manager.update_session_context(
+                        str(session_id),
+                        snapshot_version=req.page_context.get("snapshot_version"),
+                        dangerous_refs=req.page_context.get("dangerous_refs"),
+                        page_context=req.page_context,
+                    )
+                    system_prompt += _format_page_context_section(req.page_context)
+
                 # Resolve workspace first (needed by delegation context)
                 agent_model_id = (session.model_id if session and session.model_id else None) or (agent.model_id if agent else None)
                 agent_temperature = agent.temperature if agent else None
                 agent_max_iterations = agent.max_iterations if agent else None
                 if pet_ctx:
-                    # 宠物闲聊不跑复杂 ReAct：迭代上限收紧到 3
-                    agent_max_iterations = min(agent_max_iterations or settings.agent.max_iterations, 3)
+                    # 宠物会话保留 ui_* 前端工具（页面操作是核心场景），一次完整
+                    # 操作流程需 5-8 轮 ReAct（读屏→点击→读屏→…），上限收紧到 10
+                    agent_max_iterations = min(agent_max_iterations or settings.agent.max_iterations, 10)
                 workspace_id, workspace_slug = await _resolve_workspace(gen_db, session, user.id)
                 # Commit workspace_id so it's persisted
                 await gen_db.commit()
@@ -1257,6 +1321,13 @@ async def chat_stream(
                                 session_id=str(session_id),
                                 detail=event,
                             )
+                            continue
+                        elif event.startswith("ui_action:"):
+                            # ui_* 前端工具内部信号：ui_action_required 已在上面
+                            # 的 drain 中发送给前端。waiting 不转发；heartbeat
+                            # 转发为 keepalive，防止长等待期间连接被掐断。
+                            if event.endswith(":heartbeat"):
+                                yield _sse_event({"type": "ui_action_heartbeat"})
                             continue
                         elif event.startswith("delegation_heartbeat:"):
                             # Heartbeat signal during delegation: drain

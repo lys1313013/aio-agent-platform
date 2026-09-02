@@ -35,6 +35,8 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     registry.register(WEB_SEARCH)
     registry.register(WEB_FETCH)
     registry.register(CREATE_WEBPAGE)
+    for _ui_tool in UI_TOOLS:
+        registry.register(_ui_tool)
 
 
 # ---- Shell / Code (sandbox, dangerous permission) ----
@@ -1072,3 +1074,180 @@ CREATE_WEBPAGE = Tool(
     permission_level="write",
     timeout=30,
 )
+
+
+# ---- Frontend UI Tools (executed in the user's browser, not the sandbox) ----
+#
+# 设计文档：docs/22-浏览器页面自动化/02-技术方案.md
+# 这些工具由 AgentLoop 拦截（execution_location="frontend"），经 SSE 下发给前端
+# 执行，前端通过 REST 回包结果。它们永不进入 tool_executor。
+#
+# 元素定位一律使用引用标记（快照 @eN 或注册表 action_ref），LLM 不输出坐标。
+
+_UI_REF_DESCRIPTION = (
+    "Element reference from the latest ui_read_screen snapshot, e.g. '@e4'. "
+    "Refs expire on navigation or major DOM changes — on a stale_ref error, "
+    "call ui_read_screen again. Refs in unchanged ('...') subtrees of a "
+    "delta_snapshot remain valid; new refs are always freshly numbered."
+)
+
+UI_NAVIGATE = Tool(
+    name="ui_navigate",
+    description=(
+        "Navigate the user's browser to another page of THIS platform "
+        "(in-app route only, e.g. '/agents', '/knowledge'). The page context "
+        "after navigation is returned in the tool result."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "In-app route path, must start with '/'. External URLs are rejected.",
+            },
+        },
+        "required": ["path"],
+    },
+    requires_sandbox=False,
+    permission_level="read",
+    timeout=60,
+    execution_location="frontend",
+)
+
+UI_CLICK = Tool(
+    name="ui_click",
+    description=(
+        "Click an element on the current page. Locate it by 'ref' (from the "
+        "ui_read_screen snapshot) or 'action_ref' (a registered page action "
+        "from the current-page context). Prefer action_ref when a registered "
+        "action matches the intent. Dangerous elements (delete/disable/etc.) "
+        "require user confirmation before the click executes."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "ref": {"type": "string", "description": _UI_REF_DESCRIPTION},
+            "action_ref": {
+                "type": "string",
+                "description": "Name of a registered page action, e.g. 'agents.open_create_modal'.",
+            },
+            "description": {
+                "type": "string",
+                "description": "Optional execution-log note (NOT shown to the user).",
+            },
+        },
+    },
+    requires_sandbox=False,
+    permission_level="write",
+    timeout=60,
+    execution_location="frontend",
+)
+
+UI_INPUT = Tool(
+    name="ui_input",
+    description=(
+        "Fill text into a native input/textarea located by a snapshot ref. "
+        "Only works for plain text inputs — composite widgets (Select, "
+        "DatePicker, Cascader, Upload, InputNumber, Slider, etc.) must be "
+        "operated via registered page actions instead."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "ref": {"type": "string", "description": _UI_REF_DESCRIPTION},
+            "value": {"type": "string", "description": "The full text value to set."},
+            "description": {
+                "type": "string",
+                "description": "Optional execution-log note (NOT shown to the user).",
+            },
+        },
+        "required": ["ref", "value"],
+    },
+    requires_sandbox=False,
+    permission_level="write",
+    timeout=60,
+    execution_location="frontend",
+)
+
+UI_SCROLL_TO = Tool(
+    name="ui_scroll_to",
+    description=(
+        "Scroll an element (located by snapshot ref) into the viewport. The "
+        "result includes a fresh snapshot of the newly visible area."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "ref": {"type": "string", "description": _UI_REF_DESCRIPTION},
+        },
+        "required": ["ref"],
+    },
+    requires_sandbox=False,
+    permission_level="read",
+    timeout=60,
+    execution_location="frontend",
+)
+
+UI_READ_SCREEN = Tool(
+    name="ui_read_screen",
+    description=(
+        "Read the current page as a compact accessibility snapshot: route, "
+        "title, registered actions, and interactive elements each tagged "
+        "with a ref (@eN). Use refs for ui_click/ui_input/ui_scroll_to. "
+        "Returns {unchanged: true} if the page has not changed since the "
+        "last snapshot — do NOT call again in that case. Invariant: refs in "
+        "unchanged ('...') subtrees of a delta_snapshot stay valid and "
+        "directly usable; new elements always get fresh, never-reused refs."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "enum": ["compact", "full"],
+                "description": "compact = viewport area (default); full = whole page (larger, truncated at a hard cap).",
+            },
+        },
+    },
+    requires_sandbox=False,
+    permission_level="read",
+    timeout=60,
+    execution_location="frontend",
+)
+
+UI_SCREENSHOT = Tool(
+    name="ui_screenshot",
+    description=(
+        "Capture a screenshot of the current viewport with numbered markers "
+        "(Set-of-Mark; numbers match the @eN refs from ui_read_screen). "
+        "ONLY call this when the text snapshot is insufficient to decide "
+        "(charts, canvas, icon-only buttons). Do not call it routinely — "
+        "prefer ui_read_screen. Requires a vision-capable model."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "annotate": {
+                "type": "boolean",
+                "description": "Whether to overlay numbered markers (default: true).",
+            },
+        },
+    },
+    requires_sandbox=False,
+    permission_level="read",
+    timeout=60,
+    execution_location="frontend",
+)
+
+UI_TOOLS: tuple[Tool, ...] = (
+    UI_NAVIGATE,
+    UI_CLICK,
+    UI_INPUT,
+    UI_SCROLL_TO,
+    UI_READ_SCREEN,
+    UI_SCREENSHOT,
+)
+
+#: Names of all frontend-executed tools — used by blacklist call sites
+#: (channels / cron / preview / delegation) that must never offer them.
+FRONTEND_TOOL_NAMES: frozenset[str] = frozenset(t.name for t in UI_TOOLS)

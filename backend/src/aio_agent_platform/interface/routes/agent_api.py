@@ -213,9 +213,13 @@ def _filter_tools_for_agent(tool_executor: ToolExecutor, config_snapshot: dict) 
 
     if enabled_tools:
         enabled_set = set(enabled_tools)
-        filtered = [t for t in all_tools if t.name in enabled_set]
+        filtered = [
+            t for t in all_tools
+            if t.name in enabled_set and t.execution_location != "frontend"
+        ]
     else:
-        filtered = all_tools
+        # Preview runs have no browser frontend — never offer ui_* tools.
+        filtered = [t for t in all_tools if t.execution_location != "frontend"]
 
     # Build OpenAI schema
     tools_schema = []

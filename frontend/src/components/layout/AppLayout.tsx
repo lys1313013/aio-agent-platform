@@ -37,6 +37,10 @@ import { settingsApi } from '@/lib/api';
 import { SkinPickerContent } from '@/components/SkinPicker';
 import BrandLogo from '@/components/BrandLogo';
 import PetWidget from '@/components/pet/PetWidget';
+import VirtualCursor from '@/components/ui-agent/VirtualCursor';
+import { registerNavigate, startUiActionRunner } from '@/lib/uiActions/runner';
+import { frontendActionRegistry } from '@/lib/uiActions/registry';
+import { snapshotEngine } from '@/lib/uiActions/snapshot';
 
 export default function AppLayout() {
   const { logout, role, username, tenantName } = useAuthStore();
@@ -57,6 +61,56 @@ export default function AppLayout() {
   useEffect(() => {
     settingsApi.listTenants().then(setTenantOptions).catch(() => {});
   }, []);
+
+  // ---- 页内浏览器操作（docs/22-浏览器页面自动化）----
+  // 启动 runner + 快照引擎 observer + 注册 router.navigate + 注册全局导航动作（nav.goto_*）
+  useEffect(() => {
+    registerNavigate((path) => navigate(path));
+    const stopRunner = startUiActionRunner();
+    const stopObserver = snapshotEngine.startObserver();
+    // dev 调试钩子：token 基准回归与快照排查用
+    if (import.meta.env.DEV) {
+      (window as unknown as Record<string, unknown>).__uiDebug = {
+        snapshotEngine,
+        frontendActionRegistry,
+      };
+    }
+
+    const NAV_TARGETS: Array<{ name: string; path: string; desc: string }> = [
+      { name: 'nav.goto_chat', path: '/chat', desc: '跳转到会话聊天页' },
+      { name: 'nav.goto_agents', path: '/agents', desc: '跳转到智能体管理页' },
+      { name: 'nav.goto_knowledge', path: '/knowledge', desc: '跳转到知识库页' },
+      { name: 'nav.goto_mcp', path: '/mcp-servers', desc: '跳转到 MCP 服务配置页' },
+      { name: 'nav.goto_skills', path: '/skills', desc: '跳转到技能页' },
+      { name: 'nav.goto_cron', path: '/cron-jobs', desc: '跳转到定时任务页' },
+      { name: 'nav.goto_pets', path: '/pets', desc: '跳转到宠物页' },
+      { name: 'nav.goto_settings', path: '/settings', desc: '跳转到设置页' },
+    ];
+    const unregisters = NAV_TARGETS.map((t) =>
+      frontendActionRegistry.register({
+        name: t.name,
+        description: t.desc,
+        risk: 'read',
+        handler: async () => {
+          navigate(t.path);
+          return { navigated_to: t.path };
+        },
+        anchorSelector: `a[href="${t.path}"]`,
+      }),
+    );
+
+    return () => {
+      stopRunner();
+      stopObserver();
+      unregisters.forEach((u) => u());
+    };
+  }, [navigate]);
+
+  // 路由变化 → 作废全部 @eN ref（snapshot_version 递增）
+  const pathname = location.pathname;
+  useEffect(() => {
+    snapshotEngine.invalidate();
+  }, [pathname]);
 
   interface NavItem {
     label: string;
@@ -484,6 +538,7 @@ export default function AppLayout() {
         </main>
       </div>
       <PetWidget />
+      <VirtualCursor />
       <Modal
         open={skinOpen}
         onCancel={() => setSkinOpen(false)}

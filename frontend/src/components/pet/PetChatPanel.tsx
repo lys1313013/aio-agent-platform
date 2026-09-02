@@ -6,6 +6,9 @@ import { useChatStore } from '@/stores/chatStore';
 import { usePetStore } from '@/stores/petStore';
 import { chatApi } from '@/lib/api';
 import { useMessageQueue } from '@/hooks/useMessageQueue';
+import { handleUiActionEvent } from '@/hooks/useUiActionEvents';
+import { buildPageContext } from '@/lib/uiActions/registry';
+import { uiActionStore } from '@/stores/uiActionStore';
 import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import type { ChatAttachment, FileAttachmentRef, StreamingState, UserPet } from '@/lib/types';
@@ -113,6 +116,23 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
     });
   };
 
+  // 有页内操作进行中时关闭面板需确认（关闭会 abort SSE → 中断整个 run）
+  const handleClose = () => {
+    const { queue, active } = uiActionStore.getState();
+    if (!active && queue.length === 0) {
+      onClose();
+      return;
+    }
+    modal.confirm({
+      title: '操作进行中',
+      content: '智能体正在操作页面，关闭面板将中断操作。确定关闭？',
+      okText: '关闭并中断',
+      okType: 'danger',
+      cancelText: '继续等待',
+      onOk: () => onClose(),
+    });
+  };
+
   const handleSendRef = useRef<(content: string, attachments?: ChatAttachment[], fileAttachments?: FileAttachmentRef[]) => Promise<void> | void>();
   const { queue, enqueue, remove: removeQueued, clear: clearQueue, flushNext, sendNow: sendQueuedNow } =
     useMessageQueue(
@@ -148,8 +168,12 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
           message: content,
           attachments: attachments.length > 0 ? attachments : null,
           file_attachments: fileAttachments && fileAttachments.length > 0 ? fileAttachments : null,
+          page_context: buildPageContext(),
         },
         (event) => {
+          // ui_* 页内操作事件统一进全局 store（runner 在 AppLayout 执行）
+          if (handleUiActionEvent(event)) return;
+
           const type = event.type as string;
           usePetStore.getState().reportEvent(type, {
             sessionId,
@@ -277,6 +301,48 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
               message.error(errStr);
               break;
             }
+
+            // ---- Confirmation events (AskUserQuestion) ----
+            // M0 修复：宠物面板此前丢弃确认事件，Agent 会干挂 300s。
+            // 渲染由 MessageList → StreamingMessage → ConfirmationCard 提供。
+            case 'confirmation_required':
+              setStreaming((prev) => ({
+                ...prev,
+                confirmations: [
+                  ...prev.confirmations,
+                  {
+                    confirmation_id: (event.confirmation_id as string) || '',
+                    question: (event.question as string) || '',
+                    mode: (event.mode as import('@/lib/types').ConfirmationMode) || 'single_select',
+                    options: (event.options as import('@/lib/types').ConfirmationOption[]) || [],
+                    table_schema: (event.table_schema as import('@/lib/types').TableSchema) || undefined,
+                    context: (event.context as import('@/lib/types').ConfirmationContext) || { timeout_seconds: 300 },
+                    created_at: (event.created_at as string) || new Date().toISOString(),
+                  },
+                ],
+                actionOrder: [
+                  ...prev.actionOrder,
+                  { type: 'confirmation', id: (event.confirmation_id as string) || '' },
+                ],
+              }));
+              break;
+
+            case 'confirmation_resolved':
+              setStreaming((prev) => ({
+                ...prev,
+                confirmationsResolved: {
+                  ...prev.confirmationsResolved,
+                  [(event.confirmation_id as string) || '']: {
+                    confirmation_id: (event.confirmation_id as string) || '',
+                    status: (event.status as import('@/lib/types').ConfirmationStatus) || 'timeout',
+                    selected_options: (event.selected_options as string[]) || undefined,
+                    user_input: (event.user_input as string) || undefined,
+                    table_data: (event.table_data as Record<string, unknown>[]) || undefined,
+                    resolved_at: (event.resolved_at as string) || new Date().toISOString(),
+                  },
+                },
+              }));
+              break;
           }
         },
       );
@@ -376,7 +442,7 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
           type="button"
           title="关闭"
           onPointerDown={(e) => e.stopPropagation()}
-          onClick={onClose}
+          onClick={handleClose}
           className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <CloseOutlined className="text-xs" />

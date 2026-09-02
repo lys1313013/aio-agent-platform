@@ -49,6 +49,7 @@ from aio_agent_platform.interface.routes import (
     system_config_router,
     tenants_router,
     tools_router,
+    ui_actions_router,
     users_router,
     web_tools_router,
     webpages_router,
@@ -429,9 +430,15 @@ async def lifespan(app: FastAPI):
             return
 
         # Cron jobs have no delegation context; keep delegate_task out so a
-        # tool that cannot run is never offered.
+        # tool that cannot run is never offered. Also blacklist tools that
+        # require a browser frontend: AskUserQuestion would block forever
+        # (wait_for_response has no backend timeout), and ui_* page actions
+        # have no browser to execute in.
+        from aio_agent_platform.tools.builtin import FRONTEND_TOOL_NAMES
+
         tools_list, tools_schema = filter_tools_by_agent(
-            tool_executor, agent, extra_blacklist={"delegate_task"}
+            tool_executor, agent,
+            extra_blacklist={"delegate_task", "AskUserQuestion", *FRONTEND_TOOL_NAMES},
         )
 
         # 配置了渠道时，注入 notify_channel 工具让 agent 执行后推送结果（默认通知）
@@ -661,6 +668,7 @@ def create_app() -> FastAPI:
     app.include_router(delegations_router)
     app.include_router(tools_router)
     app.include_router(confirmations_router)
+    app.include_router(ui_actions_router)
     app.include_router(workspaces_router)
     app.include_router(mcp_servers_router)
     app.include_router(knowledge_router)

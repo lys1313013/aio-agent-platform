@@ -23,6 +23,7 @@ import json
 import time
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -397,6 +398,15 @@ def _is_recalled(message_id: str | None) -> bool:
     return True
 
 
+def _format_recall_time(raw: object) -> str | None:
+    """飞书撤回时间为毫秒时间戳字符串，转成可读 ISO 时间；缺省/非法返回 None。"""
+    try:
+        ms = int(str(raw))
+    except (TypeError, ValueError):
+        return None
+    return datetime.fromtimestamp(ms / 1000).isoformat(sep=" ", timespec="seconds")
+
+
 @dataclass
 class _RunningTask:
     """An in-flight event-processing task for one chat."""
@@ -556,6 +566,19 @@ class ChannelInboundPipeline:
         """Recall-to-stop: cancel the in-flight run triggered by the recalled
         message. Unknown/completed recalls are silently ignored."""
         try:
+            body = event.raw.get("event") or {}
+            recall_time = _format_recall_time(body.get("recall_time"))
+            # 撤回方类别：message_owner / group_owner / group_manager /
+            # enterprise_manager（事件不含操作人身份，仅记录类别）
+            recall_type = body.get("recall_type")
+            logger.info(
+                "pipeline_recall_received",
+                channel_id=str(self.channel.id),
+                chat_id=event.chat_id,
+                message_id=event.message_id,
+                recall_time=recall_time,
+                recall_type=recall_type,
+            )
             if event.message_id:
                 _mark_recalled(event.message_id)
             chat_key = self._trigger_index.get(event.message_id or "")
@@ -568,9 +591,8 @@ class ChannelInboundPipeline:
                 "pipeline_recall_cancel",
                 channel_id=str(self.channel.id),
                 message_id=event.message_id,
-                # 撤回方类别：message_owner / group_owner / group_manager /
-                # enterprise_manager（事件不含操作人身份，仅记录类别）
-                recall_type=(event.raw.get("event") or {}).get("recall_type"),
+                recall_time=recall_time,
+                recall_type=recall_type,
             )
             running.task.cancel()
         except Exception:
@@ -599,6 +621,19 @@ class ChannelInboundPipeline:
         #    （去重已上移到 submit，/stop 与撤回事件也需去重。）
         if event.chat_kind.value == "group" and not event.mentions_bot:
             return
+
+        logger.info(
+            "channel_message_received",
+            channel_id=str(self.channel.id),
+            channel_type=self.channel.channel_type,
+            chat_id=event.chat_id,
+            chat_kind=event.chat_kind.value,
+            external_id=event.external_id,
+            message_id=event.message_id,
+            text=event.text[:200],
+            text_len=len(event.text),
+            has_attachment=event.attachment is not None,
+        )
 
         # 2. Resolve user + session.
         factory = get_session_factory()
@@ -974,6 +1009,11 @@ class ChannelInboundPipeline:
         # Channel conversations have no delegation context (no SSE event loop);
         # keep delegate_task out so a tool that cannot run is never offered.
         blacklist.add("delegate_task")
+        # ui_* page actions execute in the user's browser — channel sessions
+        # have no browser attached, so never offer them.
+        from aio_agent_platform.tools.builtin import FRONTEND_TOOL_NAMES
+
+        blacklist.update(FRONTEND_TOOL_NAMES)
         tools_list, tools_schema = filter_tools_by_agent(
             self.tool_executor, agent, extra_blacklist=blacklist
         )

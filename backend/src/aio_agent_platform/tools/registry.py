@@ -15,6 +15,7 @@ class Tool:
     requires_sandbox: bool
     permission_level: str = "read"  # read | write | dangerous
     timeout: int = 60
+    execution_location: str = "sandbox"  # sandbox | frontend (frontend = 浏览器页内执行)
 
 
 class ToolRegistry:

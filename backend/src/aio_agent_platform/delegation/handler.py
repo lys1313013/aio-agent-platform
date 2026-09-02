@@ -376,6 +376,9 @@ def _build_child_tools(
     # Filter by child's enabled_tools.
     # knowledge_retrieval and delegate_task are auto-injected based on
     # bindings, not manual tool selection — exclude them from the filter.
+    # ui_* frontend tools are HARD-excluded regardless of enabled_tools:
+    # child agents share the parent's session and must never drive the
+    # user's browser directly.
     if child_agent.enabled_tools:
         enabled_set = set(child_agent.enabled_tools)
         filtered = [
@@ -383,12 +386,14 @@ def _build_child_tools(
             if t.name in enabled_set
             and t.name != "knowledge_retrieval"
             and t.name != "delegate_task"
+            and t.execution_location != "frontend"
         ]
     else:
         filtered = [
             t for t in all_tools
             if t.name != "knowledge_retrieval"
             and t.name != "delegate_task"
+            and t.execution_location != "frontend"
         ]
 
     # Auto-inject knowledge_retrieval if child has knowledge bases bound

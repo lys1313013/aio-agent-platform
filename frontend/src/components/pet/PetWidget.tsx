@@ -761,6 +761,7 @@ function PetWidgetInner() {
   return (
     <div
       ref={containerRef}
+      data-pet-widget
       className="fixed z-50 select-none"
       style={style}
       onPointerDown={onPointerDown}

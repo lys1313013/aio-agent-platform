@@ -4,6 +4,8 @@ import { useChatStore } from '@/stores/chatStore';
 import { usePetStore } from '@/stores/petStore';
 import { chatApi, sessionsApi } from '@/lib/api';
 import { useMessageQueue } from '@/hooks/useMessageQueue';
+import { handleUiActionEvent } from '@/hooks/useUiActionEvents';
+import { buildPageContext } from '@/lib/uiActions/registry';
 import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import AgentConfigSidebar from '@/components/AgentConfigSidebar';
@@ -170,8 +172,12 @@ export default function AgentChatPage() {
           message: content,
           attachments: attachments.length > 0 ? attachments : null,
           file_attachments: fileAttachments && fileAttachments.length > 0 ? fileAttachments : null,
+          page_context: buildPageContext(),
         },
         (event) => {
+          // ui_* 页内操作事件统一进全局 store（runner 在 AppLayout 执行）
+          if (handleUiActionEvent(event)) return;
+
           const type = event.type as string;
           usePetStore.getState().reportEvent(type, {
             sessionId,
@@ -564,6 +570,9 @@ export default function AgentChatPage() {
     const controller = sessionsApi.watchEvents(
       urlSessionId,
       (event) => {
+        // ui_* 页内操作事件统一进全局 store
+        if (handleUiActionEvent(event)) return;
+
         const type = event.type as string;
         usePetStore.getState().reportEvent(type, {
           sessionId: urlSessionId,

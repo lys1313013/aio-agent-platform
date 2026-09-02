@@ -28,6 +28,7 @@ from aio_agent_platform.interface.routes.skills import router as skills_router
 from aio_agent_platform.interface.routes.system_config import router as system_config_router
 from aio_agent_platform.interface.routes.tenants import router as tenants_router
 from aio_agent_platform.interface.routes.tools import router as tools_router
+from aio_agent_platform.interface.routes.ui_actions import router as ui_actions_router
 from aio_agent_platform.interface.routes.users import router as users_router
 from aio_agent_platform.interface.routes.web_tools import router as web_tools_router
 from aio_agent_platform.interface.routes.webpages import router as webpages_router
@@ -61,6 +62,7 @@ __all__ = [
     "system_config_router",
     "tenants_router",
     "tools_router",
+    "ui_actions_router",
     "users_router",
     "web_tools_router",
     "webpages_router",

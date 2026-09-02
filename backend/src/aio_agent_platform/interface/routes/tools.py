@@ -35,6 +35,12 @@ TOOL_META: dict[str, dict] = {
     "create_cron_job": {"label": "创建定时任务", "category": "automation"},
     "list_cron_jobs": {"label": "列出定时任务", "category": "automation"},
     "delete_cron_job": {"label": "删除定时任务", "category": "automation"},
+    "ui_navigate": {"label": "页面跳转", "category": "ui_automation"},
+    "ui_click": {"label": "点击页面元素", "category": "ui_automation"},
+    "ui_input": {"label": "页面输入", "category": "ui_automation"},
+    "ui_scroll_to": {"label": "滚动页面", "category": "ui_automation"},
+    "ui_read_screen": {"label": "读取页面", "category": "ui_automation"},
+    "ui_screenshot": {"label": "页面截图", "category": "ui_automation"},
 }
 
 

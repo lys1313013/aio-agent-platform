@@ -3,6 +3,8 @@ import { useChatStore } from '@/stores/chatStore';
 import { usePetStore } from '@/stores/petStore';
 import { chatApi } from '@/lib/api';
 import { useMessageQueue } from '@/hooks/useMessageQueue';
+import { handleUiActionEvent } from '@/hooks/useUiActionEvents';
+import { buildPageContext } from '@/lib/uiActions/registry';
 import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import ChatHistorySidebar from '@/components/chat/ChatHistorySidebar';
@@ -95,8 +97,11 @@ export default function ChatPage() {
 
       // Start SSE stream
       const controller = chatApi.stream(
-        { session_id: sessionId, message: content },
+        { session_id: sessionId, message: content, page_context: buildPageContext() },
         (event) => {
+          // ui_* 页内操作事件统一进全局 store
+          if (handleUiActionEvent(event)) return;
+
           const type = event.type as string;
           usePetStore.getState().reportEvent(type, {
             sessionId,

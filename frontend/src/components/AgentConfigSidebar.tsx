@@ -78,6 +78,8 @@ const TOOL_CATEGORY_LABELS: Record<string, string> = {
   knowledge: '知识库',
   file: '文件',
   remote: '远程工具',
+  automation: '自动化',
+  ui_automation: '页面自动化',
   other: '其他',
 };
 
@@ -93,6 +95,8 @@ const TOOL_CATEGORY_ORDER = [
   'skills',
   'multi_agent',
   'interaction',
+  'automation',
+  'ui_automation',
   'remote',
   'other',
 ];

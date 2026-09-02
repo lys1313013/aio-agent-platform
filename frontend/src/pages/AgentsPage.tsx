@@ -25,6 +25,8 @@ import {
 import { agentsApi, toolsApi } from '@/lib/api';
 import type { Agent, ToolInfo } from '@/lib/types';
 import { getAgentIcon, AGENT_ICON_OPTIONS, DEFAULT_ICON } from '@/lib/agent-icons';
+import { frontendActionRegistry } from '@/lib/uiActions/registry';
+import { dispatchRealClick } from '@/lib/uiActions/snapshot';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -57,6 +59,23 @@ export default function AgentsPage() {
   }, [message]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // 页内操作动作注册（docs/22-浏览器页面自动化 M3）：打开新建智能体弹窗
+  useEffect(() => {
+    return frontendActionRegistry.register({
+      name: 'agents.open_create_modal',
+      description: '打开新建智能体弹窗',
+      risk: 'write',
+      anchorSelector: '[data-ui-action="agents.open_create_modal"]',
+      handler: async () => {
+        const el = document.querySelector('[data-ui-action="agents.open_create_modal"]');
+        if (!el) throw new Error('action_not_available');
+        const rect = el.getBoundingClientRect();
+        dispatchRealClick(el, rect.left + rect.width / 2, rect.top + rect.height / 2);
+        return { opened: 'create_agent_modal' };
+      },
+    });
+  }, []);
 
   // ---- Agent CRUD ----
   const [modalOpen, setModalOpen] = useState(false);
@@ -273,6 +292,7 @@ export default function AgentsPage() {
               hoverable
               className="cursor-pointer transition-all hover:shadow-lg border-dashed"
               onClick={() => openModal()}
+              data-ui-action="agents.open_create_modal"
             >
               <div className="flex flex-col items-center text-center gap-3 py-2">
                 <div className="text-4xl text-muted-foreground">

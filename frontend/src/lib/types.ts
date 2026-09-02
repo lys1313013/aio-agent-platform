@@ -50,12 +50,28 @@ export interface SessionDetail extends Session {
   messages: Message[];
 }
 
+export interface PageActionInfo {
+  name: string;
+  description: string;
+  risk: 'read' | 'write' | 'dangerous';
+}
+
+/** 页面上报上下文（docs/22-浏览器页面自动化） */
+export interface PageContext {
+  page_path: string;
+  page_title: string;
+  actions: PageActionInfo[];
+  snapshot_version?: number;
+  dangerous_refs?: string[];
+}
+
 export interface ChatRequest {
   session_id?: string | null;
   agent_id?: string | null;
   message: string;
   attachments?: ChatAttachment[] | null;
   file_attachments?: FileAttachmentRef[] | null;
+  page_context?: PageContext | null;
 }
 
 export interface ChatResponse {
