@@ -785,6 +785,7 @@ function PetWidgetInner() {
         sessionId={chatDlg.sessionId}
         agentId={chatDlg.agentId}
         onClose={() => setChatDlg((d) => ({ ...d, open: false }))}
+        onSessionChange={(sid, aid) => setChatDlg({ open: true, sessionId: sid, agentId: aid })}
       />
     </div>
   );

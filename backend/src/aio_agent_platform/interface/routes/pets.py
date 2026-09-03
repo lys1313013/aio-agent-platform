@@ -465,8 +465,16 @@ async def pet_bubble(user_pet_id: UUID, user: CurrentUser, db: DbSession):
 
 
 @router.post("/{user_pet_id}/chat", response_model=PetChatOut)
-async def pet_chat(user_pet_id: UUID, user: CurrentUser, db: DbSession) -> PetChatOut:
-    """开启/复用宠物闲聊会话（source='pet'）。之后走现有会话消息接口 + SSE。"""
+async def pet_chat(
+    user_pet_id: UUID,
+    user: CurrentUser,
+    db: DbSession,
+    force_new: bool = False,
+) -> PetChatOut:
+    """开启/复用宠物闲聊会话（source='pet'）。之后走现有会话消息接口 + SSE。
+
+    force_new=True 时跳过复用，直接新建会话（旧会话保留）。
+    """
     svc = PetService(db)
     pet = await db.get(UserPet, user_pet_id)
     if pet is None or pet.user_id != user.id:
@@ -478,17 +486,19 @@ async def pet_chat(user_pet_id: UUID, user: CurrentUser, db: DbSession) -> PetCh
     if agent is None:
         raise HTTPException(status_code=400, detail="请先为该宠物绑定智能体")
 
-    result = await db.execute(
-        select(Session)
-        .where(
-            Session.user_id == user.id,
-            Session.pet_id == user_pet_id,
-            Session.source == "pet",
+    session: Session | None = None
+    if not force_new:
+        result = await db.execute(
+            select(Session)
+            .where(
+                Session.user_id == user.id,
+                Session.pet_id == user_pet_id,
+                Session.source == "pet",
+            )
+            .order_by(Session.updated_at.desc())
+            .limit(1)
         )
-        .order_by(Session.updated_at.desc())
-        .limit(1)
-    )
-    session = result.scalars().first()
+        session = result.scalars().first()
     if session is None:
         session = Session(
             user_id=user.id,

@@ -16,7 +16,7 @@ from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import get_current_user
-from aio_agent_platform.db.models import User
+from aio_agent_platform.db.models import Agent, User
 from aio_agent_platform.interface.api import app
 
 TENANT_A = uuid.UUID("10000000-0000-0000-0000-00000000000a")
@@ -350,3 +350,43 @@ async def test_download_roundtrip_preserves_zip(client: AsyncClient, db_session:
     downloaded = await client.get(f"/api/pets/packages/{pkg['id']}/download")
     assert downloaded.status_code == 200
     assert downloaded.content == raw  # 逐字节一致，可放回 ~/.codex/pets
+
+
+@pytest.mark.asyncio
+async def test_pet_chat_reuse_and_force_new(client: AsyncClient, db_session: AsyncSession):
+    """默认复用最新宠物会话；force_new=true 时新建且保留旧会话。"""
+    owner = _make_user(OWNER_ID, TENANT_A)
+    await _login_as(client, db_session, owner)
+    await _upload(client)
+
+    # 绑定一个租户内可见的 Agent（resolve_agent: 实例绑定 → 包级默认）
+    agent = Agent(
+        id=uuid.uuid4(),
+        tenant_id=TENANT_A,
+        created_by=owner.id,
+        name="pet-agent",
+        visibility="tenant",
+        is_active=True,
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    mine = (await client.get("/api/pets/mine")).json()
+    pet_id = mine[0]["id"]
+    bind = await client.put(f"/api/pets/{pet_id}/agent", json={"agent_id": str(agent.id)})
+    assert bind.status_code == 200, bind.text
+
+    # 首次开启 → 新建
+    r1 = await client.post(f"/api/pets/{pet_id}/chat")
+    assert r1.status_code == 200, r1.text
+    sid1 = r1.json()["conversation_id"]
+
+    # 再次开启 → 复用同一会话
+    r2 = await client.post(f"/api/pets/{pet_id}/chat")
+    assert r2.json()["conversation_id"] == sid1
+
+    # force_new → 新会话，旧会话仍在
+    r3 = await client.post(f"/api/pets/{pet_id}/chat?force_new=true")
+    sid3 = r3.json()["conversation_id"]
+    assert sid3 != sid1
+    old = await client.get(f"/api/sessions/{sid1}")
+    assert old.status_code == 200

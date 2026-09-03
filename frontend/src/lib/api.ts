@@ -2380,10 +2380,11 @@ export const petsApi = {
       body: JSON.stringify({ aliases, state_mapping: stateMapping ?? null }),
     });
   },
-  /** 开启/复用宠物闲聊会话，返回 conversation_id */
-  petChat(userPetId: string) {
+  /** 开启/复用宠物闲聊会话，返回 conversation_id；forceNew 时强制新建（旧会话保留） */
+  petChat(userPetId: string, opts?: { forceNew?: boolean }) {
+    const qs = opts?.forceNew ? '?force_new=true' : '';
     return request<{ conversation_id: string; agent_id: string | null }>(
-      `/pets/${userPetId}/chat`,
+      `/pets/${userPetId}/chat${qs}`,
       { method: 'POST' },
     );
   },

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Alert, Spin, App } from 'antd';
-import { CloseOutlined, DeleteOutlined } from '@ant-design/icons';
+import { CloseOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useChatStore } from '@/stores/chatStore';
 import { usePetStore } from '@/stores/petStore';
-import { chatApi } from '@/lib/api';
+import { chatApi, petsApi } from '@/lib/api';
 import { useMessageQueue } from '@/hooks/useMessageQueue';
 import { handleUiActionEvent } from '@/hooks/useUiActionEvents';
 import { buildPageContext } from '@/lib/uiActions/registry';
@@ -35,6 +35,8 @@ interface Props {
   sessionId: string | null;
   agentId: string | null;
   onClose: () => void;
+  /** 新建会话后回调，由父组件切换 chatDlg 的 sessionId */
+  onSessionChange?: (sessionId: string, agentId: string | null) => void;
 }
 
 function defaultPos() {
@@ -49,7 +51,7 @@ function defaultPos() {
  * 复用 chatStore 的 messages 缓存按 sessionId 读写，不切换全局
  * activeSessionId，因此不影响主界面正在查看的会话。
  */
-export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }: Props) {
+export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, onSessionChange }: Props) {
   const { message, modal } = App.useApp();
   const addMessage = useChatStore((s) => s.addMessage);
   const deleteSession = useChatStore((s) => s.deleteSession);
@@ -57,6 +59,7 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
   const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAMING);
   const [error, setError] = useState<string | null>(null);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [newSessionLoading, setNewSessionLoading] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number; moved: boolean } | null>(null);
@@ -115,6 +118,24 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
         onClose();
       },
     });
+  };
+
+  // 新建会话：保留旧会话，中断当前流后切换到新 session
+  const handleNewConversation = () => {
+    if (!pet || newSessionLoading) return;
+    interruptStream();
+    setNewSessionLoading(true);
+    void (async () => {
+      try {
+        const r = await petsApi.petChat(pet.id, { forceNew: true });
+        setError(null);
+        onSessionChange?.(r.conversation_id, r.agent_id ?? null);
+      } catch (err) {
+        message.warning(err instanceof Error ? err.message : '新建会话失败');
+      } finally {
+        setNewSessionLoading(false);
+      }
+    })();
   };
 
   // 有页内操作进行中时关闭面板需确认（关闭会 abort SSE → 中断整个 run）
@@ -442,6 +463,16 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
             {pet?.agent ? pet.agent.name : '在线'}
           </span>
         </div>
+        <button
+          type="button"
+          title="新对话"
+          disabled={newSessionLoading}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={handleNewConversation}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+        >
+          {newSessionLoading ? <Spin size="small" /> : <PlusOutlined className="text-xs" />}
+        </button>
         <button
           type="button"
           title="删除对话"
