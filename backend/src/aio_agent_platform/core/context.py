@@ -336,7 +336,6 @@ async def generate_summary(
     try:
         response = await provider.complete(
             messages=[LLMMessage(role="user", content=summary_prompt)],
-            temperature=0.3,
             max_tokens=max_chars * 2,  # Rough token limit
         )
         summary = response.content.strip()
