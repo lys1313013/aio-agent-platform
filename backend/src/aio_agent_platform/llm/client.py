@@ -217,6 +217,7 @@ class OpenAIProvider(LLMProvider):
         default_max_tokens: int | None = None,
         enable_retry: bool = True,
         langfuse_client: Langfuse | None = None,
+        supports_vision: bool = False,
     ):
         self.client = openai.AsyncOpenAI(
             base_url=base_url,
@@ -228,6 +229,7 @@ class OpenAIProvider(LLMProvider):
         self.default_max_tokens = default_max_tokens
         self.enable_retry = enable_retry
         self.langfuse_client = langfuse_client
+        self.supports_vision = supports_vision
 
     async def complete(
         self,
@@ -644,6 +646,7 @@ class AnthropicProvider(LLMProvider):
         default_max_tokens: int = 4096,
         enable_retry: bool = True,
         langfuse_client: Langfuse | None = None,
+        supports_vision: bool = False,
     ):
         self.client = anthropic.AsyncAnthropic(
             api_key=api_key,
@@ -654,6 +657,7 @@ class AnthropicProvider(LLMProvider):
         self.default_max_tokens = default_max_tokens
         self.enable_retry = enable_retry
         self.langfuse_client = langfuse_client
+        self.supports_vision = supports_vision
 
     async def complete(
         self,
@@ -1029,8 +1033,6 @@ VISION_CAPABLE_PATTERNS: tuple[str, ...] = (
     "opus",
     "haiku",
     "glm-4v",
-    "kimi",
-    "k3",
 )
 NON_VISION_PATTERNS: tuple[str, ...] = (
     "deepseek-coder",
@@ -1234,11 +1236,16 @@ def create_provider(
     temperature: float | None = None,
     enable_retry: bool = True,
     langfuse_client: Langfuse | None = None,
+    supports_vision: bool = False,
 ) -> LLMProvider:
     """Create an LLM provider instance.
 
     All parameters (provider, model, base_url, api_key) must be supplied
     by the caller — there are no global defaults.
+
+    ``supports_vision`` comes from the model's DB config
+    (``llm_models.is_multimodal``), not from name sniffing — it gates
+    image-content flows such as ui_screenshot.
     """
     if provider == "anthropic":
         return AnthropicProvider(
@@ -1247,6 +1254,7 @@ def create_provider(
             default_temperature=temperature,
             enable_retry=enable_retry,
             langfuse_client=langfuse_client,
+            supports_vision=supports_vision,
         )
     else:
         return OpenAIProvider(
@@ -1256,4 +1264,5 @@ def create_provider(
             default_temperature=temperature,
             enable_retry=enable_retry,
             langfuse_client=langfuse_client,
+            supports_vision=supports_vision,
         )

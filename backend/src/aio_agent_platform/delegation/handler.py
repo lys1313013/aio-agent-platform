@@ -509,6 +509,7 @@ async def _build_child_provider(db: AsyncSession, child_agent: Agent | DynamicSu
         api_key=model_to_use.provider.api_key_encrypted,
         temperature=child_agent.temperature if child_agent.temperature is not None else settings.llm.temperature,
         enable_retry=child_agent.enable_retry if child_agent.enable_retry is not None else True,
+        supports_vision=bool(model_to_use.is_multimodal),
     )
 
 

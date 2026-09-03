@@ -1113,8 +1113,6 @@ class AgentLoop:
         """
         from datetime import datetime
 
-        from aio_agent_platform.llm.client import supports_vision
-
         self._last_ui_action_output = ""
         session_key = str(ctx.session_id)
         args = tc.arguments or {}
@@ -1130,12 +1128,13 @@ class AgentLoop:
             )
             return
 
-        if tc.name == "ui_screenshot" and not supports_vision(
-            getattr(self.provider, "provider_type", ""), self.provider.model
+        if tc.name == "ui_screenshot" and not getattr(
+            self.provider, "supports_vision", False
         ):
             self._last_ui_action_output = (
                 "Error(vision_not_supported): the current model cannot accept "
-                "image content. Use ui_read_screen (mode='full') instead."
+                "image content (llm_models.is_multimodal is off). Use "
+                "ui_read_screen (mode='full') instead."
             )
             return
 

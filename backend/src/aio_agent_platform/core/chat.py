@@ -400,6 +400,7 @@ async def build_agent_loop(
         temperature=agent_temperature if agent_temperature is not None else settings.llm.temperature,
         enable_retry=agent_enable_retry,
         langfuse_client=get_langfuse_client(),
+        supports_vision=bool(model_to_use.is_multimodal),
     )
     logger.info(
         "使用模型",

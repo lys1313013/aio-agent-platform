@@ -172,10 +172,12 @@ async def test_generate_summary_strips_images():
 # ---- AgentLoop screenshot flow ----
 
 
-def _make_screenshot_loop(queue, model="gpt-4o", provider_type="openai"):
+def _make_screenshot_loop(queue, vision=True):
     provider = MagicMock()
-    provider.model = model
-    provider.provider_type = provider_type
+    provider.model = "test-model"
+    provider.provider_type = "openai"
+    # 视觉门控读 DB 配置（llm_models.is_multimodal），create_provider 落到实例属性
+    provider.supports_vision = vision
 
     registry = ToolRegistry()
     registry.register(Tool(
@@ -273,9 +275,9 @@ async def test_screenshot_flow_injects_image_message():
 
 
 async def test_screenshot_vision_gate_fast_fail():
-    """非视觉模型 → vision_not_supported，不下发事件不等待。"""
+    """模型配置 is_multimodal=false → vision_not_supported，不下发事件不等待。"""
     queue: asyncio.Queue = asyncio.Queue()
-    loop = _make_screenshot_loop(queue, model="deepseek-coder", provider_type="openai")
+    loop = _make_screenshot_loop(queue, vision=False)
     scripts = [_tool_stream("{}"), _text_stream()]
     calls = {"n": 0}
 
