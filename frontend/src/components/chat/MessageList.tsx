@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import type { ReactNode } from 'react';
 import { PlusOutlined } from '@ant-design/icons';
 import type { Agent, Message, StreamingState } from '@/lib/types';
 import BrandLogo from '@/components/BrandLogo';
@@ -14,11 +15,15 @@ interface Props {
   /** 覆盖空态欢迎语（宠物弹窗等无独立「新对话」场景） */
   emptyTitle?: string;
   emptySubtitle?: string;
+  /** 覆盖空态图标（宠物弹窗用宠物动画代替品牌 Logo） */
+  emptyIcon?: ReactNode;
   /** 挂载时滚动到底部（宠物弹窗等场景：打开默认看最新消息） */
   scrollToBottomOnMount?: boolean;
+  /** 紧凑模式：窄浮窗场景（宠物对话）下收紧间距与头像尺寸 */
+  compact?: boolean;
 }
 
-export default function MessageList({ messages, streaming, agent, onNewChat, onEditResend, emptyTitle, emptySubtitle, scrollToBottomOnMount }: Props) {
+export default function MessageList({ messages, streaming, agent, onNewChat, onEditResend, emptyTitle, emptySubtitle, emptyIcon, scrollToBottomOnMount, compact }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -35,15 +40,15 @@ export default function MessageList({ messages, streaming, agent, onNewChat, onE
       <div className="flex flex-1 items-center justify-center">
         <div className="flex max-w-md flex-col items-center text-center px-6">
           {/* Logo */}
-          <div className="mb-6">
-            <BrandLogo className="h-16 w-16" />
+          <div className={compact ? 'mb-4' : 'mb-6'}>
+            {emptyIcon ?? <BrandLogo className="h-16 w-16" />}
           </div>
 
           {/* Title */}
-          <h2 className="mb-2 text-xl font-bold tracking-tight text-foreground">
+          <h2 className={`${compact ? 'mb-1 text-base' : 'mb-2 text-xl'} font-bold tracking-tight text-foreground`}>
             {title}
           </h2>
-          <p className="mb-8 text-sm text-muted-foreground">
+          <p className={`${compact ? 'mb-4' : 'mb-8'} text-sm text-muted-foreground`}>
             {subtitle}
           </p>
 
@@ -72,11 +77,11 @@ export default function MessageList({ messages, streaming, agent, onNewChat, onE
   return (
     // data-ui-exclude：text_delta 每 token 改 DOM，快照引擎 MutationObserver 排除本区域（docs/22 §2.2a 规则 8）
     <div ref={scrollRef} className="flex-1 overflow-y-auto" data-ui-exclude>
-      <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
+      <div className={compact ? 'px-3 py-4 space-y-4' : 'max-w-4xl mx-auto px-4 py-6 space-y-6'}>
         {messages.map((msg) => (
-          <ChatMessage key={msg.id} message={msg} onEditResend={onEditResend} />
+          <ChatMessage key={msg.id} message={msg} onEditResend={onEditResend} compact={compact} />
         ))}
-        {streaming.isStreaming && <StreamingMessage streaming={streaming} />}
+        {streaming.isStreaming && <StreamingMessage streaming={streaming} compact={compact} />}
       </div>
     </div>
   );

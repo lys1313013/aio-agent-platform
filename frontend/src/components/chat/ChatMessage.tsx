@@ -14,6 +14,8 @@ import { ConfirmationCard } from '../confirmation';
 interface Props {
   message: Message;
   onEditResend?: (content: string) => void;
+  /** 紧凑模式：窄浮窗（宠物对话）下缩小头像与间距 */
+  compact?: boolean;
 }
 
 /** Compact card for delegate_task entries in saved message history */
@@ -123,7 +125,7 @@ function DelegateTaskCard({ toolCall }: { toolCall: ToolCallInfo }) {
   );
 }
 
-export default function ChatMessage({ message: msg, onEditResend }: Props) {
+export default function ChatMessage({ message: msg, onEditResend, compact }: Props) {
   const { message: msgApi } = App.useApp();
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -173,7 +175,7 @@ export default function ChatMessage({ message: msg, onEditResend }: Props) {
 
   return (
     <div
-      className="group flex gap-3"
+      className={cn('group flex', compact ? 'gap-2' : 'gap-3')}
       style={
         isUser
           ? { marginLeft: 'auto', flexDirection: 'row-reverse' }
@@ -183,11 +185,12 @@ export default function ChatMessage({ message: msg, onEditResend }: Props) {
       {/* Avatar */}
       <div
         className={cn(
-          'flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full',
+          'flex flex-shrink-0 items-center justify-center rounded-full',
+          compact ? 'h-7 w-7' : 'h-8 w-8',
           isUser ? 'bg-primary/10' : isSystem ? 'border border-border bg-card' : 'bg-muted',
         )}
       >
-        <span className={cn('text-sm font-medium', isUser ? 'text-primary' : 'text-muted-foreground')}>
+        <span className={cn(compact ? 'text-xs' : 'text-sm', 'font-medium', isUser ? 'text-primary' : 'text-muted-foreground')}>
           {isUser ? '我' : isSystem ? '系' : 'AI'}
         </span>
       </div>
@@ -378,7 +381,8 @@ export default function ChatMessage({ message: msg, onEditResend }: Props) {
                   {visibleContent && (
                     <div
                       className={cn(
-                        'inline-block max-w-full rounded-2xl px-4 py-2.5',
+                        'inline-block max-w-full rounded-2xl',
+                        compact ? 'px-3 py-2' : 'px-4 py-2.5',
                         isUser
                           ? 'bg-primary text-primary-foreground'
                           : isSystem

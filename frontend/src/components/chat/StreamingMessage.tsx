@@ -12,9 +12,11 @@ import { ConfirmationCard } from '../confirmation';
 
 interface Props {
   streaming: StreamingState;
+  /** 紧凑模式：窄浮窗（宠物对话）下缩小头像与间距 */
+  compact?: boolean;
 }
 
-export default function StreamingMessage({ streaming }: Props) {
+export default function StreamingMessage({ streaming, compact }: Props) {
   const [openThinkings, setOpenThinkings] = useState<Set<string>>(new Set());
 
   // Parse <think> blocks from finalText (some LLMs embed thinking inline)
@@ -50,14 +52,14 @@ export default function StreamingMessage({ streaming }: Props) {
   }
 
   return (
-    <div className="flex gap-3">
+    <div className={`flex ${compact ? 'gap-2' : 'gap-3'}`}>
       {/* Avatar */}
-      <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-muted">
-        <span className="text-sm font-medium text-muted-foreground">AI</span>
+      <div className={`flex flex-shrink-0 items-center justify-center rounded-full bg-muted ${compact ? 'h-7 w-7' : 'h-8 w-8'}`}>
+        <span className={`font-medium text-muted-foreground ${compact ? 'text-xs' : 'text-sm'}`}>AI</span>
       </div>
 
       {/* Content */}
-      <div className="flex-1 space-y-3">
+      <div className={`flex-1 ${compact ? 'space-y-2' : 'space-y-3'}`}>
         {/* Loading indicator — no content yet */}
         {showLoading && (
           <div className="flex items-center gap-2 text-muted-foreground py-1">
@@ -157,7 +159,7 @@ export default function StreamingMessage({ streaming }: Props) {
 
         {/* Final text (rendered as Markdown) */}
         {hasFinalText && (
-          <div className="rounded-2xl bg-muted px-4 py-2.5 text-foreground">
+          <div className={`rounded-2xl bg-muted text-foreground ${compact ? 'px-3 py-2' : 'px-4 py-2.5'}`}>
             <div className="prose prose-sm max-w-none dark:prose-invert">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}

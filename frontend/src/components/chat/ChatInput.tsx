@@ -340,8 +340,8 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
   const canSend = input.trim() || pending.some((p) => p.status === 'done') || pendingFiles.some((p) => p.status === 'done');
 
   const renderSendActions = (compact: boolean) => {
-    const buttonSize = compact ? 34 : 36;
-    const buttonClass = compact ? 'flex-shrink-0' : 'flex-shrink-0 !rounded-full !border-0 shadow-sm';
+    const buttonSize = compact ? 32 : 36;
+    const buttonClass = 'flex-shrink-0 !rounded-full !border-0 shadow-sm';
 
     if (isStreaming) {
       return (
@@ -386,7 +386,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
 
   return (
     <div
-      className={`${simple ? 'p-2' : 'bg-muted/20 p-3'} ${isDragging ? 'bg-primary/5' : ''}`}
+      className={`${simple ? 'border-t border-border/60 bg-muted/10 p-2.5' : 'bg-muted/20 p-3'} ${isDragging ? 'bg-primary/5' : ''}`}
       onDragOver={simple ? undefined : handleDragOver}
       onDragLeave={simple ? undefined : handleDragLeave}
       onDrop={simple ? undefined : handleDrop}
@@ -583,7 +583,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
           onPaste={simple ? undefined : handlePaste}
           placeholder={
             simple
-              ? '输入消息... (Enter 发送, Shift+Enter 换行)'
+              ? '输入消息...'
               : isStreaming
                 ? '继续输入，Enter 加入队列'
                 : '输入消息，Enter 发送'
@@ -591,7 +591,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
           autoSize={{ minRows: 1, maxRows: simple ? 4 : 6 }}
           disabled={disabled}
           variant={simple ? 'outlined' : 'borderless'}
-          className={simple ? undefined : '!px-2 !py-1.5 !text-sm !shadow-none'}
+          className={simple ? '!rounded-xl !text-sm' : '!px-2 !py-1.5 !text-sm !shadow-none'}
         />
 
         {simple ? (

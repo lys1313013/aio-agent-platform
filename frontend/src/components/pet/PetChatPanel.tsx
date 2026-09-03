@@ -11,6 +11,7 @@ import { buildPageContext } from '@/lib/uiActions/registry';
 import { uiActionStore } from '@/stores/uiActionStore';
 import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
+import PetCanvas from './PetCanvas';
 import type { ChatAttachment, FileAttachmentRef, StreamingState, UserPet } from '@/lib/types';
 
 const IDLE_STREAMING: StreamingState = {
@@ -26,7 +27,7 @@ const IDLE_STREAMING: StreamingState = {
 };
 
 const PANEL_W = 340;
-const PANEL_H = 480;
+const PANEL_H = 620;
 
 interface Props {
   open: boolean;
@@ -415,26 +416,38 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
   return createPortal(
     <div
       ref={panelRef}
-      className="fixed z-[60] flex flex-col overflow-hidden rounded-2xl border border-border bg-card/75 shadow-2xl backdrop-blur-xl"
-      style={{ left: pos.x, top: pos.y, width: PANEL_W, height: `min(${PANEL_H}px, 80vh)` }}
+      className="fixed z-[1010] flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-card/90 shadow-[0_16px_48px_-8px_rgba(0,0,0,0.25)] backdrop-blur-xl"
+      style={{ left: pos.x, top: pos.y, width: PANEL_W, height: `min(${PANEL_H}px, 85vh)` }}
     >
       {/* 标题栏：可拖动 */}
       <div
-        className="flex cursor-move select-none items-center gap-2 border-b border-border bg-muted/25 px-2.5 py-1.5"
+        className="flex cursor-move select-none items-center gap-2.5 border-b border-border/60 bg-muted/20 py-2 pl-3 pr-2"
         onPointerDown={onTitlePointerDown}
         onPointerMove={onTitlePointerMove}
         onPointerUp={onTitlePointerUp}
         onPointerCancel={onTitlePointerCancel}
       >
-        <span className="truncate text-[13px] font-semibold">
-          {pet ? `和 ${pet.package.display_name} 对话` : '和宠物对话'}
-        </span>
+        {/* 宠物头像：流式响应时播放思考动作 */}
+        {pet && (
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border/60 bg-muted/50 shadow-sm">
+            <PetCanvas pkg={pet.package} mood={streaming.isStreaming ? 'think' : 'idle'} size={28} />
+          </div>
+        )}
+        <div className="flex min-w-0 flex-1 flex-col justify-center">
+          <span className="truncate text-[13px] font-semibold leading-tight">
+            {pet ? pet.package.display_name : '宠物'}
+          </span>
+          <span className="flex items-center gap-1 text-[11px] leading-tight text-muted-foreground">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-green-500" />
+            {pet?.agent ? pet.agent.name : '在线'}
+          </span>
+        </div>
         <button
           type="button"
           title="删除对话"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={handleDeleteConversation}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <DeleteOutlined className="text-xs" />
         </button>
@@ -443,7 +456,7 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
           title="关闭"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={handleClose}
-          className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <CloseOutlined className="text-xs" />
         </button>
@@ -459,7 +472,11 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose }:
           <MessageList
             messages={messages}
             streaming={streaming}
+            compact
             emptyTitle={pet ? `和 ${pet.package.display_name} 打个招呼吧` : '和宠物打个招呼吧'}
+            emptyIcon={
+              pet ? <PetCanvas pkg={pet.package} mood="happy" size={72} /> : undefined
+            }
             onEditResend={handleEditResend}
             scrollToBottomOnMount
           />

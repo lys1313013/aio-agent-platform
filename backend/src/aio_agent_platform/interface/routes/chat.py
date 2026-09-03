@@ -1089,10 +1089,6 @@ async def chat_stream(
                 agent_model_id = (session.model_id if session and session.model_id else None) or (agent.model_id if agent else None)
                 agent_temperature = agent.temperature if agent else None
                 agent_max_iterations = agent.max_iterations if agent else None
-                if pet_ctx:
-                    # 宠物会话保留 ui_* 前端工具（页面操作是核心场景），一次完整
-                    # 操作流程需 5-8 轮 ReAct（读屏→点击→读屏→…），上限收紧到 10
-                    agent_max_iterations = min(agent_max_iterations or settings.agent.max_iterations, 10)
                 workspace_id, workspace_slug = await _resolve_workspace(gen_db, session, user.id)
                 # Commit workspace_id so it's persisted
                 await gen_db.commit()
