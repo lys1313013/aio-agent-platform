@@ -28,6 +28,10 @@ logger = structlog.get_logger()
 REF_FAILURE_BREAKER_THRESHOLD = 3
 #: Chunk length for the heartbeat-friendly wait loop (seconds).
 WAIT_CHUNK_SECONDS = 15
+#: Screenshot soft limit: max SCREENSHOT_RATE_MAX per SCREENSHOT_RATE_WINDOW seconds
+#: per session (docs/22 §2.2b — 防 LLM 循环刷图，单图成本远高于文本快照).
+SCREENSHOT_RATE_MAX = 5
+SCREENSHOT_RATE_WINDOW = 600
 
 
 @dataclass
@@ -62,6 +66,8 @@ class UiActionManager:
         self._session_ctx: dict[str, dict[str, Any]] = {}
         # session_id -> consecutive stale_ref/element_not_found count
         self._ref_failures: dict[str, int] = {}
+        # session_id -> ui_screenshot 尝试时间戳（滑动窗口）
+        self._screenshot_attempts: dict[str, list[float]] = {}
 
     # ---- lifecycle ----
 
@@ -217,6 +223,25 @@ class UiActionManager:
 
     def ref_failures(self, session_id: str) -> int:
         return self._ref_failures.get(session_id, 0)
+
+    # ---- screenshot rate limit ----
+
+    def check_screenshot_rate(self, session_id: str) -> bool:
+        """Sliding-window rate check for ui_screenshot. Returns True and records
+        the attempt when allowed; False when the session hit the soft limit."""
+        now = datetime.now(UTC).timestamp()
+        window_start = now - SCREENSHOT_RATE_WINDOW
+        attempts = self._screenshot_attempts.setdefault(session_id, [])
+        attempts[:] = [t for t in attempts if t > window_start]
+        if len(attempts) >= SCREENSHOT_RATE_MAX:
+            logger.warning(
+                "ui_screenshot_rate_limited",
+                session_id=session_id,
+                attempts=len(attempts),
+            )
+            return False
+        attempts.append(now)
+        return True
 
 
 # Global singleton

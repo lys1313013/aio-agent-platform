@@ -281,10 +281,11 @@ def compress_early_tool_results(
                 )
             elif iterations_ago >= 3:
                 # 4-7 iterations ago: truncate
-                if tool_msg.content and len(tool_msg.content) > max_chars_mid:
+                text = _content_to_text(tool_msg.content)
+                if len(text) > max_chars_mid:
                     result[j] = LLMMessage(
                         role="tool",
-                        content=tool_msg.content[:max_chars_mid] + "\n... [truncated]",
+                        content=text[:max_chars_mid] + "\n... [truncated]",
                         tool_call_id=tool_msg.tool_call_id,
                     )
             j += 1
@@ -292,9 +293,31 @@ def compress_early_tool_results(
     return result
 
 
+def _content_to_text(content: str | list | None) -> str:
+    """Normalize message content to plain text, replacing image blocks with a
+    placeholder (docs/22 §2.2b — ui_screenshot 图片消息不进摘要/压缩/持久化）。"""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            parts.append(str(block))
+            continue
+        btype = block.get("type")
+        if btype in ("image", "image_url"):
+            parts.append("[图片已省略]")
+        elif btype == "text":
+            parts.append(block.get("text", ""))
+        else:
+            parts.append(str(block.get("text") or btype or ""))
+    return " ".join(p for p in parts if p)
+
+
 def _summarize_tool_result(msg: LLMMessage) -> str:
     """Create a one-line summary of a tool result."""
-    content = msg.content or ""
+    content = _content_to_text(msg.content)
     if not content:
         return "[tool executed]"
     # Take first line or first 100 chars
@@ -324,7 +347,7 @@ async def generate_summary(
     # Build simple message dicts for the template
     msg_dicts = []
     for msg in messages:
-        content = msg.content if isinstance(msg.content, str) else str(msg.content or "")
+        content = _content_to_text(msg.content)
         # Truncate individual messages for the summary prompt itself
         if len(content) > 2000:
             content = content[:1000] + " ... " + content[-500:]
@@ -358,7 +381,7 @@ def _fallback_summary(messages: list[LLMMessage], max_chars: int) -> str:
     parts = []
     for msg in messages:
         if msg.role in ("user", "assistant") and msg.content:
-            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            content = _content_to_text(msg.content)
             parts.append(f"{msg.role}: {content[:200]}")
     summary = "\n".join(parts)
     if len(summary) > max_chars:

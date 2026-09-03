@@ -206,6 +206,8 @@ class OpenAIProvider(LLMProvider):
     All services compatible with OpenAI Chat Completions API.
     """
 
+    provider_type = "openai"
+
     def __init__(
         self,
         model: str,
@@ -337,7 +339,7 @@ class OpenAIProvider(LLMProvider):
                     "temperature": temp,
                     "max_tokens": str(mt) if mt else None,
                 },
-                input=openai_messages,
+                input=sanitize_messages_for_trace(openai_messages),
             )
 
         accumulated_text = ""
@@ -632,6 +634,8 @@ class AnthropicProvider(LLMProvider):
 
     SYSTEM_PROMPT_PLACEHOLDER = "__SYSTEM__"
 
+    provider_type = "anthropic"
+
     def __init__(
         self,
         model: str,
@@ -758,7 +762,7 @@ class AnthropicProvider(LLMProvider):
                     "temperature": temp,
                     "max_tokens": mt,
                 },
-                input=model_input,
+                input=sanitize_messages_for_trace(model_input),
             )
 
         accumulated_text = ""
@@ -1025,6 +1029,8 @@ VISION_CAPABLE_PATTERNS: tuple[str, ...] = (
     "opus",
     "haiku",
     "glm-4v",
+    "kimi",
+    "k3",
 )
 NON_VISION_PATTERNS: tuple[str, ...] = (
     "deepseek-coder",
@@ -1128,6 +1134,93 @@ def build_user_content(
             blocks.append({"type": "image_url", "image_url": {"url": uri}})
 
     return blocks
+
+
+def build_image_message_content(
+    text: str,
+    data_uri: str,
+    provider_type: str,
+) -> list[dict]:
+    """Build a user-role content payload embedding one screenshot data URI.
+
+    Used by the ui_screenshot flow (docs/22-浏览器页面自动化 M4): the frontend
+    captures a SoM-annotated viewport screenshot; the backend injects it as an
+    ephemeral user-role image message (never persisted, never sent to Langfuse).
+
+    Args:
+        text: Short caption explaining the image (mark/ref correspondence).
+        data_uri: ``"data:image/webp;base64,..."``.
+        provider_type: ``"anthropic"`` or openai-compatible.
+    """
+    blocks: list[dict] = []
+    if text:
+        blocks.append({"type": "text", "text": text})
+    if provider_type == "anthropic":
+        # "data:<mime>;base64,<payload>" → base64 source block
+        body = data_uri[5:] if data_uri.startswith("data:") else data_uri
+        media_type, _, payload = body.partition(";base64,")
+        blocks.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type or "image/png",
+                    "data": payload or body,
+                },
+            }
+        )
+    else:
+        blocks.append({"type": "image_url", "image_url": {"url": data_uri}})
+    return blocks
+
+
+def sanitize_messages_for_trace(payload):
+    """Deep-copy an LLM wire payload with base64 image bodies stripped.
+
+    Langfuse generation ``input=`` logging must never receive megabytes of
+    base64 screenshot data (trace hygiene + storage cost). Image blocks are
+    replaced with a short placeholder; everything else passes through.
+
+    Accepts either an OpenAI-style ``list[dict]`` of messages or the Anthropic
+    ``{"system": ..., "messages": [...]}`` dict.
+    """
+
+    def _sanitize_block(block):
+        if not isinstance(block, dict):
+            return block
+        btype = block.get("type")
+        if btype == "image_url":
+            return {"type": "image_url", "image_url": {"url": "[image omitted]"}}
+        if btype == "image":
+            src = block.get("source")
+            if isinstance(src, dict):
+                src = {**src, "data": "[image omitted]"}
+            return {**block, "source": src}
+        return block
+
+    def _sanitize_content(content):
+        if isinstance(content, list):
+            return [_sanitize_block(b) for b in content]
+        return content
+
+    def _sanitize_messages(messages):
+        return [
+            (
+                {**m, "content": _sanitize_content(m.get("content"))}
+                if isinstance(m, dict)
+                else m
+            )
+            for m in messages
+        ]
+
+    if isinstance(payload, dict):
+        out = dict(payload)
+        if isinstance(out.get("messages"), list):
+            out["messages"] = _sanitize_messages(out["messages"])
+        return out
+    if isinstance(payload, list):
+        return _sanitize_messages(payload)
+    return payload
 
 
 # ---- Provider Factory ----

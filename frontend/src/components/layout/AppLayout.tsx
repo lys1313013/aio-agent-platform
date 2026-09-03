@@ -40,7 +40,7 @@ import PetWidget from '@/components/pet/PetWidget';
 import VirtualCursor from '@/components/ui-agent/VirtualCursor';
 import { registerNavigate, startUiActionRunner } from '@/lib/uiActions/runner';
 import { frontendActionRegistry } from '@/lib/uiActions/registry';
-import { snapshotEngine } from '@/lib/uiActions/snapshot';
+import { captureScreenshot, snapshotEngine } from '@/lib/uiActions/snapshot';
 
 export default function AppLayout() {
   const { logout, role, username, tenantName } = useAuthStore();
@@ -73,6 +73,7 @@ export default function AppLayout() {
       (window as unknown as Record<string, unknown>).__uiDebug = {
         snapshotEngine,
         frontendActionRegistry,
+        captureScreenshot,
       };
     }
 

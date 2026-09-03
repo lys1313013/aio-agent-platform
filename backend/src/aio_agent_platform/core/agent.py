@@ -253,6 +253,9 @@ class AgentLoop:
         self.workspace_slug = workspace_slug
         self._last_ask_user_output: str = ""
         self._last_ui_action_output: str = ""
+        # ui_screenshot 捕获的 data URI（M4）：Step 5 写入，工具结果注入后
+        # 作为 user 角色图片消息追加，绝不进 tool result 文本 / DB / Langfuse
+        self._pending_ui_images: list[str] = []
         # Tool permission whitelist: None means all tools allowed (parent agent),
         # set of tool names means only those tools can be executed (child agents).
         self.allowed_tools = allowed_tools
@@ -737,6 +740,31 @@ class AgentLoop:
                     )
                 )
 
+            # M4: ui_screenshot 图片作为 user 角色图片消息注入（紧跟 tool result，
+            # LLM 的 tool→image 上下文最连贯）。一次性消费，绝不持久化。
+            if self._pending_ui_images:
+                from aio_agent_platform.llm.client import build_image_message_content
+
+                provider_type = getattr(self.provider, "provider_type", "")
+                for idx, data_uri in enumerate(self._pending_ui_images, 1):
+                    messages.append(
+                        LLMMessage(
+                            role="user",
+                            content=build_image_message_content(
+                                f"[页面截图 {idx}] 编号与 @eN 引用一一对应；"
+                                "仍须用 ref 操作元素，禁止输出坐标。",
+                                data_uri,
+                                provider_type,
+                            ),
+                        )
+                    )
+                logger.info(
+                    "ui_screenshot_images_injected",
+                    session_id=str(session_id),
+                    count=len(self._pending_ui_images),
+                )
+                self._pending_ui_images.clear()
+
             logger.debug(
                 "agent_loop_iteration_complete",
                 session_id=str(session_id),
@@ -1111,6 +1139,16 @@ class AgentLoop:
             )
             return
 
+        if tc.name == "ui_screenshot" and not ui_action_manager.check_screenshot_rate(
+            session_key
+        ):
+            self._last_ui_action_output = (
+                "Error(screenshot_rate_limited): screenshot quota for this "
+                "session is exhausted (5 per 10 minutes). Use ui_read_screen "
+                "instead — the text snapshot covers most needs."
+            )
+            return
+
         if ui_action_manager.ref_failures(session_key) >= REF_FAILURE_BREAKER_THRESHOLD:
             self._last_ui_action_output = (
                 "Error(circuit_breaker): too many consecutive invalid element "
@@ -1252,6 +1290,10 @@ class AgentLoop:
 
         if res_status == "ok":
             ui_action_manager.reset_ref_failures(session_key)
+            # M4: 截图走独立通道 —— 不进 tool result 文本（base64 会爆 token）
+            image = res.get("image")
+            if image:
+                self._pending_ui_images.append(image)
             parts: list[str] = []
             result_obj = res.get("result")
             if result_obj:

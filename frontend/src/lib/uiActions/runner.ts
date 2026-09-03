@@ -13,7 +13,7 @@ import { cursorController } from '@/components/ui-agent/cursorController';
 import { uiActionStore, type UiActionPayload } from '@/stores/uiActionStore';
 import { usePetStore } from '@/stores/petStore';
 import { buildPageContext, frontendActionRegistry } from './registry';
-import { dispatchRealClick, snapshotEngine } from './snapshot';
+import { captureScreenshot, dispatchRealClick, snapshotEngine } from './snapshot';
 
 /** react-router 的 navigate 由 AppLayout 注册（runner 不在 React 树内） */
 let navigateFn: ((path: string) => void) | null = null;
@@ -260,6 +260,22 @@ async function execReadScreen(
   };
 }
 
+/** M4：SoM 截图。截图走 payload.image 独立字段，由后端作为 user 角色图片消息注入 */
+async function execScreenshot(
+  action: UiActionPayload,
+): Promise<{ result: Record<string, unknown>; image: string }> {
+  const annotate = action.args.annotate !== false;
+  const shot = await captureScreenshot(annotate);
+  return {
+    result: {
+      screenshot: `[screenshot v${shot.snapshot_version} ${shot.width}x${shot.height}, ${shot.marks} marks]`,
+      snapshot_version: shot.snapshot_version,
+      note: '截图已作为图片消息注入。图中编号与 @eN 引用一一对应，仍须用 ui_click/ui_input 的 ref 操作元素，禁止输出坐标。',
+    },
+    image: shot.dataUri,
+  };
+}
+
 // ---- 主循环 ----
 
 /** 执行看门狗：必须小于后端 60s 超时，保证回包一定先于后端超时 */
@@ -279,6 +295,7 @@ async function execute(action: UiActionPayload): Promise<void> {
   });
   try {
     let result: Record<string, unknown>;
+    let image: string | undefined;
     switch (action.action) {
       case 'ui_navigate':
         result = await execNavigate(action.args);
@@ -295,8 +312,12 @@ async function execute(action: UiActionPayload): Promise<void> {
       case 'ui_read_screen':
         result = await execReadScreen(action);
         break;
-      case 'ui_screenshot':
-        throw new Error('screenshot_not_ready: screenshot support lands in M4');
+      case 'ui_screenshot': {
+        const shot = await execScreenshot(action);
+        result = shot.result;
+        image = shot.image;
+        break;
+      }
       default:
         throw new Error(`unknown_action: ${action.action}`);
     }
@@ -313,6 +334,7 @@ async function execute(action: UiActionPayload): Promise<void> {
       dangerous_refs: snapshotEngine.dangerousRefs,
       page_context: buildPageContext(),
       ...(delta ? { delta_snapshot: delta } : {}),
+      ...(image ? { image } : {}),
     };
     await uiActionsApi.respond(action.action_id, payload);
     store.markResolved({

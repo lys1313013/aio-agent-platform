@@ -331,6 +331,32 @@ class SnapshotEngine {
     return out.join('\n');
   }
 
+  /** 当前快照的标记元素清单（SoM 截图叠加用）：ref + 实时视口坐标 */
+  markedElements(): Array<{
+    ref: string;
+    rect: DOMRect;
+    dangerous: boolean;
+    kind: 'button' | 'input' | 'link' | 'other';
+  }> {
+    const out: Array<{
+      ref: string;
+      rect: DOMRect;
+      dangerous: boolean;
+      kind: 'button' | 'input' | 'link' | 'other';
+    }> = [];
+    for (const line of this.lastLines) {
+      if (!line.ref || !line.el.isConnected) continue;
+      if (!isVisible(line.el)) continue;
+      out.push({
+        ref: line.ref,
+        rect: line.el.getBoundingClientRect(),
+        dangerous: line.dangerous,
+        kind: kindOf(line.el),
+      });
+    }
+    return out;
+  }
+
   // ---- 内部 ----
 
   private emitInteractive(
@@ -473,4 +499,132 @@ export function dispatchRealClick(el: Element, x: number, y: number): void {
   el.dispatchEvent(new Ptr('pointerup', opts));
   el.dispatchEvent(new MouseEvent('mouseup', opts));
   el.dispatchEvent(new MouseEvent('click', opts));
+}
+
+// ---- SoM 截图（docs/22 §2.2b / M4）----
+
+export interface ScreenshotResult {
+  /** data:image/webp;base64,...（不支持 webp 的浏览器自动回落 png） */
+  dataUri: string;
+  width: number;
+  height: number;
+  /** SoM 标记数（与文本快照 @eN 同号） */
+  marks: number;
+  snapshot_version: number;
+}
+
+/** 元素类型着色：按钮蓝 / 输入绿 / 危险红 / 链接橙 / 其他紫 */
+function kindOf(el: Element): 'button' | 'input' | 'link' | 'other' {
+  if (
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLTextAreaElement ||
+    el instanceof HTMLSelectElement ||
+    el instanceof HTMLElement && el.isContentEditable ||
+    ['textbox', 'combobox', 'listbox', 'checkbox', 'switch'].includes(el.getAttribute('role') || '')
+  ) {
+    return 'input';
+  }
+  if (el instanceof HTMLAnchorElement || el.getAttribute('role') === 'link') return 'link';
+  if (
+    el instanceof HTMLButtonElement ||
+    ['button', 'tab', 'menuitem', 'option'].includes(el.getAttribute('role') || '') ||
+    el.hasAttribute('onclick')
+  ) {
+    return 'button';
+  }
+  return 'other';
+}
+
+const MARK_COLORS: Record<string, string> = {
+  button: '#3b82f6',
+  input: '#22c55e',
+  link: '#f59e0b',
+  other: '#8b5cf6',
+  dangerous: '#ef4444',
+};
+
+/**
+ * 截取当前视口 + Set-of-Mark 编号框叠加（编号即 @eN，与文本快照同号）。
+ * 注意：html2canvas 不支持 backdrop-filter（临时替换为纯色背景）；
+ * 截图前必须隐藏 VirtualCursor 与遮罩自身；ECharts 动画中间帧可能截出空白。
+ */
+export async function captureScreenshot(annotate = true): Promise<ScreenshotResult> {
+  const { cursorController } = await import('@/components/ui-agent/cursorController');
+  // 1. 隐藏光标与遮罩自身
+  cursorController.clear();
+  cursorController.setVisible(false);
+
+  // 2. 刷新快照（compact=视口），标记元素与文本快照同号
+  const snap = snapshotEngine.capture('compact');
+  const marks = snapshotEngine.markedElements();
+
+  // 3. backdrop-filter 兼容：临时替换为纯色
+  const tweaked: Array<{ el: HTMLElement; filter: string; bg: string }> = [];
+  const bodyBg = window.getComputedStyle(document.body).backgroundColor;
+  for (const el of document.querySelectorAll<HTMLElement>('body *')) {
+    const bf = window.getComputedStyle(el).backdropFilter;
+    if (bf && bf !== 'none') {
+      tweaked.push({ el, filter: el.style.backdropFilter, bg: el.style.background });
+      el.style.backdropFilter = 'none';
+      if (!el.style.background) el.style.background = bodyBg;
+    }
+  }
+
+  try {
+    const { default: html2canvas } = await import('html2canvas');
+    // 4. 目标 1280 宽（≈1100-1300 多模态 token）
+    const scale = window.innerWidth > 1280 ? 1280 / window.innerWidth : 1;
+    const canvas = await html2canvas(document.body, {
+      x: window.scrollX,
+      y: window.scrollY,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      windowWidth: document.documentElement.clientWidth,
+      windowHeight: document.documentElement.clientHeight,
+      scale,
+      logging: false,
+    });
+
+    // 5. SoM 叠加：半透明编号框
+    if (annotate) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        for (const m of marks) {
+          const x = m.rect.left * scale;
+          const y = m.rect.top * scale;
+          const w = m.rect.width * scale;
+          const h = m.rect.height * scale;
+          const color = m.dangerous ? MARK_COLORS.dangerous : MARK_COLORS[m.kind];
+          ctx.fillStyle = `${color}33`; // 20% 透明度
+          ctx.fillRect(x, y, w, h);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x, y, w, h);
+          // 编号徽标（左上角）
+          const label = m.ref.replace('@e', '');
+          ctx.font = 'bold 12px sans-serif';
+          const tw = ctx.measureText(label).width;
+          ctx.fillStyle = color;
+          ctx.fillRect(x, Math.max(0, y - 16), tw + 8, 16);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(label, x + 4, Math.max(12, y - 4));
+        }
+      }
+    }
+
+    const dataUri = canvas.toDataURL('image/webp', 0.8);
+    return {
+      dataUri,
+      width: canvas.width,
+      height: canvas.height,
+      marks: annotate ? marks.length : 0,
+      snapshot_version: snap.snapshot_version,
+    };
+  } finally {
+    // 还原 backdrop-filter
+    for (const t of tweaked) {
+      t.el.style.backdropFilter = t.filter;
+      t.el.style.background = t.bg;
+    }
+  }
 }
