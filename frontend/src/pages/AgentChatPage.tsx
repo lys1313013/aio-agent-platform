@@ -4,6 +4,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { usePetStore } from '@/stores/petStore';
 import { chatApi, sessionsApi } from '@/lib/api';
 import { useMessageQueue } from '@/hooks/useMessageQueue';
+import { useChatStream } from '@/hooks/useChatStream';
 import { handleUiActionEvent } from '@/hooks/useUiActionEvents';
 import { buildPageContext } from '@/lib/uiActions/registry';
 import MessageList from '@/components/chat/MessageList';
@@ -14,53 +15,66 @@ import WebpagePreviewPanel from '@/components/chat/WebpagePreviewPanel';
 import { Alert, App, Typography, Spin, Tag, Button, Skeleton } from 'antd';
 import { PlusOutlined, LinkOutlined, DeleteOutlined } from '@ant-design/icons';
 import { agentsApi } from '@/lib/api';
-import type { Agent, ChatAttachment, FileAttachmentRef, StreamingState, SessionStatus } from '@/lib/types';
+import type { Agent, ChatAttachment, FileAttachmentRef, SessionStatus } from '@/lib/types';
 import { getAgentIcon } from '@/lib/agent-icons';
 
 const { Text } = Typography;
-
-const IDLE_STREAMING: StreamingState = {
-  thinking: '',
-  thinkingChunks: [],
-  toolCalls: [],
-  finalText: '',
-  isStreaming: false,
-  delegations: [],
-  actionOrder: [],
-  confirmations: [],
-  confirmationsResolved: {},
-};
 
 export default function AgentChatPage() {
   const { agentId, sessionId: urlSessionId } = useParams<{ agentId: string; sessionId?: string }>();
   const navigate = useNavigate();
   const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession, deleteSession, loadSessions, refreshSessions, setActiveSession } = useChatStore();
   const { message, modal } = App.useApp();
-  const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAMING);
-  const [error, setError] = useState<string | null>(null);
   const [creatingSession, setCreatingSession] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
   const [agent, setAgent] = useState<Agent | null>(null);
   const [agentLoading, setAgentLoading] = useState(true);
   const [sessionStatus, setSessionStatus] = useState<SessionStatus | null>(null);
   const [checkingStatus, setCheckingStatus] = useState(false);
+  // onDone 需要 flushNext，但 useChatStream 初始化早于 useMessageQueue —— 用 ref 打破循环依赖
+  const flushNextRef = useRef<() => void>(() => {});
+
+  const { streaming, error, setError, abortRef, turnSessionIdRef, beginTurn, interrupt, handleEvent } =
+    useChatStream({
+      onEvent: (event) => {
+        // ui_* 页内操作事件统一进全局 store（runner 在 AppLayout 执行）
+        if (handleUiActionEvent(event)) return true;
+
+        const type = event.type as string;
+        usePetStore.getState().reportEvent(type, {
+          sessionId: turnSessionIdRef.current ?? undefined,
+          tool: type === 'tool_call' ? ((event.name as string) || undefined) : undefined,
+          petAction:
+            type === 'pet_action'
+              ? {
+                  name: (event.name as string) || undefined,
+                  row: typeof event.row === 'number' ? (event.row as number) : undefined,
+                }
+              : undefined,
+        });
+        return false;
+      },
+      onDone: (_sid, { flush }) => {
+        refreshSessions(agentId);
+        if (flush) flushNextRef.current();
+      },
+      onError: (err) => message.error(err),
+    });
 
   // Codex-style message queue: while streaming, sent messages are queued and
   // flushed one by one as each turn completes.
   const handleSendRef = useRef<(content: string, attachments?: ChatAttachment[], fileAttachments?: FileAttachmentRef[]) => Promise<void> | void>();
   const interruptStream = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setStreaming(IDLE_STREAMING);
+    interrupt();
     usePetStore.getState().reportEvent('interrupt', {
       sessionId: useChatStore.getState().activeSessionId ?? undefined,
     });
-  }, []);
+  }, [interrupt]);
   const { queue, enqueue, remove: removeQueued, clear: clearQueue, flushNext, sendNow: sendQueuedNow } =
     useMessageQueue(
       (content, attachments, fileAttachments) => { void handleSendRef.current?.(content, attachments, fileAttachments); },
       interruptStream,
     );
+  flushNextRef.current = flushNext;
 
   // Load agent info
   const loadAgent = useCallback((silent = false) => {
@@ -94,7 +108,7 @@ export default function AgentChatPage() {
     try {
       const status = await sessionsApi.getStatus(sessionId);
       setSessionStatus(status);
-    } catch (err) {
+    } catch {
       // 静默失败：状态查询失败不影响现有消息展示
       setSessionStatus(null);
     } finally {
@@ -159,9 +173,7 @@ export default function AgentChatPage() {
         created_at: new Date().toISOString(),
       });
 
-      // Start streaming state
-      setError(null);
-      setStreaming({ ...IDLE_STREAMING, isStreaming: true });
+      beginTurn(sessionId);
       usePetStore.getState().startTask(sessionId, content || '文件任务', agentId);
 
       // Start SSE stream
@@ -174,325 +186,12 @@ export default function AgentChatPage() {
           file_attachments: fileAttachments && fileAttachments.length > 0 ? fileAttachments : null,
           page_context: buildPageContext(),
         },
-        (event) => {
-          // ui_* 页内操作事件统一进全局 store（runner 在 AppLayout 执行）
-          if (handleUiActionEvent(event)) return;
-
-          const type = event.type as string;
-          usePetStore.getState().reportEvent(type, {
-            sessionId,
-            tool: type === 'tool_call' ? ((event.name as string) || undefined) : undefined,
-            petAction:
-              type === 'pet_action'
-                ? {
-                    name: (event.name as string) || undefined,
-                    row: typeof event.row === 'number' ? (event.row as number) : undefined,
-                  }
-                : undefined,
-          });
-
-          switch (type) {
-            case 'session':
-              break;
-
-            case 'session_title': {
-              const sid = (event.session_id as string) || sessionId;
-              const newTitle = event.title as string;
-              if (sid && newTitle) {
-                useChatStore.getState().setSessionTitleLocal(sid, newTitle);
-              }
-              break;
-            }
-
-            case 'thinking':
-              setStreaming((prev) => {
-                const content = (event.content as string) || '';
-                const lastAction = prev.actionOrder[prev.actionOrder.length - 1];
-                if (lastAction?.type === 'thinking') {
-                  return {
-                    ...prev,
-                    isStreaming: true,
-                    thinking: prev.thinking + content,
-                    thinkingChunks: prev.thinkingChunks.map((c, i) =>
-                      i === prev.thinkingChunks.length - 1
-                        ? { ...c, content: c.content + content }
-                        : c,
-                    ),
-                  };
-                }
-                const newId = `thinking-${prev.thinkingChunks.length}`;
-                return {
-                  ...prev,
-                  isStreaming: true,
-                  thinking: prev.thinking + content,
-                  thinkingChunks: [...prev.thinkingChunks, { id: newId, content }],
-                  actionOrder: [...prev.actionOrder, { type: 'thinking' as const, id: newId }],
-                };
-              });
-              break;
-
-            case 'tool_call':
-              setStreaming((prev) => ({
-                ...prev,
-                toolCalls: [
-                  ...prev.toolCalls,
-                  {
-                    id: (event.id as string) || '',
-                    name: (event.name as string) || '',
-                    arguments: (event.arguments as Record<string, unknown>) || {},
-                  },
-                ],
-                actionOrder: [
-                  ...prev.actionOrder,
-                  { type: 'tool', id: (event.id as string) || '' },
-                ],
-              }));
-              break;
-
-            case 'tool_result':
-              setStreaming((prev) => ({
-                ...prev,
-                toolCalls: prev.toolCalls.map((tc) =>
-                  tc.id === event.tool_call_id
-                    ? {
-                        ...tc,
-                        result: {
-                          status: (event.status as string) || '',
-                          preview: (event.preview as string) || '',
-                        },
-                      }
-                    : tc,
-                ),
-              }));
-              break;
-
-            case 'text_delta':
-              setStreaming((prev) => ({
-                ...prev,
-                isStreaming: true,
-                finalText: prev.finalText + ((event.content as string) || ''),
-              }));
-              break;
-
-            case 'text':
-              setStreaming((prev) => ({
-                ...prev,
-                isStreaming: false,
-                finalText: (event.content as string) || '',
-              }));
-              break;
-
-            case 'done': {
-              const finalText = (event.content as string) || '';
-              const msgId = (event.message_id as string) || `msg-assistant-${Date.now()}`;
-              const toolCalls = event.tool_calls as Record<string, unknown>[] | undefined;
-
-              addMessage(sessionId!, {
-                id: msgId,
-                role: 'assistant',
-                content: finalText,
-                tool_calls: toolCalls || null,
-                created_at: new Date().toISOString(),
-              });
-
-              setStreaming(IDLE_STREAMING);
-              refreshSessions(agentId);
-              // Auto-send the next queued message, if any
-              flushNext();
-              break;
-            }
-
-            case 'error': {
-              setStreaming(IDLE_STREAMING);
-              // Defensive: ensure error message is always a string
-              const raw = event.message;
-              const errStr = typeof raw === 'string' ? raw
-                : Array.isArray(raw) ? raw.map((d: unknown) => typeof d === 'object' && d !== null ? (d as Record<string, unknown>).msg || JSON.stringify(d) : String(d)).join('; ')
-                : String(raw ?? '未知错误');
-              setError(errStr);
-              message.error(errStr);
-              break;
-            }
-
-            // ---- Delegation events ----
-            case 'delegation_start': {
-              const delegToolCallId = (event.tool_call_id as string) || '';
-              const newDelegation = {
-                delegation_id: (event.delegation_id as string) || '',
-                child_agent_id: (event.child_agent_id as string) || '',
-                child_agent_name: (event.child_agent_name as string) || '',
-                child_agent_icon: (event.child_agent_icon as string) || undefined,
-                is_dynamic: Boolean(event.is_dynamic),
-                task: (event.task as string) || '',
-                status: 'running' as const,
-                thinking: '',
-                toolCalls: [],
-                tool_call_id: delegToolCallId,
-              };
-
-              setStreaming((prev) => {
-                const newActionOrder = [...prev.actionOrder];
-                let inserted = false;
-
-                if (delegToolCallId) {
-                  const idx = newActionOrder.findIndex(
-                    (a) => a.type === 'tool' && a.id === delegToolCallId
-                  );
-                  if (idx >= 0) {
-                    newActionOrder[idx] = {
-                      type: 'delegation',
-                      id: newDelegation.delegation_id,
-                    };
-                    inserted = true;
-                  }
-                }
-
-                if (!inserted) {
-                  newActionOrder.push({
-                    type: 'delegation',
-                    id: newDelegation.delegation_id,
-                  });
-                }
-
-                return {
-                  ...prev,
-                  delegations: [...prev.delegations, newDelegation],
-                  actionOrder: newActionOrder,
-                };
-              });
-              break;
-            }
-
-            case 'delegation_thinking':
-              setStreaming((prev) => ({
-                ...prev,
-                delegations: prev.delegations.map((d) =>
-                  d.delegation_id === event.delegation_id
-                    ? { ...d, thinking: (d.thinking || '') + ((event.content as string) || '') }
-                    : d,
-                ),
-              }));
-              break;
-
-            case 'delegation_tool_call':
-              setStreaming((prev) => ({
-                ...prev,
-                delegations: prev.delegations.map((d) =>
-                  d.delegation_id === event.delegation_id
-                    ? {
-                        ...d,
-                        toolCalls: [
-                          ...(d.toolCalls || []),
-                          {
-                            id: (event.id as string) || '',
-                            name: (event.name as string) || '',
-                            arguments: (event.arguments as Record<string, unknown>) || {},
-                          },
-                        ],
-                      }
-                    : d,
-                ),
-              }));
-              break;
-
-            case 'delegation_tool_result':
-              setStreaming((prev) => ({
-                ...prev,
-                delegations: prev.delegations.map((d) =>
-                  d.delegation_id === event.delegation_id
-                    ? {
-                        ...d,
-                        toolCalls: (d.toolCalls || []).map((tc) =>
-                          tc.id === event.tool_call_id
-                            ? {
-                                ...tc,
-                                result: {
-                                  status: (event.status as string) || '',
-                                  preview: (event.preview as string) || '',
-                                },
-                              }
-                            : tc,
-                        ),
-                      }
-                    : d,
-                ),
-              }));
-              break;
-
-            case 'delegation_text_delta':
-              setStreaming((prev) => ({
-                ...prev,
-                delegations: prev.delegations.map((d) =>
-                  d.delegation_id === event.delegation_id
-                    ? { ...d, result: (d.result || '') + ((event.content as string) || '') }
-                    : d,
-                ),
-              }));
-              break;
-
-            case 'delegation_end':
-              setStreaming((prev) => ({
-                ...prev,
-                delegations: prev.delegations.map((d) =>
-                  d.delegation_id === event.delegation_id
-                    ? {
-                        ...d,
-                        status: (event.status as 'completed' | 'failed' | 'timeout') || 'completed',
-                        error: (event.error as string) || undefined,
-                        duration_ms: (event.duration_ms as number) || undefined,
-                        result: d.result || (event.result_preview as string) || '',
-                      }
-                    : d,
-                ),
-              }));
-              break;
-
-            // ---- Confirmation events (AskUserQuestion) ----
-            case 'confirmation_required':
-              setStreaming((prev) => ({
-                ...prev,
-                confirmations: [
-                  ...prev.confirmations,
-                  {
-                    confirmation_id: (event.confirmation_id as string) || '',
-                    question: (event.question as string) || '',
-                    mode: (event.mode as import('@/lib/types').ConfirmationMode) || 'single_select',
-                    options: (event.options as import('@/lib/types').ConfirmationOption[]) || [],
-                    table_schema: (event.table_schema as import('@/lib/types').TableSchema) || undefined,
-                    context: (event.context as import('@/lib/types').ConfirmationContext) || { timeout_seconds: 300 },
-                    created_at: (event.created_at as string) || new Date().toISOString(),
-                  },
-                ],
-                actionOrder: [
-                  ...prev.actionOrder,
-                  { type: 'confirmation', id: (event.confirmation_id as string) || '' },
-                ],
-              }));
-              break;
-
-            case 'confirmation_resolved':
-              setStreaming((prev) => ({
-                ...prev,
-                confirmationsResolved: {
-                  ...prev.confirmationsResolved,
-                  [(event.confirmation_id as string) || '']: {
-                    confirmation_id: (event.confirmation_id as string) || '',
-                    status: (event.status as import('@/lib/types').ConfirmationStatus) || 'timeout',
-                    selected_options: (event.selected_options as string[]) || undefined,
-                    user_input: (event.user_input as string) || undefined,
-                    table_data: (event.table_data as Record<string, unknown>[]) || undefined,
-                    resolved_at: (event.resolved_at as string) || new Date().toISOString(),
-                  },
-                },
-              }));
-              break;
-          }
-        },
+        handleEvent,
       );
 
       abortRef.current = controller;
     },
-    [activeSessionId, sessions, agentId, navigate, createSession, renameSession, addMessage, message, refreshSessions, flushNext],
+    [activeSessionId, sessions, agentId, navigate, createSession, renameSession, addMessage, message, beginTurn, handleEvent, abortRef],
   );
 
   handleSendRef.current = handleSend;
@@ -564,329 +263,14 @@ export default function AgentChatPage() {
   const handleReconnect = useCallback(() => {
     if (!urlSessionId || !agentId) return;
     setSessionStatus(null);
-    setStreaming({ ...IDLE_STREAMING, isStreaming: true });
+    // 回放流：done 后不触发队列 flush
+    beginTurn(urlSessionId, { flushOnDone: false });
     usePetStore.getState().startTask(urlSessionId, sessionStatus?.label || '重新连接', agentId);
 
-    const controller = sessionsApi.watchEvents(
-      urlSessionId,
-      (event) => {
-        // ui_* 页内操作事件统一进全局 store
-        if (handleUiActionEvent(event)) return;
-
-        const type = event.type as string;
-        usePetStore.getState().reportEvent(type, {
-          sessionId: urlSessionId,
-          tool: type === 'tool_call' ? ((event.name as string) || undefined) : undefined,
-          petAction:
-            type === 'pet_action'
-              ? {
-                  name: (event.name as string) || undefined,
-                  row: typeof event.row === 'number' ? (event.row as number) : undefined,
-                }
-              : undefined,
-        });
-
-        switch (type) {
-          case 'session':
-            break;
-
-          case 'session_title': {
-            const sid = (event.session_id as string) || urlSessionId;
-            const newTitle = event.title as string;
-            if (sid && newTitle) {
-              useChatStore.getState().setSessionTitleLocal(sid, newTitle);
-            }
-            break;
-          }
-
-          case 'thinking':
-            setStreaming((prev) => {
-              const content = (event.content as string) || '';
-              const lastAction = prev.actionOrder[prev.actionOrder.length - 1];
-              if (lastAction?.type === 'thinking') {
-                return {
-                  ...prev,
-                  isStreaming: true,
-                  thinking: prev.thinking + content,
-                  thinkingChunks: prev.thinkingChunks.map((c, i) =>
-                    i === prev.thinkingChunks.length - 1
-                      ? { ...c, content: c.content + content }
-                      : c,
-                  ),
-                };
-              }
-              const newId = `thinking-${prev.thinkingChunks.length}`;
-              return {
-                ...prev,
-                isStreaming: true,
-                thinking: prev.thinking + content,
-                thinkingChunks: [...prev.thinkingChunks, { id: newId, content }],
-                actionOrder: [...prev.actionOrder, { type: 'thinking' as const, id: newId }],
-              };
-            });
-            break;
-
-          case 'tool_call':
-            setStreaming((prev) => ({
-              ...prev,
-              toolCalls: [
-                ...prev.toolCalls,
-                {
-                  id: (event.id as string) || '',
-                  name: (event.name as string) || '',
-                  arguments: (event.arguments as Record<string, unknown>) || {},
-                },
-              ],
-              actionOrder: [
-                ...prev.actionOrder,
-                { type: 'tool', id: (event.id as string) || '' },
-              ],
-            }));
-            break;
-
-          case 'tool_result':
-            setStreaming((prev) => ({
-              ...prev,
-              toolCalls: prev.toolCalls.map((tc) =>
-                tc.id === event.tool_call_id
-                  ? {
-                      ...tc,
-                      result: {
-                        status: (event.status as string) || '',
-                        preview: (event.preview as string) || '',
-                      },
-                    }
-                  : tc,
-              ),
-            }));
-            break;
-
-          case 'text_delta':
-            setStreaming((prev) => ({
-              ...prev,
-              isStreaming: true,
-              finalText: prev.finalText + ((event.content as string) || ''),
-            }));
-            break;
-
-          case 'text':
-            setStreaming((prev) => ({
-              ...prev,
-              isStreaming: false,
-              finalText: (event.content as string) || '',
-            }));
-            break;
-
-          case 'done': {
-            const finalText = (event.content as string) || '';
-            const msgId = (event.message_id as string) || `msg-assistant-${Date.now()}`;
-            const toolCalls = event.tool_calls as Record<string, unknown>[] | undefined;
-
-            addMessage(urlSessionId, {
-              id: msgId,
-              role: 'assistant',
-              content: finalText,
-              tool_calls: toolCalls || null,
-              created_at: new Date().toISOString(),
-            });
-
-            setStreaming(IDLE_STREAMING);
-            refreshSessions(agentId);
-            break;
-          }
-
-          case 'error': {
-            setStreaming(IDLE_STREAMING);
-            const raw = event.message;
-            const errStr = typeof raw === 'string' ? raw
-              : Array.isArray(raw) ? raw.map((d: unknown) => typeof d === 'object' && d !== null ? (d as Record<string, unknown>).msg || JSON.stringify(d) : String(d)).join('; ')
-              : String(raw ?? '未知错误');
-            setError(errStr);
-            message.error(errStr);
-            break;
-          }
-
-          case 'delegation_start': {
-            const delegToolCallId = (event.tool_call_id as string) || '';
-            const newDelegation = {
-              delegation_id: (event.delegation_id as string) || '',
-              child_agent_id: (event.child_agent_id as string) || '',
-              child_agent_name: (event.child_agent_name as string) || '',
-              child_agent_icon: (event.child_agent_icon as string) || undefined,
-              is_dynamic: Boolean(event.is_dynamic),
-              task: (event.task as string) || '',
-              status: 'running' as const,
-              thinking: '',
-              toolCalls: [],
-              tool_call_id: delegToolCallId,
-            };
-
-            setStreaming((prev) => {
-              const newActionOrder = [...prev.actionOrder];
-              let inserted = false;
-
-              if (delegToolCallId) {
-                const idx = newActionOrder.findIndex(
-                  (a) => a.type === 'tool' && a.id === delegToolCallId
-                );
-                if (idx >= 0) {
-                  newActionOrder[idx] = {
-                    type: 'delegation',
-                    id: newDelegation.delegation_id,
-                  };
-                  inserted = true;
-                }
-              }
-
-              if (!inserted) {
-                newActionOrder.push({
-                  type: 'delegation',
-                  id: newDelegation.delegation_id,
-                });
-              }
-
-              return {
-                ...prev,
-                delegations: [...prev.delegations, newDelegation],
-                actionOrder: newActionOrder,
-              };
-            });
-            break;
-          }
-
-          case 'delegation_thinking':
-            setStreaming((prev) => ({
-              ...prev,
-              delegations: prev.delegations.map((d) =>
-                d.delegation_id === event.delegation_id
-                  ? { ...d, thinking: (d.thinking || '') + ((event.content as string) || '') }
-                  : d,
-              ),
-            }));
-            break;
-
-          case 'delegation_tool_call':
-            setStreaming((prev) => ({
-              ...prev,
-              delegations: prev.delegations.map((d) =>
-                d.delegation_id === event.delegation_id
-                  ? {
-                      ...d,
-                      toolCalls: [
-                        ...(d.toolCalls || []),
-                        {
-                          id: (event.id as string) || '',
-                          name: (event.name as string) || '',
-                          arguments: (event.arguments as Record<string, unknown>) || {},
-                        },
-                      ],
-                    }
-                  : d,
-              ),
-            }));
-            break;
-
-          case 'delegation_tool_result':
-            setStreaming((prev) => ({
-              ...prev,
-              delegations: prev.delegations.map((d) =>
-                d.delegation_id === event.delegation_id
-                  ? {
-                      ...d,
-                      toolCalls: (d.toolCalls || []).map((tc) =>
-                        tc.id === event.tool_call_id
-                          ? {
-                              ...tc,
-                              result: {
-                                status: (event.status as string) || '',
-                                preview: (event.preview as string) || '',
-                              },
-                            }
-                          : tc,
-                      ),
-                    }
-                  : d,
-              ),
-            }));
-            break;
-
-          case 'delegation_text_delta':
-            setStreaming((prev) => ({
-              ...prev,
-              delegations: prev.delegations.map((d) =>
-                d.delegation_id === event.delegation_id
-                  ? { ...d, result: (d.result || '') + ((event.content as string) || '') }
-                  : d,
-              ),
-            }));
-            break;
-
-          case 'delegation_end':
-            setStreaming((prev) => ({
-              ...prev,
-              delegations: prev.delegations.map((d) =>
-                d.delegation_id === event.delegation_id
-                  ? {
-                      ...d,
-                      status: (event.status as 'completed' | 'failed' | 'timeout') || 'completed',
-                      error: (event.error as string) || undefined,
-                      duration_ms: (event.duration_ms as number) || undefined,
-                      result: d.result || (event.result_preview as string) || '',
-                    }
-                  : d,
-              ),
-            }));
-            break;
-
-          case 'confirmation_required':
-            setStreaming((prev) => ({
-              ...prev,
-              confirmations: [
-                ...prev.confirmations,
-                {
-                  confirmation_id: (event.confirmation_id as string) || '',
-                  question: (event.question as string) || '',
-                  mode: (event.mode as import('@/lib/types').ConfirmationMode) || 'single_select',
-                  options: (event.options as import('@/lib/types').ConfirmationOption[]) || [],
-                  table_schema: (event.table_schema as import('@/lib/types').TableSchema) || undefined,
-                  context: (event.context as import('@/lib/types').ConfirmationContext) || { timeout_seconds: 300 },
-                  created_at: (event.created_at as string) || new Date().toISOString(),
-                },
-              ],
-              actionOrder: [
-                ...prev.actionOrder,
-                { type: 'confirmation', id: (event.confirmation_id as string) || '' },
-              ],
-            }));
-            break;
-
-          case 'confirmation_resolved':
-            setStreaming((prev) => ({
-              ...prev,
-              confirmationsResolved: {
-                ...prev.confirmationsResolved,
-                [(event.confirmation_id as string) || '']: {
-                  confirmation_id: (event.confirmation_id as string) || '',
-                  status: (event.status as import('@/lib/types').ConfirmationStatus) || 'timeout',
-                  selected_options: (event.selected_options as string[]) || undefined,
-                  user_input: (event.user_input as string) || undefined,
-                  table_data: (event.table_data as Record<string, unknown>[]) || undefined,
-                  resolved_at: (event.resolved_at as string) || new Date().toISOString(),
-                },
-              },
-            }));
-            break;
-
-          case 'closed':
-            // 回放流正常结束但未收到 done（如空流/任务已结束）：复位 streaming。
-            setStreaming((prev) => (prev.isStreaming ? IDLE_STREAMING : prev));
-            break;
-        }
-      },
-    );
+    const controller = sessionsApi.watchEvents(urlSessionId, handleEvent);
 
     abortRef.current = controller;
-  }, [urlSessionId, agentId, sessionStatus?.label, addMessage, refreshSessions, message]);
+  }, [urlSessionId, agentId, sessionStatus?.label, beginTurn, handleEvent, abortRef]);
 
   const currentMessages = activeSessionId ? messages[activeSessionId] || [] : [];
 

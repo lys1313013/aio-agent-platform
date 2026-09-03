@@ -41,6 +41,7 @@ from aio_agent_platform.interface.routes import (
     models_router,
     observability_router,
     pets_router,
+    portal_router,
     public_router,
     remote_tools_router,
     sessions_router,
@@ -661,6 +662,7 @@ def create_app() -> FastAPI:
     app.include_router(daily_memories_router)  # before memories_router: /daily vs /{memory_id}
     app.include_router(memories_router)
     app.include_router(pets_router)
+    app.include_router(portal_router)
     app.include_router(admin_pets_router)
     app.include_router(skills_router)
     app.include_router(admin_models_router)

@@ -20,6 +20,7 @@ from aio_agent_platform.interface.routes.models import router as models_router
 from aio_agent_platform.interface.routes.observability import router as observability_router
 from aio_agent_platform.interface.routes.pets import admin_router as admin_pets_router
 from aio_agent_platform.interface.routes.pets import router as pets_router
+from aio_agent_platform.interface.routes.portal import router as portal_router
 from aio_agent_platform.interface.routes.public import router as public_router
 from aio_agent_platform.interface.routes.remote_tools import router as remote_tools_router
 from aio_agent_platform.interface.routes.sessions import router as sessions_router
@@ -54,6 +55,7 @@ __all__ = [
     "models_router",
     "observability_router",
     "pets_router",
+    "portal_router",
     "public_router",
     "remote_tools_router",
     "sessions_router",

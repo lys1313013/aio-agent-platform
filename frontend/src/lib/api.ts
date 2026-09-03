@@ -36,6 +36,7 @@ import type {
   ChannelBinding,
   PetPackage,
   PetVisibility,
+  PortalAgent,
   UserPet,
   CommandMeta,
   ModelMeta,
@@ -1776,13 +1777,22 @@ export const skillsApi = {
 
 // ---- Agents ----
 
+// ---- Portal (用户端对话门户，脱敏只读) ----
+export const portalApi = {
+  listAgents() {
+    return request<PortalAgent[]>('/portal/agents');
+  },
+
+  getAgent(id: string) {
+    return request<PortalAgent>(`/portal/agents/${id}`);
+  },
+};
+
 export const agentsApi = {
   // User-facing
   list() {
     return request<Agent[]>('/agents');
-  },
-
-  get(id: string) {
+  },  get(id: string) {
     return request<Agent>(`/agents/${id}`);
   },
 

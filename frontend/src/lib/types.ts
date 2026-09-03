@@ -508,6 +508,16 @@ export interface Agent {
   can_edit: boolean;
 }
 
+/** 用户端门户的 agent 精简信息（GET /api/portal/agents，已脱敏） */
+export interface PortalAgent {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string;
+  welcome_message: string | null;
+  starter_prompts: Array<{ label: string; icon: string }> | null;
+}
+
 export interface AgentStats {
   total_sessions: number;
   total_messages: number;
