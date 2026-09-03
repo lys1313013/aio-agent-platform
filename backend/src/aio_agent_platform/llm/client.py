@@ -177,7 +177,7 @@ class LLMProvider(ABC):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> LLMResponse:
         """Non-streaming completion."""
@@ -187,7 +187,7 @@ class LLMProvider(ABC):
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[LLMChunk]:
         """Streaming completion."""
@@ -211,7 +211,7 @@ class OpenAIProvider(LLMProvider):
         model: str,
         base_url: str,
         api_key: str,
-        default_temperature: float = 0.7,
+        default_temperature: float | None = None,
         default_max_tokens: int | None = None,
         enable_retry: bool = True,
         langfuse_client: Langfuse | None = None,
@@ -247,9 +247,9 @@ class OpenAIProvider(LLMProvider):
                     model=self.model,
                     messages=openai_messages,
                     tools=tools,
-                    temperature=temp,
                     max_tokens=mt,
                     stream=False,
+                    **({"temperature": temp} if temp is not None else {}),
                 )
             except Exception:
                 retries += 1
@@ -352,10 +352,10 @@ class OpenAIProvider(LLMProvider):
                         model=self.model,
                         messages=openai_messages,
                         tools=tools,
-                        temperature=temp,
                         max_tokens=mt,
                         stream=True,
                         stream_options={"include_usage": True},
+                        **({"temperature": temp} if temp is not None else {}),
                     )
                 except Exception:
                     retries += 1
@@ -636,7 +636,7 @@ class AnthropicProvider(LLMProvider):
         self,
         model: str,
         api_key: str,
-        default_temperature: float = 0.7,
+        default_temperature: float | None = None,
         default_max_tokens: int = 4096,
         enable_retry: bool = True,
         langfuse_client: Langfuse | None = None,
@@ -674,7 +674,7 @@ class AnthropicProvider(LLMProvider):
                     messages=anthropic_messages,
                     tools=anthropic_tools,
                     max_tokens=mt,
-                    temperature=temp,
+                    **({"temperature": temp} if temp is not None else {}),
                 )
             except Exception:
                 retries += 1
@@ -775,7 +775,7 @@ class AnthropicProvider(LLMProvider):
                     messages=anthropic_messages,
                     tools=anthropic_tools,
                     max_tokens=mt,
-                    temperature=temp,
+                    **({"temperature": temp} if temp is not None else {}),
                 )
             except Exception:
                 retries += 1
@@ -1138,7 +1138,7 @@ def create_provider(
     model: str,
     base_url: str | None = None,
     api_key: str | None = None,
-    temperature: float = 0.7,
+    temperature: float | None = None,
     enable_retry: bool = True,
     langfuse_client: Langfuse | None = None,
 ) -> LLMProvider:

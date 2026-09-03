@@ -81,7 +81,7 @@ class LLMProvidersSettings(BaseSettings):
     model: str = Field(default="", description="Model name (configured via admin)")
     base_url: str = Field(default="", description="API base URL (configured via admin)")
     api_key: str = Field(default="", description="API key (configured via admin)")
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1)
     timeout: int = Field(default=120, ge=10, le=600)
 
@@ -92,7 +92,7 @@ class AgentSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AGENT_")
 
     max_iterations: int = Field(default=100, ge=1, le=500)
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     trust_level: str = Field(
         default="ask_dangerous",
         pattern="^(ask_always|ask_dangerous|auto_all)$",

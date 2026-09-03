@@ -764,7 +764,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
               {/* Temperature control */}
               <div className="mt-3">
                 <Text type="secondary" className="text-xs block mb-2">
-                  推理温度 <span className="font-normal text-muted-foreground/70">· 默认 0.7</span>
+                  推理温度 <span className="font-normal text-muted-foreground/70">· 留空使用模型默认</span>
                 </Text>
                 <InputNumber
                   min={0}
@@ -784,7 +784,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                     className="!p-0 !text-xs mt-1"
                     onClick={() => setAgentTemperature(null)}
                   >
-                    重置为全局默认
+                    重置为模型默认
                   </Button>
                 )}
               </div>

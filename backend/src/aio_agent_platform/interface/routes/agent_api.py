@@ -185,7 +185,9 @@ async def _build_agent_loop_for_version(
             detail="没有可用的模型，请在管理后台配置模型",
         )
 
-    temperature = config_snapshot.get("temperature") or settings.llm.temperature
+    temperature = config_snapshot.get("temperature")
+    if temperature is None:
+        temperature = settings.llm.temperature
 
     provider = create_provider(
         provider=model_to_use.provider.provider_type,
