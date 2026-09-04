@@ -29,7 +29,10 @@ import CronJobsPage from '@/pages/CronJobsPage';
 import CronJobRunsPage from '@/pages/CronJobRunsPage';
 import TenantManagementPage from '@/pages/TenantManagementPage';
 import UserManagementPage from '@/pages/UserManagementPage';
+import PortalAgentListPage from '@/pages/portal/PortalAgentListPage';
+import PortalChatPage from '@/pages/portal/PortalChatPage';
 import AppLayout from '@/components/layout/AppLayout';
+import PortalLayout from '@/components/layout/PortalLayout';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -54,6 +57,12 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
   }
 
   return <>{children}</>;
+}
+
+/** 按角色分流首页：普通用户进用户端门户，管理员进管理端 */
+function HomeRedirect() {
+  const role = useAuthStore((s) => s.role);
+  return <Navigate to={role === 'user' ? '/portal' : '/agents'} replace />;
 }
 
 export default function App() {
@@ -85,7 +94,7 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        <Route path="/" element={<Navigate to="/agents" replace />} />
+        <Route path="/" element={<HomeRedirect />} />
         <Route path="/agents" element={<AgentsPage />} />
         <Route path="/agents/:agentId/chat" element={<AgentChatPage />} />
         <Route path="/agents/:agentId/chat/:sessionId" element={<AgentChatPage />} />
@@ -113,6 +122,19 @@ export default function App() {
         <Route path="/cron-jobs/runs" element={<CronJobRunsPage />} />
         <Route path="/tenants" element={<TenantManagementPage />} />
         <Route path="/users" element={<UserManagementPage />} />
+      </Route>
+
+      {/* 用户端对话门户（无管理端菜单的纯净布局） */}
+      <Route
+        element={
+          <ProtectedRoute>
+            <PortalLayout />
+          </ProtectedRoute>
+        }
+      >
+        <Route path="/portal" element={<PortalAgentListPage />} />
+        <Route path="/portal/agents/:agentId/chat" element={<PortalChatPage />} />
+        <Route path="/portal/agents/:agentId/chat/:sessionId" element={<PortalChatPage />} />
       </Route>
 
       {/* Catch all */}

@@ -7,6 +7,7 @@ import {
   DeleteOutlined,
   EllipsisOutlined,
   ApiOutlined,
+  CommentOutlined,
 } from '@ant-design/icons';
 import {
   Form,
@@ -251,6 +252,12 @@ export default function AgentsPage() {
                             label: 'API 文档',
                             icon: <ApiOutlined />,
                             onClick: () => navigate(`/agents/${agent.id}/api`),
+                          },
+                          {
+                            key: 'portal',
+                            label: '用户端打开',
+                            icon: <CommentOutlined />,
+                            onClick: () => navigate(`/portal/agents/${agent.id}/chat`),
                           },
                           { type: 'divider' },
                           {

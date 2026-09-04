@@ -56,6 +56,8 @@ interface Props {
   onQueueRemove?: (id: string) => void;
   /** 极简模式：隐藏工作区选择、图片/文件上传、starter 提示（宠物对话等轻量场景） */
   simple?: boolean;
+  /** 门户模式：隐藏斜杠命令、工作区选择器与工作区文件上传，保留图片附件与 starter 提示 */
+  portal?: boolean;
 }
 
 function formatSize(bytes: number): string {
@@ -64,7 +66,7 @@ function formatSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessionId, onEnsureSession, starterPrompts, onStarterPromptClick, queue, onQueue, onQueueSendNow, onQueueRemove, simple }: Props) {
+export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessionId, onEnsureSession, starterPrompts, onStarterPromptClick, queue, onQueue, onQueueSendNow, onQueueRemove, simple, portal }: Props) {
   const [input, setInput] = useState('');
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -80,10 +82,10 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
   const loadCommands = useCommandStore((s) => s.load);
   const searchCommands = useCommandStore((s) => s.search);
   useEffect(() => {
-    loadCommands();
-  }, [loadCommands]);
+    if (!portal) loadCommands();
+  }, [loadCommands, portal]);
 
-  const isCommandInput = !simple && input.startsWith('/');
+  const isCommandInput = !simple && !portal && input.startsWith('/');
   const commandMenuOpen = isCommandInput && !commandDismissed;
   const commandItems = useMemo(
     () => (commandMenuOpen ? searchCommands(input.slice(1)) : []),
@@ -208,7 +210,13 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
     const otherFiles = selectedFiles.filter((file) => !ALLOWED_IMAGE_TYPES.includes(file.type));
 
     if (images.length > 0) handleImageFiles(images);
-    if (otherFiles.length > 0) handleFileUpload(otherFiles);
+    if (otherFiles.length > 0) {
+      if (portal) {
+        message.warning('当前仅支持图片附件');
+      } else {
+        handleFileUpload(otherFiles);
+      }
+    }
   };
 
   const removeFileAttachment = (localId: string) => {
@@ -224,7 +232,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
     const fileAttachments = pendingFiles.filter((p) => p.status === 'done' && p.fileRef).map((p) => p.fileRef!);
     if (!text && attachments.length === 0 && fileAttachments.length === 0) return;
 
-    const isCommand = text.startsWith('/');
+    const isCommand = !portal && text.startsWith('/');
 
     // Commands bypass the queue so control commands (e.g. /stop) apply
     // immediately. Interrupt any in-flight stream first.
@@ -302,11 +310,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files) {
-      const files = Array.from(e.dataTransfer.files);
-      const images = files.filter((f) => f.type.startsWith('image/'));
-      const others = files.filter((f) => !f.type.startsWith('image/'));
-      if (images.length > 0) handleImageFiles(images);
-      if (others.length > 0) handleFileUpload(others);
+      handleAttachmentFiles(e.dataTransfer.files);
     }
   };
 
@@ -332,8 +336,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
 
     if (imageFiles.length > 0 || otherFiles.length > 0) {
       e.preventDefault();
-      if (imageFiles.length > 0) handleImageFiles(imageFiles);
-      if (otherFiles.length > 0) handleFileUpload(otherFiles);
+      handleAttachmentFiles([...imageFiles, ...otherFiles]);
     }
   };
 
@@ -599,7 +602,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
         ) : (
           <div className="flex w-full items-center justify-between gap-3 pt-1">
             <div className="flex min-w-0 items-center gap-1">
-              <Tooltip title="添加图片或文件">
+              <Tooltip title={portal ? '添加图片' : '添加图片或文件'}>
                 <Button
                   type="text"
                   icon={<PaperClipOutlined />}
@@ -610,6 +613,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
                   aria-label="添加附件"
                 />
               </Tooltip>
+              {!portal && (
               <Tooltip title="附件和生成的文件会保存在所选工作区">
                 <div className="flex min-w-0 items-center gap-0.5 text-muted-foreground">
                   <FolderOutlined className="ml-1 flex-shrink-0 text-xs" />
@@ -629,6 +633,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
                   />
                 </div>
               </Tooltip>
+              )}
             </div>
             <div className="flex flex-shrink-0 items-center gap-1.5">
               {renderSendActions(false)}

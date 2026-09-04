@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { PlusOutlined } from '@ant-design/icons';
-import type { Agent, Message, StreamingState } from '@/lib/types';
+import type { Message, StreamingState } from '@/lib/types';
 import BrandLogo from '@/components/BrandLogo';
 import ChatMessage from './ChatMessage';
 import StreamingMessage from './StreamingMessage';
@@ -9,7 +9,8 @@ import StreamingMessage from './StreamingMessage';
 interface Props {
   messages: Message[];
   streaming: StreamingState;
-  agent?: Agent | null;
+  /** Agent 或门户脱敏的 PortalAgent —— 仅用 name / description / welcome_message */
+  agent?: { name: string; description?: string | null; welcome_message?: string | null } | null;
   onNewChat?: () => void;
   onEditResend?: (content: string) => void;
   /** 覆盖空态欢迎语（宠物弹窗等无独立「新对话」场景） */

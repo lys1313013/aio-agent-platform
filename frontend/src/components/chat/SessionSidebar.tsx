@@ -34,7 +34,7 @@ const SESSION_SOURCE_LABELS: Record<string, string> = {
   wecom_bot: '企微机器人',
 };
 
-export default function SessionSidebar({ agentId }: { agentId?: string | null }) {
+export default function SessionSidebar({ agentId, portal }: { agentId?: string | null; portal?: boolean }) {
   const navigate = useNavigate();
   const { modal } = App.useApp();
   const {
@@ -62,10 +62,10 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
   const [creatingSession, setCreatingSession] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
-  // Load workspaces on mount
+  // Load workspaces on mount（门户模式无工作区概念，跳过）
   useEffect(() => {
-    loadWorkspaces();
-  }, [loadWorkspaces]);
+    if (!portal) loadWorkspaces();
+  }, [loadWorkspaces, portal]);
 
   const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId);
 
@@ -141,11 +141,17 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
     setActiveSession(id);
     setPanelOpen(false);
     if (agentId) {
-      navigate(`/agents/${agentId}/chat/${id}`, { replace: true });
+      const base = portal ? `/portal/agents/${agentId}` : `/agents/${agentId}`;
+      navigate(`${base}/chat/${id}`, { replace: true });
     }
   };
 
-  const filteredSessions = sessions.filter(
+  // 门户只展示界面会话（隐藏宠物/接口/定时任务/IM 渠道等来源）
+  const visibleSessions = portal
+    ? sessions.filter((s) => !s.source || s.source === 'chat')
+    : sessions;
+
+  const filteredSessions = visibleSessions.filter(
     (s) =>
       searchQuery === '' ||
       (s.title || '').toLowerCase().includes(searchQuery.toLowerCase()),
@@ -180,7 +186,10 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
       ref={sidebarRef}
       className={cn(
         'flex flex-shrink-0 border-r border-border bg-card overflow-hidden transition-all duration-200 ease-in-out',
-        panelOpen ? 'w-[340px]' : 'w-11',
+        panelOpen
+          // 小屏：抽屉式覆盖在聊天区之上，不挤压内容；sm 及以上恢复为并排布局
+          ? 'absolute inset-y-0 left-0 z-20 w-[85vw] max-w-[340px] shadow-xl sm:static sm:z-auto sm:w-[340px] sm:max-w-none sm:shadow-none'
+          : 'w-11',
       )}
     >
       {/* Icon rail */}
@@ -202,6 +211,7 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
           </button>
         </Tooltip>
 
+        {!portal && (
         <Tooltip title={`工作区: ${selectedWorkspace?.name ?? '未选择'}`} placement="right" mouseEnterDelay={0.5}>
           <button
             onClick={() => setPanelOpen(true)}
@@ -213,6 +223,7 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
             <FolderOutlined />
           </button>
         </Tooltip>
+        )}
 
         <Tooltip title="新对话" placement="right" mouseEnterDelay={0.5}>
           <button
@@ -251,7 +262,8 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
               <CloseOutlined className="text-xs" />
             </button>
           </div>
-          {/* Workspace selector */}
+          {/* Workspace selector（门户模式隐藏） */}
+          {!portal && (
           <div className="flex items-center gap-2">
             <FolderOutlined className="text-xs text-muted-foreground" />
             <Select
@@ -267,6 +279,7 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
               placeholder="选择工作区"
             />
           </div>
+          )}
         </div>
 
           {/* Search */}
@@ -313,6 +326,7 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
               <div className="space-y-1">
                 {pinnedSessions.length > 0 && (
                   <SessionSection
+                    hideSource={portal}
                     title="已置顶"
                     icon={<PushpinFilled className="text-[10px]" />}
                     sessions={pinnedSessions}
@@ -332,6 +346,7 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
 
                 {groupedRegular.today.length > 0 && (
                   <SessionSection
+                    hideSource={portal}
                     title="今天"
                     sessions={groupedRegular.today}
                     activeSessionId={activeSessionId}
@@ -350,6 +365,7 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
 
                 {groupedRegular.yesterday.length > 0 && (
                   <SessionSection
+                    hideSource={portal}
                     title="昨天"
                     sessions={groupedRegular.yesterday}
                     activeSessionId={activeSessionId}
@@ -368,6 +384,7 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
 
                 {groupedRegular.earlier.length > 0 && (
                   <SessionSection
+                    hideSource={portal}
                     title="更早"
                     sessions={groupedRegular.earlier}
                     activeSessionId={activeSessionId}
@@ -386,6 +403,7 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
 
                 {archivedSessions.length > 0 && (
                   <SessionSection
+                    hideSource={portal}
                     title="已归档"
                     icon={<InboxOutlined className="text-[10px]" />}
                     sessions={archivedSessions}
@@ -416,6 +434,8 @@ export default function SessionSidebar({ agentId }: { agentId?: string | null })
 interface SectionProps {
   title: string;
   icon?: React.ReactNode;
+  /** 隐藏来源标签（门户模式只展示界面会话，标签无信息量） */
+  hideSource?: boolean;
   sessions: Session[];
   activeSessionId: string | null;
   editingId: string | null;
@@ -433,6 +453,7 @@ interface SectionProps {
 function SessionSection({
   title,
   icon,
+  hideSource,
   sessions,
   activeSessionId,
   editingId,
@@ -460,6 +481,7 @@ function SessionSection({
         {sessions.map((session) => (
           <SessionItem
             key={session.id}
+            hideSource={hideSource}
             session={session}
             isActive={activeSessionId === session.id}
             isEditing={editingId === session.id}
@@ -482,6 +504,7 @@ function SessionSection({
 // ---- Session Item Component ----
 
 interface ItemProps {
+  hideSource?: boolean;
   session: Session;
   isActive: boolean;
   isEditing: boolean;
@@ -497,6 +520,7 @@ interface ItemProps {
 }
 
 function SessionItem({
+  hideSource,
   session,
   isActive,
   isEditing,
@@ -597,9 +621,11 @@ function SessionItem({
             </div>
             <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
               <span className="truncate">{formatRelativeTime(session.updated_at)}</span>
-              <span className="flex-shrink-0 rounded bg-muted/60 px-1 py-px text-[9px] leading-none">
-                {SESSION_SOURCE_LABELS[session.source] ?? session.source}
-              </span>
+              {!hideSource && (
+                <span className="flex-shrink-0 rounded bg-muted/60 px-1 py-px text-[9px] leading-none">
+                  {SESSION_SOURCE_LABELS[session.source] ?? session.source}
+                </span>
+              )}
             </div>
           </div>
 
