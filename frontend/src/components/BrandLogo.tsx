@@ -3,13 +3,7 @@ import { cn } from '@/lib/utils';
 export default function BrandLogo({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 32 32" className={cn('h-6 w-6', className)} aria-hidden>
-      <defs>
-        <linearGradient id="brand-bg" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#3b82f6" />
-          <stop offset="100%" stopColor="#8b5cf6" />
-        </linearGradient>
-      </defs>
-      <rect width="32" height="32" rx="7" fill="url(#brand-bg)" />
+      <rect width="32" height="32" rx="7" fill="hsl(var(--primary))" />
       <g fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <line x1="16" y1="5.5" x2="16" y2="9" />
         <circle cx="16" cy="4.5" r="1.4" fill="#fff" stroke="none" />
