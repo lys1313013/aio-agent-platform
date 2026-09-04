@@ -46,7 +46,7 @@ export function SkinPickerContent() {
                     active && 'ring-2 ring-primary ring-offset-2 ring-offset-card',
                   )}
                   style={{
-                    backgroundImage: `linear-gradient(135deg, ${s.swatch[0]}, ${s.swatch[1]})`,
+                    backgroundColor: s.swatch,
                   }}
                 >
                   {active && <CheckOutlined className="text-xs text-white" />}

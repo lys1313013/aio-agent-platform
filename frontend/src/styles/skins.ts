@@ -1,107 +1,92 @@
 import type { ThemeConfig } from 'antd';
 
-export type SkinId = 'blue' | 'violet' | 'emerald' | 'amber' | 'rose' | 'cyan';
+export type SkinId = 'terracotta' | 'olive' | 'amber' | 'crimson' | 'coffee' | 'graphite';
 
 export interface Skin {
   id: SkinId;
   name: string;
-  /** 选择器里的色板预览（渐变起止色，hex） */
-  swatch: [string, string];
+  /** 选择器里的色板预览（纯色，hex） */
+  swatch: string;
   /** antd token 覆盖 */
   antd: NonNullable<ThemeConfig['token']>;
   /** CSS 变量：HSL 三元组（不含 hsl()） */
   vars: {
     primary: string;
     ring: string;
-    brandFrom: string;
-    brandTo: string;
-    /** RGB 三元组，用于带透明度的品牌色光晕阴影 */
-    brandGlowRgb: string;
+    brand: string;
   };
 }
 
 export const SKINS: Skin[] = [
   {
-    id: 'blue',
-    name: '湛蓝',
-    swatch: ['#3b82f6', '#60a5fa'],
-    antd: { colorPrimary: '#3b82f6', colorInfo: '#3b82f6', colorLink: '#3b82f6' },
+    id: 'terracotta',
+    name: '赭陶',
+    swatch: '#c2410c',
+    antd: { colorPrimary: '#c2410c', colorInfo: '#c2410c', colorLink: '#c2410c' },
     vars: {
-      primary: '217 91% 60%',
-      ring: '217 91% 60%',
-      brandFrom: '217 91% 60%',
-      brandTo: '199 89% 48%',
-      brandGlowRgb: '59 130 246',
+      primary: '21 90% 40%',
+      ring: '21 90% 40%',
+      brand: '21 90% 40%',
     },
   },
   {
-    id: 'violet',
-    name: '绛紫',
-    swatch: ['#6366f1', '#8b5cf6'],
-    antd: { colorPrimary: '#6366f1', colorInfo: '#6366f1', colorLink: '#6366f1' },
+    id: 'olive',
+    name: '苔绿',
+    swatch: '#3f6212',
+    antd: { colorPrimary: '#3f6212', colorInfo: '#3f6212', colorLink: '#3f6212' },
     vars: {
-      primary: '239 84% 67%',
-      ring: '239 84% 67%',
-      brandFrom: '239 84% 67%',
-      brandTo: '258 90% 66%',
-      brandGlowRgb: '99 102 241',
-    },
-  },
-  {
-    id: 'emerald',
-    name: '翡冷',
-    swatch: ['#10b981', '#14b8a6'],
-    antd: { colorPrimary: '#10b981', colorInfo: '#10b981', colorLink: '#0d9488' },
-    vars: {
-      primary: '160 84% 39%',
-      ring: '160 84% 39%',
-      brandFrom: '160 84% 39%',
-      brandTo: '175 84% 32%',
-      brandGlowRgb: '16 185 129',
+      primary: '86 69% 23%',
+      ring: '86 69% 23%',
+      brand: '86 69% 23%',
     },
   },
   {
     id: 'amber',
-    name: '暖阳',
-    swatch: ['#f59e0b', '#f97316'],
-    antd: { colorPrimary: '#f59e0b', colorInfo: '#f59e0b', colorLink: '#d97706' },
+    name: '暖棕',
+    swatch: '#b45309',
+    antd: { colorPrimary: '#b45309', colorInfo: '#b45309', colorLink: '#b45309' },
     vars: {
-      primary: '38 92% 50%',
-      ring: '38 92% 50%',
-      brandFrom: '38 92% 50%',
-      brandTo: '25 95% 53%',
-      brandGlowRgb: '245 158 11',
+      primary: '26 91% 37%',
+      ring: '26 91% 37%',
+      brand: '26 91% 37%',
     },
   },
   {
-    id: 'rose',
-    name: '绯樱',
-    swatch: ['#f43f5e', '#ec4899'],
-    antd: { colorPrimary: '#f43f5e', colorInfo: '#f43f5e', colorLink: '#e11d48' },
+    id: 'crimson',
+    name: '绯红',
+    swatch: '#be123c',
+    antd: { colorPrimary: '#be123c', colorInfo: '#be123c', colorLink: '#be123c' },
     vars: {
-      primary: '347 77% 50%',
-      ring: '347 77% 50%',
-      brandFrom: '347 77% 50%',
-      brandTo: '330 81% 60%',
-      brandGlowRgb: '244 63 94',
+      primary: '345 83% 41%',
+      ring: '345 83% 41%',
+      brand: '345 83% 41%',
     },
   },
   {
-    id: 'cyan',
-    name: '青霭',
-    swatch: ['#06b6d4', '#0ea5e9'],
-    antd: { colorPrimary: '#06b6d4', colorInfo: '#06b6d4', colorLink: '#0284c7' },
+    id: 'coffee',
+    name: '咖啡',
+    swatch: '#78350f',
+    antd: { colorPrimary: '#78350f', colorInfo: '#78350f', colorLink: '#78350f' },
     vars: {
-      primary: '188 94% 43%',
-      ring: '188 94% 43%',
-      brandFrom: '188 94% 43%',
-      brandTo: '199 89% 48%',
-      brandGlowRgb: '6 182 212',
+      primary: '22 78% 26%',
+      ring: '22 78% 26%',
+      brand: '22 78% 26%',
+    },
+  },
+  {
+    id: 'graphite',
+    name: '石墨',
+    swatch: '#44403c',
+    antd: { colorPrimary: '#44403c', colorInfo: '#44403c', colorLink: '#44403c' },
+    vars: {
+      primary: '31 6% 25%',
+      ring: '31 6% 25%',
+      brand: '31 6% 25%',
     },
   },
 ];
 
-export const DEFAULT_SKIN: SkinId = 'violet';
+export const DEFAULT_SKIN: SkinId = 'terracotta';
 
 export function getSkin(id: SkinId): Skin {
   return SKINS.find((s) => s.id === id) ?? SKINS.find((s) => s.id === DEFAULT_SKIN)!;
