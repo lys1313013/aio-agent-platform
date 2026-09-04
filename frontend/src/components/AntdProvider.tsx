@@ -21,14 +21,17 @@ export default function AntdProvider({ children }: Props) {
     [resolved],
   );
 
-  const skinToken = useMemo(() => getSkin(skin).antd, [skin]);
+  const skinToken = useMemo(() => {
+    const s = getSkin(skin);
+    return resolved === 'dark' ? { ...s.antd, ...s.antdDark } : s.antd;
+  }, [skin, resolved]);
 
   return (
     <ConfigProvider
       theme={{
         algorithm,
         token: {
-          borderRadius: 8,
+          borderRadius: 6,
           fontFamily:
             '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
           ...skinToken,

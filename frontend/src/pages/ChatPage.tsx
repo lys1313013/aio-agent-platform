@@ -186,7 +186,6 @@ export default function ChatPage() {
           icon={<PlusOutlined />}
           onClick={handleNewChat}
           loading={creatingSession}
-          className="!bg-brand-gradient !border-none shadow-brand hover:shadow-brand-lg"
         >
           新对话
         </Button>

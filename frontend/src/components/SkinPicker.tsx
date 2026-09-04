@@ -42,11 +42,11 @@ export function SkinPickerContent() {
               >
                 <span
                   className={cn(
-                    'flex h-8 w-8 items-center justify-center rounded-full transition-transform group-hover:scale-110',
+                    'flex h-8 w-8 items-center justify-center rounded-full ring-1 ring-inset ring-black/10 transition-transform group-hover:scale-110 dark:ring-white/15',
                     active && 'ring-2 ring-primary ring-offset-2 ring-offset-card',
                   )}
                   style={{
-                    backgroundImage: `linear-gradient(135deg, ${s.swatch[0]}, ${s.swatch[1]})`,
+                    backgroundColor: s.swatch,
                   }}
                 >
                   {active && <CheckOutlined className="text-xs text-white" />}
