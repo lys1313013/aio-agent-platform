@@ -388,7 +388,7 @@ export default function AppLayout() {
                                   title={item.label}
                                 >
                                   {active && (
-                                    <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-brand-gradient-b" />
+                                    <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-primary" />
                                   )}
                                   <span
                                     className={cn(
@@ -428,7 +428,7 @@ export default function AppLayout() {
                                           )}
                                         >
                                           {childActive && (
-                                            <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-brand-gradient-b" />
+                                            <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-primary" />
                                           )}
                                           <span
                                             className={cn(
@@ -462,7 +462,7 @@ export default function AppLayout() {
                               )}
                             >
                               {isActive && (
-                                <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-brand-gradient-b" />
+                                <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-primary" />
                               )}
                               <span
                                 className={cn(

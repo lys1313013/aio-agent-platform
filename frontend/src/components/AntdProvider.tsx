@@ -23,14 +23,40 @@ export default function AntdProvider({ children }: Props) {
 
   const skinToken = useMemo(() => getSkin(skin).antd, [skin]);
 
+  // 与 globals.css 的 CSS 变量保持一致的中性表面色（GitHub Dark / Light）
+  const neutralToken = useMemo(
+    () =>
+      resolved === 'dark'
+        ? {
+            colorBgLayout: '#0d1117',
+            colorBgContainer: '#161b22',
+            colorBgElevated: '#21262d',
+            colorBorder: '#30363d',
+            colorBorderSecondary: '#21262d',
+            colorText: '#e6edf3',
+            colorTextSecondary: '#7d8590',
+          }
+        : {
+            colorBgLayout: '#f6f8fa',
+            colorBgContainer: '#ffffff',
+            colorBgElevated: '#ffffff',
+            colorBorder: '#d1d9e0',
+            colorBorderSecondary: '#eaeef2',
+            colorText: '#1f2328',
+            colorTextSecondary: '#59636e',
+          },
+    [resolved],
+  );
+
   return (
     <ConfigProvider
       theme={{
         algorithm,
         token: {
-          borderRadius: 8,
+          borderRadius: 6,
           fontFamily:
             '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+          ...neutralToken,
           ...skinToken,
         },
       }}

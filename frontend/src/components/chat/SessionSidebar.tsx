@@ -229,7 +229,7 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
           <button
             onClick={handleNewChat}
             disabled={creatingSession}
-            className="flex items-center justify-center w-9 h-9 rounded-lg bg-brand-gradient text-white shadow-brand transition-all hover:shadow-brand-lg hover:-translate-y-[1px] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:shadow-brand disabled:hover:translate-y-0"
+            className="flex items-center justify-center w-9 h-9 rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {creatingSession ? <LoadingOutlined className="text-sm" spin /> : <PlusOutlined />}
           </button>

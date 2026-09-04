@@ -219,7 +219,6 @@ export default function PortalChatPage() {
             icon={<PlusOutlined />}
             onClick={handleNewChat}
             loading={creatingSession}
-            className="!bg-brand-gradient !border-none shadow-brand hover:shadow-brand-lg"
           >
             <span className="hidden sm:inline">新对话</span>
           </Button>

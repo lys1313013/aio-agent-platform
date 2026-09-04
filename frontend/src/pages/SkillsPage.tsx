@@ -272,7 +272,7 @@ export default function SkillsPage() {
             <Tooltip title="从 zip 包导入技能">
               <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>导入</Button>
             </Tooltip>
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate} size="large" className="shadow-sm shadow-primary/20">
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate} size="large">
               创建技能
             </Button>
           </div>
@@ -288,7 +288,7 @@ export default function SkillsPage() {
                 onClick={() => setActiveCategory(cat)}
                 className={`px-3.5 py-1.5 rounded-full text-sm font-medium transition-all border ${
                   active
-                    ? 'bg-primary text-white border-primary shadow-sm shadow-primary/20'
+                    ? 'bg-primary text-white border-primary'
                     : 'bg-white dark:bg-gray-900 text-muted-foreground border-border hover:border-primary/40 hover:text-foreground'
                 }`}
               >

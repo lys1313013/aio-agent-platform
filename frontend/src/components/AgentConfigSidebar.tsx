@@ -439,7 +439,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
           </div>
         ) : agent ? (
           <div className="space-y-4">
-            <div className="rounded-2xl border border-border/60 bg-gradient-to-br from-primary/[0.08] to-transparent p-4">
+            <div className="rounded-2xl border border-border/60 bg-primary/[0.06] p-4">
               <div className="flex items-start gap-3">
                 <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-2xl">
                   {getAgentIcon(agent.icon)}
