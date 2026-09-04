@@ -28,6 +28,10 @@ const IDLE_STREAMING: StreamingState = {
 
 const PANEL_W = 340;
 const PANEL_H = 620;
+const MIN_W = 280;
+const MIN_H = 360;
+
+type ResizeDir = 'e' | 's' | 'se';
 
 interface Props {
   open: boolean;
@@ -63,7 +67,17 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
   const abortRef = useRef<AbortController | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number; moved: boolean } | null>(null);
+  const resizeRef = useRef<{
+    startX: number;
+    startY: number;
+    baseW: number;
+    baseH: number;
+    baseX: number;
+    baseY: number;
+    dir: ResizeDir;
+  } | null>(null);
   const [pos, setPos] = useState(defaultPos);
+  const [size, setSize] = useState({ w: PANEL_W, h: PANEL_H });
 
   // 打开时加载会话历史（有缓存直接复用）
   useEffect(() => {
@@ -412,7 +426,7 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
     // 拖拽中直接改 DOM，避免高频 setState 挤掉流式渲染帧
     const el = panelRef.current;
     if (!el) return;
-    el.style.left = `${Math.min(Math.max(d.baseX + dx, 0), window.innerWidth - PANEL_W)}px`;
+    el.style.left = `${Math.min(Math.max(d.baseX + dx, 0), window.innerWidth - el.offsetWidth)}px`;
     el.style.top = `${Math.min(Math.max(d.baseY + dy, 0), window.innerHeight - 44)}px`;
   }, []);
 
@@ -430,6 +444,55 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
     dragRef.current = null;
   }, []);
 
+  // ---- 边缘/角落拖拽调整大小 ----
+  const onResizePointerDown = useCallback((e: React.PointerEvent, dir: ResizeDir) => {
+    if (e.button !== 0) return;
+    const el = panelRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    resizeRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      baseW: rect.width,
+      baseH: rect.height,
+      baseX: rect.left,
+      baseY: rect.top,
+      dir,
+    };
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, []);
+
+  const onResizePointerMove = useCallback((e: React.PointerEvent) => {
+    const r = resizeRef.current;
+    if (!r) return;
+    const el = panelRef.current;
+    if (!el) return;
+    // 拖拽中直接改 DOM，避免高频 setState 挤掉流式渲染帧；上限保证面板不出视口
+    if (r.dir.includes('e')) {
+      const w = Math.min(Math.max(r.baseW + e.clientX - r.startX, MIN_W), window.innerWidth - r.baseX - 8);
+      el.style.width = `${w}px`;
+    }
+    if (r.dir.includes('s')) {
+      const h = Math.min(Math.max(r.baseH + e.clientY - r.startY, MIN_H), window.innerHeight - r.baseY - 8);
+      el.style.height = `${h}px`;
+    }
+  }, []);
+
+  const onResizePointerUp = useCallback(() => {
+    const r = resizeRef.current;
+    resizeRef.current = null;
+    if (!r) return;
+    const el = panelRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setSize({ w: rect.width, h: rect.height });
+  }, []);
+
+  const onResizePointerCancel = useCallback(() => {
+    resizeRef.current = null;
+  }, []);
+
   if (!open) return null;
 
   // 用 portal 渲染到 body：PetWidget 容器带 transform，fixed 子元素会以它为
@@ -438,7 +501,7 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
     <div
       ref={panelRef}
       className="fixed z-[1010] flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-card/90 shadow-[0_16px_48px_-8px_rgba(0,0,0,0.25)] backdrop-blur-xl"
-      style={{ left: pos.x, top: pos.y, width: PANEL_W, height: `min(${PANEL_H}px, 85vh)` }}
+      style={{ left: pos.x, top: pos.y, width: size.w, height: `min(${size.h}px, 85vh)` }}
     >
       {/* 标题栏：可拖动 */}
       <div
@@ -531,6 +594,33 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
           onQueueSendNow={sendQueuedNow}
           onQueueRemove={removeQueued}
         />
+      </div>
+
+      {/* 调整大小热区：右边、下边、右下角（角带视觉手柄） */}
+      <div
+        className="absolute bottom-2 right-0 top-2 w-1.5 cursor-ew-resize touch-none"
+        onPointerDown={(e) => onResizePointerDown(e, 'e')}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={onResizePointerUp}
+        onPointerCancel={onResizePointerCancel}
+      />
+      <div
+        className="absolute bottom-0 left-2 right-2 h-1.5 cursor-ns-resize touch-none"
+        onPointerDown={(e) => onResizePointerDown(e, 's')}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={onResizePointerUp}
+        onPointerCancel={onResizePointerCancel}
+      />
+      <div
+        className="absolute bottom-0 right-0 flex h-4 w-4 cursor-nwse-resize touch-none items-end justify-end text-muted-foreground/50"
+        onPointerDown={(e) => onResizePointerDown(e, 'se')}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={onResizePointerUp}
+        onPointerCancel={onResizePointerCancel}
+      >
+        <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M5 15 L15 5 M10 15 L15 10" />
+        </svg>
       </div>
     </div>,
     document.body,
