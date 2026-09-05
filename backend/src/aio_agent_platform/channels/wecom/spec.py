@@ -81,7 +81,6 @@ async def _verify_credentials(
 
 WECOM_SPEC = ChannelTypeSpec(
     channel_type="wecom",
-    title_prefix="企微· ",
     allowed_modes=("webhook",),
     supports_file_send=True,
     build=_build,

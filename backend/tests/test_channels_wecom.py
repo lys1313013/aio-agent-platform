@@ -57,7 +57,6 @@ def _signature(encrypt: str, token: str = _TOKEN) -> str:
 
 def test_wecom_spec_registered() -> None:
     spec = get_channel_spec("wecom")
-    assert spec.title_prefix == "企微· "
     assert spec.allowed_modes == ("webhook",)
     assert spec.supports_file_send is True
     assert spec.build is not None

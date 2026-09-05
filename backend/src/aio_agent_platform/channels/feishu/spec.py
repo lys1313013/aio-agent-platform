@@ -75,7 +75,6 @@ async def _verify_credentials(
 
 FEISHU_SPEC = ChannelTypeSpec(
     channel_type="feishu",
-    title_prefix="飞书· ",
     allowed_modes=("websocket", "webhook"),
     supports_file_send=True,
     build=_build,

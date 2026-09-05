@@ -44,7 +44,6 @@ from aio_agent_platform.channels.file_send import (
     ChannelSendContext,
     current_channel_send_ctx,
 )
-from aio_agent_platform.channels.registry import get_channel_spec
 from aio_agent_platform.core.agent import AgentStep
 from aio_agent_platform.core.auto_title import generate_session_title
 from aio_agent_platform.core.chat import (
@@ -305,14 +304,6 @@ def _pop_pending(key: str) -> list[dict]:
             _pending_attachments.pop(k, None)
     items = _pending_attachments.pop(key, [])
     return [p.ref for p in items if now - p.ts <= _PENDING_TTL_SECONDS]
-
-
-def _channel_title_prefix(channel_type: str) -> str:
-    """渠道会话标题前缀，便于在会话列表中区分来源渠道。"""
-    try:
-        return get_channel_spec(channel_type).title_prefix
-    except ValueError:
-        return ""
 
 
 def _sniff_mime(data: bytes) -> str | None:
@@ -703,7 +694,7 @@ class ChannelInboundPipeline:
             session = ChatSession(
                 user_id=user_id,
                 agent_id=self.channel.agent_id,
-                title=f"{_channel_title_prefix(self.channel.channel_type)}{event.chat_kind.value} · {event.external_id[:8]}",
+                title=f"{event.chat_kind.value} · {event.external_id[:8]}",
                 source=self.channel.channel_type,
             )
             db.add(session)
@@ -776,7 +767,7 @@ class ChannelInboundPipeline:
         session = ChatSession(
             user_id=ctx.user_id,
             agent_id=self.channel.agent_id,
-            title=f"{_channel_title_prefix(self.channel.channel_type)}新对话 · {event.external_id[:8]}",
+            title=f"新对话 · {event.external_id[:8]}",
             source=self.channel.channel_type,
         )
         db.add(session)
@@ -1243,7 +1234,7 @@ class ChannelInboundPipeline:
         if title_task is not None and session is not None:
             new_title = await title_task
             if new_title:
-                session.title = f"{_channel_title_prefix(self.channel.channel_type)}{new_title}"
+                session.title = new_title
                 await db.commit()
 
         # 记录最终结果事件，Web 端「重新连接」据此收尾（message_id 供前端定位消息）。

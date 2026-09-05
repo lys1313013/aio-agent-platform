@@ -32,7 +32,6 @@ _SECRET = "bot_secret_abc"
 
 def test_wecom_bot_spec_registered() -> None:
     spec = get_channel_spec("wecom_bot")
-    assert spec.title_prefix == "企微机器人· "
     assert spec.allowed_modes == ("websocket",)
     assert spec.supports_file_send is True
     assert spec.build is not None

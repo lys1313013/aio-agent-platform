@@ -48,7 +48,6 @@ async def _verify_credentials(
 
 WECOM_BOT_SPEC = ChannelTypeSpec(
     channel_type="wecom_bot",
-    title_prefix="企微机器人· ",
     allowed_modes=("websocket",),
     supports_file_send=True,
     build=_build,

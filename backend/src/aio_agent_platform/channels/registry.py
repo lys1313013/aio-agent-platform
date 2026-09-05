@@ -27,7 +27,6 @@ class ChannelTypeSpec:
     """Static description of one IM channel type."""
 
     channel_type: str
-    title_prefix: str            # 会话标题前缀，如 "飞书· " / "企微· "
     allowed_modes: tuple[str, ...] = field(default=("websocket", "webhook"))
     supports_file_send: bool = False
     build: AdapterBuilder | None = None
