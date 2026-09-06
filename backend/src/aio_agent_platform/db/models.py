@@ -396,6 +396,12 @@ class Agent(Base):
     )
     enabled_tools: Mapped[list] = mapped_column(JSONB, default=list, comment="启用的工具列表(JSON)")
     mcp_server_ids: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]", comment="绑定的MCP服务器ID列表(JSON)")
+    mcp_all_tools_server_ids: Mapped[list] = mapped_column(
+        JSONB,
+        default=list,
+        server_default="[]",
+        comment="自动启用全部工具的MCP服务器ID列表(JSON)",
+    )
     temperature: Mapped[float | None] = mapped_column(Float, nullable=True, comment="推理温度(0.0-2.0)，为空时使用全局默认值")
     max_iterations: Mapped[int | None] = mapped_column(
         Integer, nullable=True, comment="ReAct 最大迭代次数(1-100)，为空时使用全局默认值",

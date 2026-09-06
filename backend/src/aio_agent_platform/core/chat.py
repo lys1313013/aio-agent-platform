@@ -46,6 +46,7 @@ from aio_agent_platform.memory.service import MemoryService
 from aio_agent_platform.observation import get_langfuse_client
 from aio_agent_platform.skills.service import SkillService
 from aio_agent_platform.tools.executor import ToolExecutor
+from aio_agent_platform.tools.mcp.selection import is_mcp_tool_allowed
 
 logger = structlog.get_logger()
 
@@ -244,13 +245,20 @@ def filter_tools_by_agent(
         enabled_set = None
         if agent and agent.enabled_tools:
             enabled_set = set(agent.enabled_tools)
+        all_tools_server_ids = {
+            str(server_id)
+            for server_id in (getattr(agent, "mcp_all_tools_server_ids", None) or [])
+        } if agent else set()
 
         for full_name, tool_info in mcp_manager.list_all_tools():
             server_id = mcp_manager._tool_to_server.get(full_name)
-            if allowed_server_ids is not None and server_id is not None:
-                if str(server_id) not in allowed_server_ids:
-                    continue
-            if enabled_set is not None and full_name not in enabled_set:
+            if not is_mcp_tool_allowed(
+                server_id=server_id,
+                full_name=full_name,
+                allowed_server_ids=allowed_server_ids,
+                enabled_tools=enabled_set,
+                all_tools_server_ids=all_tools_server_ids,
+            ):
                 continue
             if full_name in blacklist:
                 continue

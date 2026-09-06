@@ -487,6 +487,7 @@ export interface Agent {
   model_name: string | null;
   enabled_tools: string[];
   mcp_server_ids: string[];
+  mcp_all_tools_server_ids: string[];
   temperature?: number | null;
   max_iterations?: number | null;
   welcome_message?: string | null;

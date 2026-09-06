@@ -19,7 +19,7 @@ import {
   UndoOutlined,
   DeleteOutlined,
   DashboardOutlined,
-  DisconnectOutlined,
+  ApiOutlined,
   DatabaseOutlined,
   PlusOutlined,
   ArrowUpOutlined,
@@ -127,6 +127,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [enabledTools, setEnabledTools] = useState<string[]>([]);
   const [enabledMcpTools, setEnabledMcpTools] = useState<string[]>([]);
+  const [mcpAllToolsServerIds, setMcpAllToolsServerIds] = useState<string[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<string[]>([]);
   const [graphKnowledgeBases, setGraphKnowledgeBases] = useState<GraphKnowledgeBase[]>([]);
@@ -208,6 +209,23 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
         // Filter out knowledge_retrieval and delegate_task — they're auto-injected
         // by backend when knowledge bases / child agents are bound
         setEnabledTools((found.enabled_tools || []).filter((t) => t !== 'knowledge_retrieval' && t !== 'delegate_task'));
+        const explicitlySelectedTools = new Set(found.enabled_tools || []);
+        const inferredLegacyAllServerIds = mcp
+          .filter((server) => {
+            if (!(found.mcp_server_ids || []).includes(server.id)) return false;
+            const serverToolNames = (server.tools || []).map(
+              (tool) => `${server.tool_prefix || ''}${tool.name}`
+            );
+            return serverToolNames.length > 0
+              && serverToolNames.every((name) => explicitlySelectedTools.has(name));
+          })
+          .map((server) => server.id);
+        setMcpAllToolsServerIds([
+          ...new Set([
+            ...(found.mcp_all_tools_server_ids || []),
+            ...inferredLegacyAllServerIds,
+          ]),
+        ]);
         setSelectedKnowledgeBaseIds(found.knowledge_base_ids || []);
         setSelectedGraphKnowledgeBaseIds(found.graph_knowledge_base_ids || []);
         setSelectedSkillIds(found.skill_ids || []);
@@ -490,7 +508,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                   { key: 'children' as SectionKey, label: '子智能体', value: agent.children_count ?? 0, icon: <ApartmentOutlined /> },
                   { key: 'skills' as SectionKey, label: '技能', value: agent.skill_ids?.length ?? 0, icon: <ThunderboltOutlined /> },
                   { key: 'tools' as SectionKey, label: '工具', value: (agent.enabled_tools || []).filter((tool) => allTools.some((item) => item.category !== 'mcp' && item.name === tool)).length, icon: <ToolOutlined /> },
-                  { key: 'mcp' as SectionKey, label: 'MCP', value: agent.mcp_server_ids?.length ?? 0, icon: <DisconnectOutlined /> },
+                  { key: 'mcp' as SectionKey, label: 'MCP', value: agent.mcp_server_ids?.length ?? 0, icon: <ApiOutlined /> },
                   { key: 'knowledge' as SectionKey, label: '知识库', value: agent.knowledge_base_ids?.length ?? 0, icon: <DatabaseOutlined /> },
                   { key: 'graph-knowledge' as SectionKey, label: '知识图谱', value: agent.graph_knowledge_base_ids?.length ?? 0, icon: <ApartmentOutlined /> },
                 ].map((item) => (
@@ -704,7 +722,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
     const sectionLabels: Record<AdminSectionKey, { icon: React.ReactNode; label: string; description: string }> = {
       prompt: { icon: <FileTextOutlined />, label: '系统提示词', description: '模型与对话行为' },
       tools: { icon: <ToolOutlined />, label: '工具配置', description: '可调用的本地工具' },
-      mcp: { icon: <DisconnectOutlined />, label: 'MCP 服务', description: '外部服务工具' },
+      mcp: { icon: <ApiOutlined />, label: 'MCP 服务', description: '外部服务工具' },
       knowledge: { icon: <DatabaseOutlined />, label: '知识库', description: '检索增强内容' },
       'graph-knowledge': { icon: <ApartmentOutlined />, label: '图谱知识库', description: '关系与实体检索' },
       skills: { icon: <ThunderboltOutlined />, label: '技能配置', description: '可复用的能力流程' },
@@ -1494,7 +1512,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
 
               {mcpServers.length === 0 ? (
                 <div className="py-6 text-center">
-                  <DisconnectOutlined className="text-lg text-muted-foreground/40" />
+                  <ApiOutlined className="text-lg text-muted-foreground/40" />
                   <Text type="secondary" className="text-xs block mt-1">
                     暂无可用的 MCP 服务
                   </Text>
@@ -1518,18 +1536,24 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                     const serverToolNames = (server.tools || []).map(
                       (t) => `${server.tool_prefix || ''}${t.name}`
                     );
-                    const selectedCount = serverToolNames.filter((n) => enabledMcpTools.includes(n)).length;
-                    const allSelected = serverToolNames.length > 0 && selectedCount === serverToolNames.length;
+                    const followsAllTools = mcpAllToolsServerIds.includes(server.id);
+                    const selectedCount = followsAllTools
+                      ? serverToolNames.length
+                      : serverToolNames.filter((n) => enabledMcpTools.includes(n)).length;
+                    const allSelected = followsAllTools
+                      || (serverToolNames.length > 0 && selectedCount === serverToolNames.length);
                     const someSelected = selectedCount > 0 && !allSelected;
 
                     const toggleServerTools = () => {
                       if (allSelected) {
                         // Deselect all tools from this server
                         setEnabledMcpTools((prev) => prev.filter((n) => !serverToolNames.includes(n)));
+                        setMcpAllToolsServerIds((prev) => prev.filter((id) => id !== server.id));
                       } else {
-                        // Select all tools from this server
+                        // Follow the complete catalogue, including tools added upstream later.
                         const newTools = serverToolNames.filter((n) => !enabledMcpTools.includes(n));
-                        setEnabledMcpTools((prev) => [...prev, ...newTools]);
+                        setEnabledMcpTools((prev) => [...new Set([...prev, ...newTools])]);
+                        setMcpAllToolsServerIds((prev) => [...new Set([...prev, server.id])]);
                       }
                     };
 
@@ -1565,6 +1589,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                             <Text type="secondary" className="text-[10px] block mt-0.5 truncate">
                               {server.transport_type} · {server.tools_count} 个工具
                               {selectedCount > 0 && ` · 已选 ${selectedCount}`}
+                              {followsAllTools && ' · 自动包含新增工具'}
                             </Text>
                           </div>
                         </div>
@@ -1574,16 +1599,30 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                           <div className="border-t border-border/30 px-2 py-1.5 space-y-1">
                             {server.tools.map((tool) => {
                               const fullName = `${server.tool_prefix || ''}${tool.name}`;
-                              const isChecked = enabledMcpTools.includes(fullName);
+                              const isChecked = followsAllTools || enabledMcpTools.includes(fullName);
                               return (
                                 <div key={fullName} className="flex items-start gap-2 px-1">
                                   <Checkbox
                                     checked={isChecked}
                                     onChange={(e) => {
                                       if (e.target.checked) {
-                                        setEnabledMcpTools((prev) => [...prev, fullName]);
+                                        const nextServerTools = new Set([
+                                          ...enabledMcpTools.filter((name) => serverToolNames.includes(name)),
+                                          fullName,
+                                        ]);
+                                        setEnabledMcpTools((prev) => [...new Set([...prev, fullName])]);
+                                        if (serverToolNames.every((name) => nextServerTools.has(name))) {
+                                          setMcpAllToolsServerIds((prev) => [...new Set([...prev, server.id])]);
+                                        }
                                       } else {
-                                        setEnabledMcpTools((prev) => prev.filter((n) => n !== fullName));
+                                        setMcpAllToolsServerIds((prev) => prev.filter((id) => id !== server.id));
+                                        setEnabledMcpTools((prev) => followsAllTools
+                                          ? [
+                                              ...prev.filter((name) => !serverToolNames.includes(name)),
+                                              ...serverToolNames.filter((name) => name !== fullName),
+                                            ]
+                                          : prev.filter((name) => name !== fullName)
+                                        );
                                       }
                                     }}
                                   />
@@ -1616,12 +1655,14 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                       const serverToolNames = (server.tools || []).map(
                         (t) => `${server.tool_prefix || ''}${t.name}`
                       );
-                      return serverToolNames.some((n) => enabledMcpTools.includes(n));
+                      return mcpAllToolsServerIds.includes(server.id)
+                        || serverToolNames.some((n) => enabledMcpTools.includes(n));
                     })
                     .map((s) => s.id);
                   saveSection('mcp', {
                     enabled_tools: [...enabledTools, ...enabledMcpTools],
                     mcp_server_ids: selectedServerIds,
+                    mcp_all_tools_server_ids: mcpAllToolsServerIds.filter((id) => selectedServerIds.includes(id)),
                   });
                 }}
               />
@@ -2542,7 +2583,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground',
             )}
           >
-            <DisconnectOutlined />
+            <ApiOutlined />
           </button>
         </Tooltip>
 

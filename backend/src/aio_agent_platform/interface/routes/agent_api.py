@@ -35,6 +35,7 @@ from aio_agent_platform.db.models import Agent, AgentVersion, KnowledgeBase, LLM
 from aio_agent_platform.llm import LLMMessage, create_provider
 from aio_agent_platform.memory.service import MemoryService
 from aio_agent_platform.tools.executor import ToolExecutor
+from aio_agent_platform.tools.mcp.selection import is_mcp_tool_allowed
 
 logger = structlog.get_logger()
 
@@ -239,15 +240,22 @@ def _filter_tools_for_agent(tool_executor: ToolExecutor, config_snapshot: dict) 
     mcp_manager = tool_executor.mcp_manager
     if mcp_manager:
         mcp_server_ids = config_snapshot.get("mcp_server_ids", [])
-        allowed_server_ids = {str(sid) for sid in mcp_server_ids} if mcp_server_ids else None
+        allowed_server_ids = {str(sid) for sid in mcp_server_ids}
         enabled_set = set(enabled_tools) if enabled_tools else None
+        all_tools_server_ids = {
+            str(sid)
+            for sid in config_snapshot.get("mcp_all_tools_server_ids", [])
+        }
 
         for full_name, tool_info in mcp_manager.list_all_tools():
             server_id = mcp_manager._tool_to_server.get(full_name)
-            if allowed_server_ids is not None and server_id is not None:
-                if str(server_id) not in allowed_server_ids:
-                    continue
-            if enabled_set is not None and full_name not in enabled_set:
+            if not is_mcp_tool_allowed(
+                server_id=server_id,
+                full_name=full_name,
+                allowed_server_ids=allowed_server_ids,
+                enabled_tools=enabled_set,
+                all_tools_server_ids=all_tools_server_ids,
+            ):
                 continue
             tools_schema.append(tool_info.to_openai_tool(
                 prefix=full_name[:len(full_name) - len(tool_info.name)]
@@ -263,6 +271,9 @@ def _build_config_snapshot(agent: Agent) -> dict:
         "system_prompt": agent.system_prompt,
         "enabled_tools": agent.enabled_tools or [],
         "mcp_server_ids": [str(sid) for sid in (agent.mcp_server_ids or [])],
+        "mcp_all_tools_server_ids": [
+            str(sid) for sid in (agent.mcp_all_tools_server_ids or [])
+        ],
         "skill_ids": [str(s.id) for s in agent.skills] if agent.skills else [],
         "knowledge_base_ids": [str(kb.id) for kb in agent.knowledge_bases] if agent.knowledge_bases else [],
         "child_ids": [str(c.id) for c in agent.children] if agent.children else [],
