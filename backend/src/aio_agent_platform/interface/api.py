@@ -89,14 +89,16 @@ async def lifespan(app: FastAPI):
         # 远程库 create_all 全量建表较慢，放宽到 10 分钟；连接本身另有 8s connect
         # 超时，外部 DB 不可达时仍会快速失败，不会因本超时无限等待
         await asyncio.wait_for(init_db(), timeout=600)
-    except TimeoutError:
+    except TimeoutError as e:
         import structlog
 
-        structlog.get_logger().warning("init_db timeout (database unreachable?)")
+        structlog.get_logger().exception("init_db timeout (database unreachable?)")
+        raise RuntimeError("数据库初始化或自动迁移超时，服务停止启动") from e
     except Exception as e:
         import structlog
 
-        structlog.get_logger().warning("init_db failed (may already exist)", error=str(e))
+        structlog.get_logger().exception("init_db failed", error=str(e))
+        raise
     _mark("init_db")
 
     # 2. Object storage + workspace storage

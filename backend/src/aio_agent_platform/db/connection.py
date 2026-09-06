@@ -1,7 +1,9 @@
 """Database connection and session management."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextvars import ContextVar
+from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
@@ -147,35 +149,72 @@ async def _stamp_alembic_head(conn, heads: set[str]) -> None:
         )
 
 
+def _run_alembic_upgrade() -> None:
+    """Run Alembic synchronously; callers execute this in a worker thread."""
+    from alembic.config import Config
+
+    from alembic import command
+
+    backend_dir = Path(__file__).resolve().parents[3]
+    config = Config(str(backend_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_dir / "alembic"))
+    command.upgrade(config, "head")
+
+
+async def _auto_upgrade_schema(engine: AsyncEngine, heads: set[str]) -> None:
+    """Serialize startup migrations across app instances and upgrade to head."""
+    import structlog
+
+    log = structlog.get_logger()
+    advisory_lock_id = 1_091_575_364  # Stable application-level migration lock.
+
+    async with engine.connect() as lock_conn:
+        await lock_conn.execute(
+            text("SELECT pg_advisory_lock(:lock_id)"),
+            {"lock_id": advisory_lock_id},
+        )
+        try:
+            # Another instance may have completed the migration while this one waited.
+            if await _db_schema_state(lock_conn, heads) == "current":
+                return
+            log.warning("db_schema_outdated: automatically upgrading to alembic head")
+            await asyncio.to_thread(_run_alembic_upgrade)
+            if await _db_schema_state(lock_conn, heads) != "current":
+                raise RuntimeError("数据库自动迁移完成后版本仍未到达 Alembic head")
+            log.info("db_schema_auto_upgrade_complete", heads=sorted(heads))
+        finally:
+            await lock_conn.execute(
+                text("SELECT pg_advisory_unlock(:lock_id)"),
+                {"lock_id": advisory_lock_id},
+            )
+
+
 async def init_db() -> None:
     """Initialize database: create extensions and all tables (dev bootstrap)."""
     import structlog
 
     log = structlog.get_logger()
     engine = get_engine()
-    async with engine.begin() as conn:
-        # 远程库上 create_all(checkfirst) 每张表一次往返(53 张)+ 60 余条
-        # 幂等手动迁移,共 110+ 次往返,启动多花 10s 级。已初始化的库直接跳过;
-        # 后续 schema 变更走 alembic。全新部署时走完整 bootstrap 并盖章版本,
-        # 也可用 DATABASE_BOOTSTRAP_FORCE=true 强制执行。
-        heads = _local_alembic_heads()
-        if not settings.db.bootstrap_force:
+    # 远程库上 create_all(checkfirst) 每张表一次往返(53 张)+ 60 余条
+    # 幂等手动迁移,共 110+ 次往返,启动多花 10s 级。已初始化的库直接跳过;
+    # 已纳入 Alembic 的旧库在启动时自动升级。全新部署走完整 bootstrap 并盖章版本。
+    heads = _local_alembic_heads()
+    if not settings.db.bootstrap_force:
+        async with engine.connect() as conn:
             state = await _db_schema_state(conn, heads)
-            if state == "current":
-                return
-            if state == "behind":
-                # 启动时绝不自动迁移(可能是远程生产库),只告警
-                log.warning(
-                    "db_schema_outdated: run 'uv run alembic upgrade head'",
-                )
-                return
-            if state == "legacy":
-                log.warning(
-                    "db_schema_unstamped: 库由旧版 bootstrap 创建,无 alembic 版本记录;"
-                    "确认 schema 最新后请执行 'uv run alembic stamp head'",
-                )
-                return
+        if state == "current":
+            return
+        if state == "behind":
+            await _auto_upgrade_schema(engine, heads)
+            return
+        if state == "legacy":
+            log.warning(
+                "db_schema_unstamped: 库由旧版 bootstrap 创建,无 alembic 版本记录;"
+                "无法安全推断迁移起点,请先执行 'uv run alembic stamp head'",
+            )
+            return
 
+    async with engine.begin() as conn:
         # Create extensions
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pg_trgm"'))
@@ -248,6 +287,7 @@ async def _run_manual_migrations(conn) -> None:
            WHERE tenant_id IS NULL""",
         "ALTER TABLE agents ALTER COLUMN tenant_id SET NOT NULL",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'tenant'",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS mcp_all_tools_server_ids JSONB NOT NULL DEFAULT '[]'::jsonb",
         "CREATE INDEX IF NOT EXISTS idx_agents_tenant_visibility ON agents (tenant_id, visibility)",
         "CREATE INDEX IF NOT EXISTS idx_agents_creator ON agents (created_by)",
         "ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS tenant_id UUID",

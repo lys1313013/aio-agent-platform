@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import type { StreamingState } from '@/lib/types';
 
@@ -54,6 +54,12 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   /** 当前轮是否为斜杠命令（command_result 已落 system 消息，done 不再补 assistant 消息） */
   const gotCommandResultRef = useRef(false);
 
+  // 页面卸载时主动断开 fetch/SSE，避免后台的阻塞式 Redis XREAD 继续占用连接。
+  useEffect(() => () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+  }, []);
+
   // 回调走 ref，保持 handleEvent 引用稳定（SSE 回调在流存活期内持续触发）
   const onEventRef = useRef(options.onEvent);
   onEventRef.current = options.onEvent;
@@ -63,6 +69,9 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   onErrorRef.current = options.onError;
 
   const beginTurn = useCallback((sessionId: string, opts?: { flushOnDone?: boolean }) => {
+    // 同一页面开始新一轮前关闭旧传输，防止快速重连或切换会话留下并行 SSE。
+    abortRef.current?.abort();
+    abortRef.current = null;
     turnSessionIdRef.current = sessionId;
     flushOnDoneRef.current = opts?.flushOnDone ?? true;
     gotCommandResultRef.current = false;

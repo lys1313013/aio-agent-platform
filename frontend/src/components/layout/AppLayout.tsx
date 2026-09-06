@@ -165,9 +165,9 @@ export default function AppLayout() {
       key: 'resources',
       label: '资源与集成',
       items: [
-        { path: '/workspaces', icon: <FolderOpenOutlined />, label: '工作区文件' },
         ...(isAdmin
           ? [
+              { path: '/models', icon: <ApiOutlined />, label: '模型管理' },
               { path: '/channels', icon: <MessageOutlined />, label: '渠道管理' },
               {
                 label: '知识库',
@@ -182,6 +182,7 @@ export default function AppLayout() {
               { path: '/web-tools', icon: <SearchOutlined />, label: 'Web 工具' },
             ]
           : []),
+        { path: '/workspaces', icon: <FolderOpenOutlined />, label: '工作区文件' },
       ],
     },
     ...(isAdmin || isSuperAdmin
@@ -191,10 +192,7 @@ export default function AppLayout() {
             label: '系统管理',
             items: [
               ...(isAdmin
-                ? [
-                    { path: '/models', icon: <ApiOutlined />, label: '模型管理' },
-                    { path: '/system-config', icon: <SettingOutlined />, label: '系统配置' },
-                  ]
+                ? [{ path: '/system-config', icon: <SettingOutlined />, label: '系统配置' }]
                 : []),
               ...(isSuperAdmin
                 ? [
