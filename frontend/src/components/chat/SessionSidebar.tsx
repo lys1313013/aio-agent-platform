@@ -185,7 +185,8 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
     <div
       ref={sidebarRef}
       className={cn(
-        'flex flex-shrink-0 border-r border-border bg-card overflow-hidden transition-all duration-200 ease-in-out',
+        'flex flex-shrink-0 overflow-hidden transition-all duration-200 ease-in-out',
+        portal ? 'border-r border-border/50 bg-card/30' : 'border-r border-border bg-card',
         panelOpen
           // 小屏：抽屉式覆盖在聊天区之上，不挤压内容；sm 及以上恢复为并排布局
           ? 'absolute inset-y-0 left-0 z-20 w-[85vw] max-w-[340px] shadow-xl sm:static sm:z-auto sm:w-[340px] sm:max-w-none sm:shadow-none'
@@ -225,7 +226,7 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
         </Tooltip>
         )}
 
-        <Tooltip title="新对话" placement="right" mouseEnterDelay={0.5}>
+        {!portal && <Tooltip title="新对话" placement="right" mouseEnterDelay={0.5}>
           <button
             onClick={handleNewChat}
             disabled={creatingSession}
@@ -233,16 +234,16 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
           >
             {creatingSession ? <LoadingOutlined className="text-sm" spin /> : <PlusOutlined />}
           </button>
-        </Tooltip>
+        </Tooltip>}
 
-        <Tooltip title="刷新" placement="right" mouseEnterDelay={0.5}>
+        {!portal && <Tooltip title="刷新" placement="right" mouseEnterDelay={0.5}>
           <button
             onClick={() => refreshSessions(agentId || undefined)}
             className="flex items-center justify-center w-9 h-9 rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             <ReloadOutlined className="text-sm" />
           </button>
-        </Tooltip>
+        </Tooltip>}
       </div>
 
       {/* Inline panel */}

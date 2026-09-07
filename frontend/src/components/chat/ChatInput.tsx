@@ -389,7 +389,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
 
   return (
     <div
-      className={`${simple ? 'border-t border-border/60 bg-muted/10 p-2.5' : 'bg-muted/20 p-3'} ${isDragging ? 'bg-primary/5' : ''}`}
+      className={`${simple ? 'border-t border-border/60 bg-muted/10 p-2.5' : portal ? 'bg-muted/10 px-4 pb-5 pt-3 sm:px-7 sm:pb-7' : 'bg-muted/20 p-3'} ${isDragging ? 'bg-primary/5' : ''}`}
       onDragOver={simple ? undefined : handleDragOver}
       onDragLeave={simple ? undefined : handleDragLeave}
       onDrop={simple ? undefined : handleDrop}
@@ -568,7 +568,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
         onSubmit={handleSubmit}
         className={simple
           ? 'relative mx-auto flex max-w-none items-end gap-2'
-          : 'relative mx-auto flex max-w-3xl flex-col rounded-2xl border border-border/80 bg-background p-2 shadow-sm transition focus-within:border-primary/35 focus-within:shadow-[0_4px_20px_rgba(0,0,0,0.06)]'}
+          : `relative mx-auto flex ${portal ? 'max-w-4xl border-border/60 bg-card/80 shadow-[0_8px_30px_rgba(15,23,42,0.06)]' : 'max-w-3xl border-border/80 bg-background shadow-sm'} flex-col rounded-2xl border p-2 transition focus-within:border-primary/35 focus-within:shadow-[0_8px_30px_rgba(15,23,42,0.08)]`}
       >
         {commandMenuOpen && commandItems.length > 0 && (
           <CommandMenu

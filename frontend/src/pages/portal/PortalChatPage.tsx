@@ -7,8 +7,8 @@ import { useChatStream } from '@/hooks/useChatStream';
 import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import SessionSidebar from '@/components/chat/SessionSidebar';
-import { Alert, App, Typography, Spin, Button, Skeleton } from 'antd';
-import { PlusOutlined, DeleteOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import { Alert, App, Typography, Spin, Button, Skeleton, Tooltip } from 'antd';
+import { PlusOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import type { PortalAgent, ChatAttachment } from '@/lib/types';
 import { getAgentIcon } from '@/lib/agent-icons';
 
@@ -21,8 +21,8 @@ const { Text } = Typography;
 export default function PortalChatPage() {
   const { agentId, sessionId: urlSessionId } = useParams<{ agentId: string; sessionId?: string }>();
   const navigate = useNavigate();
-  const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession, deleteSession, loadSessions, refreshSessions, setActiveSession } = useChatStore();
-  const { message, modal } = App.useApp();
+  const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession, loadSessions, refreshSessions, setActiveSession } = useChatStore();
+  const { message } = App.useApp();
   const [creatingSession, setCreatingSession] = useState(false);
   const [agent, setAgent] = useState<PortalAgent | null>(null);
   const [agentLoading, setAgentLoading] = useState(true);
@@ -145,23 +145,6 @@ export default function PortalChatPage() {
     }
   };
 
-  const handleDeleteChat = () => {
-    const sid = activeSessionId;
-    if (!sid) return;
-    interrupt();
-    modal.confirm({
-      title: '删除对话？',
-      content: '此操作无法撤销。',
-      okText: '删除',
-      okType: 'danger',
-      cancelText: '取消',
-      onOk: async () => {
-        await deleteSession(sid);
-        navigate(`/portal/agents/${agentId}/chat`, { replace: true });
-      },
-    });
-  };
-
   const handleEditResend = (content: string) => {
     if (streaming.isStreaming) {
       enqueue(content, []);
@@ -184,12 +167,12 @@ export default function PortalChatPage() {
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Agent header */}
       {agentLoading && (
-        <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-card/50">
+        <div className="flex items-center gap-2 border-b border-border/50 bg-card/50 px-5 py-3 sm:px-7">
           <Skeleton.Input active size="small" style={{ width: 180 }} />
         </div>
       )}
       {!agentLoading && agent && (
-        <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-card/50">
+        <div className="flex items-center gap-2 border-b border-border/50 bg-card/50 px-5 py-3 sm:px-7">
           <Button
             type="text"
             size="small"
@@ -205,23 +188,18 @@ export default function PortalChatPage() {
               {agent.description}
             </Text>
           )}
-          <Button
-            danger
-            icon={<DeleteOutlined />}
-            onClick={handleDeleteChat}
-            disabled={!activeSessionId}
-            className="ml-auto"
-          >
-            <span className="hidden sm:inline">删除对话</span>
-          </Button>
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={handleNewChat}
-            loading={creatingSession}
-          >
-            <span className="hidden sm:inline">新对话</span>
-          </Button>
+          <div className="ml-auto flex items-center gap-1">
+            <Tooltip title="新对话">
+              <Button
+                type="primary"
+                shape="circle"
+                icon={<PlusOutlined />}
+                onClick={handleNewChat}
+                loading={creatingSession}
+                aria-label="新对话"
+              />
+            </Tooltip>
+          </div>
         </div>
       )}
 
@@ -239,7 +217,6 @@ export default function PortalChatPage() {
               messages={currentMessages}
               streaming={streaming}
               agent={agent}
-              onNewChat={handleNewChat}
               onEditResend={handleEditResend}
             />
           )}

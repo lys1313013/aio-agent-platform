@@ -58,7 +58,7 @@ export default function PortalLayout() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
-      <header className="flex h-14 flex-shrink-0 items-center justify-between border-b border-border bg-card px-4 sm:px-5">
+      <header className="relative z-10 flex h-14 flex-shrink-0 items-center justify-between border-b border-border/40 bg-card/90 px-4 shadow-[0_1px_12px_rgba(15,23,42,0.04)] backdrop-blur-sm sm:px-6">
         <button
           onClick={() => navigate('/portal')}
           className="flex items-center gap-2.5 cursor-pointer"
