@@ -1813,6 +1813,7 @@ export const agentsApi = {
     model_id?: string | null;
     enabled_tools?: string[];
     mcp_server_ids?: string[];
+    mcp_all_tools_server_ids?: string[];
     skill_ids?: string[];
     visibility?: 'tenant' | 'private';
   }) {
@@ -1830,6 +1831,7 @@ export const agentsApi = {
     model_id?: string | null;
     enabled_tools?: string[];
     mcp_server_ids?: string[];
+    mcp_all_tools_server_ids?: string[];
     skill_ids?: string[];
     enable_memory_extraction?: boolean;
     enable_retry?: boolean;

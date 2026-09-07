@@ -52,6 +52,7 @@ class AgentOut(BaseModel):
     model_name: str | None = None
     enabled_tools: list[str] = []
     mcp_server_ids: list[str] = []
+    mcp_all_tools_server_ids: list[str] = []
     temperature: float | None = None
     max_iterations: int | None = None
     welcome_message: str | None = None
@@ -83,6 +84,7 @@ class AgentCreate(BaseModel):
     model_id: UUID | None = None
     enabled_tools: list[str] = Field(default_factory=list)
     mcp_server_ids: list[str] = Field(default_factory=list)
+    mcp_all_tools_server_ids: list[str] = Field(default_factory=list)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_iterations: int | None = Field(default=None, ge=1, le=500)
     welcome_message: str | None = None
@@ -105,6 +107,7 @@ class AgentUpdate(BaseModel):
     model_id: UUID | None = None
     enabled_tools: list[str] | None = None
     mcp_server_ids: list[str] | None = None
+    mcp_all_tools_server_ids: list[str] | None = None
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_iterations: int | None = Field(default=None, ge=1, le=500)
     welcome_message: str | None = None
@@ -171,6 +174,7 @@ async def admin_create_agent(
         model_id=req.model_id,
         enabled_tools=req.enabled_tools,
         mcp_server_ids=req.mcp_server_ids,
+        mcp_all_tools_server_ids=req.mcp_all_tools_server_ids,
         temperature=req.temperature,
         max_iterations=req.max_iterations,
         welcome_message=req.welcome_message,
@@ -188,6 +192,10 @@ async def admin_create_agent(
     # Validate MCP server bindings belong to the same tenant
     if req.mcp_server_ids:
         await _validate_mcp_servers(db, user, req.mcp_server_ids)
+    if req.mcp_all_tools_server_ids:
+        await _validate_mcp_servers(db, user, req.mcp_all_tools_server_ids)
+        if not set(req.mcp_all_tools_server_ids).issubset(req.mcp_server_ids):
+            raise HTTPException(status_code=422, detail="全选 MCP 服务必须已绑定到智能体")
 
     # Bind skills
     if req.skill_ids:
@@ -281,6 +289,20 @@ async def admin_update_agent(
         if req.mcp_server_ids:
             await _validate_mcp_servers(db, user, req.mcp_server_ids)
         agent.mcp_server_ids = req.mcp_server_ids if req.mcp_server_ids is not None else []
+        if not req.is_set("mcp_all_tools_server_ids"):
+            bound_ids = set(agent.mcp_server_ids)
+            agent.mcp_all_tools_server_ids = [
+                server_id
+                for server_id in (agent.mcp_all_tools_server_ids or [])
+                if server_id in bound_ids
+            ]
+    if req.is_set("mcp_all_tools_server_ids"):
+        all_tools_server_ids = req.mcp_all_tools_server_ids or []
+        if all_tools_server_ids:
+            await _validate_mcp_servers(db, user, all_tools_server_ids)
+        if not set(all_tools_server_ids).issubset(agent.mcp_server_ids or []):
+            raise HTTPException(status_code=422, detail="全选 MCP 服务必须已绑定到智能体")
+        agent.mcp_all_tools_server_ids = all_tools_server_ids
     if req.is_set("temperature"):
         agent.temperature = req.temperature
     if req.is_set("max_iterations"):
@@ -745,6 +767,7 @@ def _agent_to_dict(agent: Agent, include_prompt: bool = True, user=None) -> dict
         "model_name": agent.model.name if agent.model else None,
         "enabled_tools": agent.enabled_tools or [],
         "mcp_server_ids": agent.mcp_server_ids or [],
+        "mcp_all_tools_server_ids": agent.mcp_all_tools_server_ids or [],
         "temperature": agent.temperature,
         "max_iterations": agent.max_iterations,
         "welcome_message": agent.welcome_message,

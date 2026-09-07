@@ -58,8 +58,8 @@ class TaskEventBroker:
         client = aioredis.Redis.from_url(settings.redis.url, decode_responses=True)
         try:
             while True:
+                pubsub = client.pubsub()
                 try:
-                    pubsub = client.pubsub()
                     await pubsub.subscribe(_EVENT_CHANNEL)
                     async for message in pubsub.listen():
                         if message["type"] != "message":
@@ -69,7 +69,14 @@ class TaskEventBroker:
                     raise
                 except Exception:
                     logger.warning("task_event_listen_failed", exc_info=True)
-                    await asyncio.sleep(_RECONNECT_DELAY_SECONDS)
+                finally:
+                    # PubSub 会独占一条池连接；异常重连前必须显式归还，否则每次
+                    # 断线都会遗留一条 in-use connection，最终耗尽默认的 100 条。
+                    try:
+                        await pubsub.aclose()
+                    except Exception:
+                        logger.warning("task_event_pubsub_close_failed", exc_info=True)
+                await asyncio.sleep(_RECONNECT_DELAY_SECONDS)
         finally:
             await client.aclose()
 
