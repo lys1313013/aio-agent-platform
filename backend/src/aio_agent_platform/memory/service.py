@@ -52,11 +52,13 @@ async def resolve_tenant_id(db: AsyncSession, user_id: UUID) -> UUID:
     return tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
 
 
-async def create_default_provider_for_user(user_id: UUID, temperature: float = 0.3):
+async def create_default_provider_for_user(user_id: UUID, temperature: float | None = None):
     """Resolve the tenant's default LLM model for a user and build a provider.
 
     Returns None when the user or an active default model is missing.
     Creates its own short-lived DB session — safe for background tasks.
+
+    temperature 默认不传：部分模型（如 k3）只允许默认值，硬编码会被网关 400 拒绝。
     """
     from sqlalchemy.orm import selectinload
 
@@ -460,10 +462,10 @@ class MemoryService:
             template = _env.get_template("memory_writer.j2")
             prompt_text = template.render(messages=messages)
 
-            # 2. Call LLM (non-streaming, low temperature for structured extraction)
+            # 2. Call LLM (non-streaming; temperature 不传，避免网关拒绝)
             from aio_agent_platform.llm import LLMMessage
 
-            provider = await create_default_provider_for_user(user_id, temperature=0.3)
+            provider = await create_default_provider_for_user(user_id)
             if provider is None:
                 logger.warning("没有可用的默认模型，跳过记忆提取")
                 return []

@@ -84,7 +84,6 @@ async def _get_default_provider(tenant_id: UUID):
             model=model.model_name,
             base_url=model.provider.base_url,
             api_key=model.provider.api_key_encrypted,
-            temperature=0.3,
         )
         return provider, LLMMessage
     except Exception:

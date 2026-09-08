@@ -219,7 +219,7 @@ class DailyMemoryService:
         """Call the writer LLM and parse its JSON output. None = nothing usable."""
         from aio_agent_platform.llm import LLMMessage
 
-        provider = await create_default_provider_for_user(user_id, temperature=0.3)
+        provider = await create_default_provider_for_user(user_id)
         if provider is None:
             logger.warning("没有可用的默认模型,跳过每日记忆生成")
             return None

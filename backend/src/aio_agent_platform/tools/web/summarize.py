@@ -50,13 +50,12 @@ async def summarize_content(text: str, max_chars: int, tenant_id: UUID) -> str |
             model=model.model_name,
             base_url=model.provider.base_url,
             api_key=model.provider.api_key_encrypted,
-            temperature=0.3,
         )
         # Keep the prompt itself within a sane size — summarize in one shot.
+        # temperature 不显式传入：部分模型（如 k3）只允许默认值，硬编码会被网关 400 拒绝
         prompt = _PROMPT.format(max_chars=max_chars, text=text[:60000])
         response = await provider.complete(
             messages=[LLMMessage(role="user", content=prompt)],
-            temperature=0.3,
             max_tokens=max_chars * 2,
         )
         summary = response.content.strip()

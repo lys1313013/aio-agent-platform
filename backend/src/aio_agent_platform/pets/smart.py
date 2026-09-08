@@ -110,7 +110,6 @@ async def resolve_bubble_provider(db: AsyncSession, agent):
         model=model.model_name,
         base_url=model.provider.base_url,
         api_key=model.provider.api_key_encrypted,
-        temperature=0.8,
         enable_retry=True,
     )
     return provider, model.model_name
@@ -190,7 +189,6 @@ async def stream_bubble(
                 LLMMessage(role="system", content=prompt),
                 LLMMessage(role="user", content="主人戳了你一下，回应一句话并挑个动作"),
             ],
-            temperature=0.8,
             max_tokens=80,
         ):
             if chunk.type == "text_delta" and chunk.content:

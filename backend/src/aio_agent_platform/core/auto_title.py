@@ -135,12 +135,11 @@ async def generate_session_title(message: str, tenant_id: UUID) -> str:
             model=model.model_name,
             base_url=model.provider.base_url,
             api_key=model.provider.api_key_encrypted,
-            temperature=0.3,
         )
         prompt = config.prompt.replace("{message}", message[:4000])
+        # temperature 不显式传入：部分模型（如 k3）只允许默认值，硬编码会被网关 400 拒绝
         response = await provider.complete(
             messages=[LLMMessage(role="user", content=prompt)],
-            temperature=0.3,
             max_tokens=100,
         )
     except Exception:
