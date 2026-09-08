@@ -115,6 +115,35 @@ class ChatResponse(BaseModel):
     tool_calls_count: int = 0
     done: bool = True
     session_title: str | None = None
+    file_changes: list[dict] = Field(default_factory=list)
+    reasoning: list[dict] = Field(default_factory=list)
+
+
+def _append_reasoning_chunk(chunks: list[dict], content: str) -> None:
+    """Keep each ReAct reasoning step independently renderable after reload."""
+    if content:
+        chunks.append({"id": f"thinking-{len(chunks)}", "content": content})
+
+
+def _merge_file_changes(current: list[dict], incoming: list[dict]) -> list[dict]:
+    """Collapse repeated changes to the same path within one assistant turn."""
+    merged = {item["path"]: item for item in current}
+    for item in incoming:
+        path = item.get("path")
+        if not path:
+            continue
+        previous = merged.get(path)
+        if previous is None:
+            merged[path] = item
+        elif previous["action"] == "created" and item["action"] == "deleted":
+            merged.pop(path)
+        elif previous["action"] == "created":
+            merged[path] = {**item, "action": "created"}
+        elif previous["action"] == "deleted" and item["action"] == "created":
+            merged[path] = {**item, "action": "modified"}
+        else:
+            merged[path] = item
+    return list(merged.values())
 
 
 def _format_page_context_section(page_context: dict) -> str:
@@ -620,6 +649,8 @@ async def chat(
     final_output = ""
     tool_calls_list: list[dict] = []
     tool_results_map: dict[str, dict] = {}
+    file_changes_list: list[dict] = []
+    reasoning_chunks: list[dict] = []
     incremental_msg_id: UUID | None = None
 
     async def _save_tool_calls_incremental() -> None:
@@ -632,6 +663,7 @@ async def chat(
                 role="assistant",
                 content="",
                 tool_calls=list(tool_calls_list),
+                reasoning=list(reasoning_chunks) or None,
             )
             db.add(inc_msg)
             await db.flush()
@@ -640,7 +672,10 @@ async def chat(
             await db.execute(
                 sql_update(Message)
                 .where(Message.id == incremental_msg_id)
-                .values(tool_calls=list(tool_calls_list))
+                .values(
+                    tool_calls=list(tool_calls_list),
+                    reasoning=list(reasoning_chunks) or None,
+                )
             )
         await db.commit()
 
@@ -650,7 +685,12 @@ async def chat(
         if isinstance(event, AgentStep) and event.done:
             final_output = event.final_output
         elif isinstance(event, str):
-            if event.startswith("tool_call:"):
+            if event.startswith("reasoning:"):
+                _append_reasoning_chunk(
+                    reasoning_chunks,
+                    event[len("reasoning:"):],
+                )
+            elif event.startswith("tool_call:"):
                 parts = event.split(":", 3)
                 tc_id = parts[1] if len(parts) > 1 else ""
                 tc_name = parts[2] if len(parts) > 2 else ""
@@ -677,6 +717,9 @@ async def chat(
                     if tc["id"] in tool_results_map:
                         tc["result"] = tool_results_map[tc["id"]]
                 await _save_tool_calls_incremental()
+            elif event.startswith("file_changes:"):
+                incoming = json.loads(event[len("file_changes:"):])
+                file_changes_list[:] = _merge_file_changes(file_changes_list, incoming)
 
     try:
         async for event in agent_loop.run(
@@ -711,6 +754,8 @@ async def chat(
             .values(
                 content=final_output,
                 tool_calls=tool_calls_list if tool_calls_list else None,
+                file_changes=file_changes_list or None,
+                reasoning=reasoning_chunks or None,
             )
         )
         await db.flush()
@@ -722,6 +767,8 @@ async def chat(
             role="assistant",
             content=final_output,
             tool_calls=tool_calls_list if tool_calls_list else None,
+            file_changes=file_changes_list or None,
+            reasoning=reasoning_chunks or None,
         )
         db.add(assistant_msg)
         await db.flush()
@@ -756,6 +803,8 @@ async def chat(
         content=final_output,
         tool_calls_count=len(tool_calls_list),
         session_title=session_title,
+        file_changes=file_changes_list,
+        reasoning=reasoning_chunks,
     )
 
 
@@ -1169,6 +1218,8 @@ async def chat_stream(
                 saved_flag = {"done": False}  # guards against double-save on rescue
                 incremental_msg_id: UUID | None = None  # track message for incremental updates
                 tool_results_map: dict[str, dict] = {}  # tool_call_id -> result info
+                file_changes_list: list[dict] = []
+                reasoning_chunks: list[dict] = []
                 # Track delegation details for persistence
                 delegations_map: dict[str, dict] = {}  # tool_call_id -> delegation data
                 # Track confirmation cards (AskUserQuestion) in arrival order for persistence
@@ -1286,7 +1337,11 @@ async def chat_stream(
                         return  # already incrementally persisted in the loop
                     _merge_tool_metadata()
                     await _persist_assistant_message(
-                        session_id, user.id, final_output, tool_calls_list,
+                        session_id,
+                        user.id,
+                        final_output,
+                        tool_calls_list,
+                        reasoning_chunks,
                     )
 
                 async for event in agent_loop.run(
@@ -1335,6 +1390,7 @@ async def chat_stream(
                         elif event.startswith("reasoning:"):
                             # Bulk reasoning (thinking before tool calls)
                             content = event[len("reasoning:"):]
+                            _append_reasoning_chunk(reasoning_chunks, content)
                             logger.debug(
                                 "stream_reasoning",
                                 session_id=str(session_id),
@@ -1417,6 +1473,7 @@ async def chat_stream(
                                     role="assistant",
                                     content="",
                                     tool_calls=list(tool_calls_list),
+                                    reasoning=list(reasoning_chunks) or None,
                                 )
                                 gen_db.add(inc_msg)
                                 await gen_db.flush()
@@ -1425,9 +1482,27 @@ async def chat_stream(
                                 await gen_db.execute(
                                     sql_update(Message)
                                     .where(Message.id == incremental_msg_id)
-                                    .values(tool_calls=list(tool_calls_list))
+                                    .values(
+                                        tool_calls=list(tool_calls_list),
+                                        reasoning=list(reasoning_chunks) or None,
+                                    )
                                 )
                             await gen_db.commit()
+                        elif event.startswith("file_changes:"):
+                            try:
+                                incoming = json.loads(event[len("file_changes:"):])
+                            except json.JSONDecodeError:
+                                logger.warning("stream_file_changes_invalid", event=event[:500])
+                                continue
+                            file_changes_list[:] = _merge_file_changes(file_changes_list, incoming)
+                            yield _sse_event({"type": "file_changes", "file_changes": incoming})
+                            if incremental_msg_id is not None:
+                                await gen_db.execute(
+                                    sql_update(Message)
+                                    .where(Message.id == incremental_msg_id)
+                                    .values(file_changes=file_changes_list or None)
+                                )
+                                await gen_db.commit()
                     elif isinstance(event, AgentStep):
                         iteration_count += 1
                         if event.done:
@@ -1476,6 +1551,8 @@ async def chat_stream(
                         .values(
                             content=final_output,
                             tool_calls=tool_calls_list if tool_calls_list else None,
+                            file_changes=file_changes_list or None,
+                            reasoning=reasoning_chunks or None,
                         )
                     )
                     await gen_db.commit()
@@ -1487,6 +1564,8 @@ async def chat_stream(
                         role="assistant",
                         content=final_output,
                         tool_calls=tool_calls_list if tool_calls_list else None,
+                        file_changes=file_changes_list or None,
+                        reasoning=reasoning_chunks or None,
                     )
                     gen_db.add(assistant_msg)
                     await gen_db.commit()
@@ -1532,6 +1611,8 @@ async def chat_stream(
                     "message_id": msg_id,
                     "content": final_output,
                     "tool_calls": tool_calls_list,
+                    "file_changes": file_changes_list,
+                    "reasoning": reasoning_chunks,
                 })
 
                 # Auto session title (first message only) — task started with the request
@@ -1779,6 +1860,7 @@ async def chat_websocket(
                 # Run agent loop, streaming events via WebSocket
                 final_output = ""
                 tool_calls_list: list[dict] = []
+                reasoning_chunks: list[dict] = []
                 event_count = 0
 
                 try:
@@ -1791,11 +1873,13 @@ async def chat_websocket(
                     ):
                         event_count += 1
                         if isinstance(event, str):
-                            if event.startswith("thinking:"):
+                            if event.startswith("reasoning:"):
+                                content = event[len("reasoning:") :]
+                                _append_reasoning_chunk(reasoning_chunks, content)
                                 await websocket.send_json(
                                     {
                                         "type": "thinking",
-                                        "content": event[len("thinking:") :],
+                                        "content": content,
                                     }
                                 )
                             elif event.startswith("tool_result:"):
@@ -1852,6 +1936,7 @@ async def chat_websocket(
                     role="assistant",
                     content=final_output,
                     tool_calls=tool_calls_list if tool_calls_list else None,
+                    reasoning=reasoning_chunks or None,
                 )
                 db.add(assistant_msg)
                 await db.commit()

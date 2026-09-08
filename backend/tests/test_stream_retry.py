@@ -1,10 +1,11 @@
 """Tests for mid-stream disconnect retry in AgentLoop.
 
 Covers the rule: retry only when the interrupted iteration produced no
-content yet (zero text chunks AND zero pending tool calls); if anything
+content yet (zero text chunks, reasoning chunks, AND pending tool calls); if anything
 was already streamed, the error propagates to avoid duplicate client output.
 """
 
+import asyncio
 import uuid
 from unittest.mock import MagicMock
 
@@ -53,6 +54,10 @@ def _text_chunk(content: str) -> LLMChunk:
     return LLMChunk(type="text_delta", content=content)
 
 
+def _reasoning_chunk(content: str) -> LLMChunk:
+    return LLMChunk(type="reasoning_delta", content=content)
+
+
 def _done_chunk() -> LLMChunk:
     return LLMChunk(
         type="done",
@@ -74,6 +79,52 @@ async def _collect(loop: AgentLoop):
 
 
 class TestStreamDisconnectRetry:
+    @pytest.mark.asyncio
+    async def test_reasoning_is_emitted_for_direct_answer(self):
+        loop, _calls = _make_loop([
+            [_reasoning_chunk("分析过程"), _text_chunk("最终答案"), _done_chunk()],
+        ])
+
+        events = await _collect(loop)
+
+        assert "reasoning:分析过程" in events
+        assert "text_delta:最终答案" in events
+        assert events[-1].final_output == "最终答案"
+
+    @pytest.mark.asyncio
+    async def test_text_deltas_are_forwarded_before_provider_finishes(self):
+        provider = MagicMock()
+        provider.model = "test-model"
+        release_stream = asyncio.Event()
+
+        async def stream(messages, tools=None):
+            yield _text_chunk("第一段")
+            await release_stream.wait()
+            yield _text_chunk("第二段")
+            yield _done_chunk()
+
+        provider.stream = stream
+        loop = AgentLoop(
+            provider=provider,
+            tool_executor=MagicMock(),
+            system_prompt="test",
+            max_iterations=5,
+        )
+        iterator = loop.run(
+            user_input="hi",
+            user_id=uuid.uuid4(),
+            session_id=uuid.uuid4(),
+            conversation_history=[],
+            tools=[],
+        )
+
+        first_event = await anext(iterator)
+        assert first_event == "text_delta:第一段"
+
+        release_stream.set()
+        remaining = [event async for event in iterator]
+        assert "text_delta:第二段" in remaining
+
     @pytest.mark.asyncio
     async def test_zero_output_disconnect_retries_and_succeeds(self, monkeypatch):
         """First stream raises before any chunk; retry succeeds, content intact."""

@@ -31,6 +31,27 @@ def test_openai_empty_chunk_without_usage_ignored():
     assert provider._parse_stream_event(event) is None
 
 
+def test_openai_reasoning_content_chunk_parsed():
+    provider = _openai_provider()
+    event = SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                reasoning_content="先分析问题",
+                tool_calls=None,
+                content=None,
+            ),
+            finish_reason=None,
+        )],
+        usage=None,
+    )
+
+    chunk = provider._parse_stream_event(event)
+
+    assert chunk is not None
+    assert chunk.type == "reasoning_delta"
+    assert chunk.content == "先分析问题"
+
+
 def test_openai_finish_chunk_with_usage():
     provider = _openai_provider()
     choice = SimpleNamespace(
@@ -58,3 +79,17 @@ def test_anthropic_message_delta_usage():
     assert chunk is not None
     assert chunk.type == "done"
     assert chunk.usage["completion_tokens"] == 12
+
+
+def test_anthropic_thinking_delta_parsed():
+    provider = AnthropicProvider(model="claude-test", api_key="k")
+    event = SimpleNamespace(
+        type="content_block_delta",
+        delta=SimpleNamespace(type="thinking_delta", thinking="先分析问题"),
+    )
+
+    chunk = provider._parse_stream_event(event)
+
+    assert chunk is not None
+    assert chunk.type == "reasoning_delta"
+    assert chunk.content == "先分析问题"

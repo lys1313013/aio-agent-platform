@@ -43,7 +43,18 @@ export interface Message {
   token_usage?: Record<string, unknown> | null;
   attachments?: ChatAttachment[] | null;
   file_attachments?: FileAttachmentRef[] | null;
+  file_changes?: FileChangeInfo[] | null;
+  reasoning?: Array<{ id: string; content: string }> | null;
   created_at: string;
+}
+
+export interface FileChangeInfo {
+  action: 'created' | 'modified' | 'deleted';
+  workspace_id: string;
+  path: string;
+  filename: string;
+  mime_type: string;
+  size: number;
 }
 
 export interface SessionDetail extends Session {
@@ -80,6 +91,7 @@ export interface ChatResponse {
   content: string;
   tool_calls_count: number;
   done: boolean;
+  reasoning?: Array<{ id: string; content: string }>;
 }
 
 export interface CommandArgMeta {
@@ -122,6 +134,7 @@ export interface StreamingState {
   // Confirmation tracking
   confirmations: ConfirmationRequest[];
   confirmationsResolved: Record<string, ConfirmationResolvedInfo>;
+  fileChanges: FileChangeInfo[];
 }
 
 export interface ToolCallInfo {
@@ -162,7 +175,8 @@ export interface WsServerMessage {
     | 'delegation_start'
     | 'delegation_end'
     | 'confirmation_required'
-    | 'confirmation_resolved';
+    | 'confirmation_resolved'
+    | 'file_changes';
   content?: string;
   id?: string;
   name?: string;
@@ -198,6 +212,7 @@ export interface WsServerMessage {
   table_data?: Record<string, unknown>[];
   resolved_at?: string;
   created_at?: string;
+  file_changes?: FileChangeInfo[];
 }
 
 // ---- Memory ----

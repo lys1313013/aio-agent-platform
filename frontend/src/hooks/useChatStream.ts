@@ -2,6 +2,22 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import type { StreamingState } from '@/lib/types';
 
+function mergeFileChanges(
+  current: import('@/lib/types').FileChangeInfo[],
+  incoming: import('@/lib/types').FileChangeInfo[],
+): import('@/lib/types').FileChangeInfo[] {
+  const merged = new Map(current.map((item) => [item.path, item]));
+  for (const item of incoming) {
+    const previous = merged.get(item.path);
+    if (!previous) merged.set(item.path, item);
+    else if (previous.action === 'created' && item.action === 'deleted') merged.delete(item.path);
+    else if (previous.action === 'created') merged.set(item.path, { ...item, action: 'created' });
+    else if (previous.action === 'deleted' && item.action === 'created') merged.set(item.path, { ...item, action: 'modified' });
+    else merged.set(item.path, item);
+  }
+  return [...merged.values()];
+}
+
 export const IDLE_STREAMING: StreamingState = {
   thinking: '',
   thinkingChunks: [],
@@ -12,6 +28,7 @@ export const IDLE_STREAMING: StreamingState = {
   actionOrder: [],
   confirmations: [],
   confirmationsResolved: {},
+  fileChanges: [],
 };
 
 /** SSE 事件（后端推送的 JSON 对象，type 字段区分事件类型） */
@@ -206,6 +223,15 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
         }));
         break;
 
+      case 'file_changes': {
+        const incoming = (event.file_changes || []) as import('@/lib/types').FileChangeInfo[];
+        setStreaming((prev) => ({
+          ...prev,
+          fileChanges: mergeFileChanges(prev.fileChanges, incoming),
+        }));
+        break;
+      }
+
       case 'text_delta':
         setStreaming((prev) => ({
           ...prev,
@@ -231,11 +257,15 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           const finalText = (event.content as string) || '';
           const msgId = (event.message_id as string) || `msg-assistant-${Date.now()}`;
           const toolCalls = event.tool_calls as Record<string, unknown>[] | undefined;
+          const fileChanges = event.file_changes as import('@/lib/types').FileChangeInfo[] | undefined;
+          const reasoning = event.reasoning as Array<{ id: string; content: string }> | undefined;
           useChatStore.getState().addMessage(sessionId, {
             id: msgId,
             role: 'assistant',
             content: finalText,
             tool_calls: toolCalls || null,
+            file_changes: fileChanges || null,
+            reasoning: reasoning || null,
             created_at: new Date().toISOString(),
           });
         }

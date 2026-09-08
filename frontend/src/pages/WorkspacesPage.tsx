@@ -26,6 +26,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { workspacesApi } from '@/lib/api';
 import type { Workspace, WorkspaceFileEntry } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import WorkspaceFilePreview from '@/components/files/WorkspaceFilePreview';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -49,6 +50,7 @@ export default function WorkspacesPage() {
   const [uploading, setUploading] = useState(false);
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [previewFile, setPreviewFile] = useState<{ path: string; filename: string } | null>(null);
 
   const fetchWorkspaces = useCallback(async () => {
     setLoadingWs(true);
@@ -191,7 +193,16 @@ export default function WorkspacesPage() {
         ) : (
           <span className="flex items-center gap-2">
             <FileOutlined className="text-muted-foreground" />
-            {name}
+            <button
+              type="button"
+              className="text-primary underline-offset-2 hover:underline"
+              onClick={() => setPreviewFile({
+                path: joinPath(currentPath, name),
+                filename: name,
+              })}
+            >
+              {name}
+            </button>
           </span>
         ),
     },
@@ -388,6 +399,16 @@ export default function WorkspacesPage() {
           </div>
         </div>
       </div>
+
+      {selectedId && previewFile && (
+        <WorkspaceFilePreview
+          workspaceId={selectedId}
+          path={previewFile.path}
+          filename={previewFile.filename}
+          open
+          onClose={() => setPreviewFile(null)}
+        />
+      )}
 
       {/* Create workspace modal */}
       <Modal

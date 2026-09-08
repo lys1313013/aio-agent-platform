@@ -133,6 +133,7 @@ class LLMChunk:
 
     type: Literal[
         "text_delta",
+        "reasoning_delta",
         "tool_call_start",
         "tool_call_delta",
         "tool_call_end",
@@ -562,8 +563,13 @@ class OpenAIProvider(LLMProvider):
                 )
             return None
 
+        # Reasoning-model deltas (DeepSeek and compatible OpenAI APIs).
+        reasoning_content = getattr(delta, "reasoning_content", None)
+        if reasoning_content:
+            return LLMChunk(type="reasoning_delta", content=reasoning_content)
+
         # Tool call events
-        if delta.tool_calls:
+        if getattr(delta, "tool_calls", None):
             tc = delta.tool_calls[0]
             has_name = bool(tc.function.name)
             has_args = tc.function.arguments is not None and tc.function.arguments != ""
@@ -993,6 +999,8 @@ class AnthropicProvider(LLMProvider):
             delta = event.delta
             if delta.type == "text_delta":
                 return LLMChunk(type="text_delta", content=delta.text)
+            elif delta.type == "thinking_delta":
+                return LLMChunk(type="reasoning_delta", content=delta.thinking)
             elif delta.type == "tool_use_delta":
                 return LLMChunk(
                     type="tool_call_delta",

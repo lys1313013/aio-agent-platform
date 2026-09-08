@@ -17,13 +17,15 @@ import {
   ExportOutlined,
 } from '@ant-design/icons';
 import { App, Tag } from 'antd';
-import type { ToolCallInfo } from '@/lib/types';
+import type { FileChangeInfo, ToolCallInfo } from '@/lib/types';
 import { webpagesApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useWebpagePreviewStore } from '@/stores/webpagePreviewStore';
+import { FileChangeResult } from './FileChangeList';
 
 interface Props {
   toolCall: ToolCallInfo;
+  fileChange?: FileChangeInfo;
 }
 
 const LAYER_LABELS: Record<string, string> = {
@@ -547,7 +549,7 @@ function KnowledgeRetrievalCard({ toolCall }: Props) {
 }
 
 /** Default renderer for generic tool calls */
-function DefaultToolCard({ toolCall }: Props) {
+function DefaultToolCard({ toolCall, fileChange }: Props) {
   const [expanded, setExpanded] = useState(false);
 
   const hasResult = !!toolCall.result;
@@ -610,16 +612,23 @@ function DefaultToolCard({ toolCall }: Props) {
           {hasResult && (
             <div>
               <div className="text-xs font-medium text-muted-foreground mb-1">执行结果</div>
-              <pre
-                className={cn(
-                  'text-xs p-2 rounded overflow-x-auto max-h-80 whitespace-pre-wrap break-all',
-                  isError
-                    ? 'bg-red-50 dark:bg-red-950/20 text-red-900 dark:text-red-100'
-                    : 'bg-green-50 dark:bg-green-950/20',
-                )}
-              >
-                {toolCall.result?.preview || '无输出'}
-              </pre>
+              {fileChange && isSuccess ? (
+                <FileChangeResult
+                  file={fileChange}
+                  resultText={toolCall.result?.preview || fileChange.filename}
+                />
+              ) : (
+                <pre
+                  className={cn(
+                    'text-xs p-2 rounded overflow-x-auto max-h-80 whitespace-pre-wrap break-all',
+                    isError
+                      ? 'bg-red-50 dark:bg-red-950/20 text-red-900 dark:text-red-100'
+                      : 'bg-green-50 dark:bg-green-950/20',
+                  )}
+                >
+                  {toolCall.result?.preview || '无输出'}
+                </pre>
+              )}
             </div>
           )}
 
@@ -750,7 +759,7 @@ function CreateWebpageCard({ toolCall }: Props) {
   );
 }
 
-export default function ToolCallCard({ toolCall }: Props) {
+export default function ToolCallCard({ toolCall, fileChange }: Props) {
   // Delegate to custom renderers for specific tools
   if (toolCall.name === 'memory_write') {
     return <MemoryWriteCard toolCall={toolCall} />;
@@ -767,5 +776,5 @@ export default function ToolCallCard({ toolCall }: Props) {
   if (toolCall.name === 'create_webpage') {
     return <CreateWebpageCard toolCall={toolCall} />;
   }
-  return <DefaultToolCard toolCall={toolCall} />;
+  return <DefaultToolCard toolCall={toolCall} fileChange={fileChange} />;
 }

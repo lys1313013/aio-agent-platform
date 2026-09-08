@@ -10,12 +10,14 @@ import CodeBlock from './CodeBlock';
 import ToolCallCard from './ToolCallCard';
 import DelegationCard from './DelegationCard';
 import { ConfirmationCard } from '../confirmation';
+import FileChangeList, { resolveToolFileChange } from './FileChangeList';
 
 interface Props {
   message: Message;
   onEditResend?: (content: string) => void;
   /** 紧凑模式：窄浮窗（宠物对话）下缩小头像与间距 */
   compact?: boolean;
+  workspaceId?: string | null;
 }
 
 /** Compact card for delegate_task entries in saved message history */
@@ -125,7 +127,7 @@ function DelegateTaskCard({ toolCall }: { toolCall: ToolCallInfo }) {
   );
 }
 
-export default function ChatMessage({ message: msg, onEditResend, compact }: Props) {
+export default function ChatMessage({ message: msg, onEditResend, compact, workspaceId }: Props) {
   const { message: msgApi } = App.useApp();
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -220,6 +222,36 @@ export default function ChatMessage({ message: msg, onEditResend, compact }: Pro
           </div>
         ) : (
           <>
+            {/* Persisted main-agent reasoning — remains available after done/reload. */}
+            {!isUser && msg.reasoning && msg.reasoning.length > 0 && (
+              <div className="space-y-2">
+                {msg.reasoning.map((chunk, index) => (
+                  <Collapse
+                    key={chunk.id || `thinking-${index}`}
+                    ghost
+                    items={[
+                      {
+                        key: '1',
+                        label: (
+                          <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <BulbOutlined />
+                            {msg.reasoning!.length > 1 ? `推理过程 ${index + 1}` : '推理过程'}
+                          </span>
+                        ),
+                        children: (
+                          <div className="prose prose-sm max-w-none dark:prose-invert text-muted-foreground">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {chunk.content}
+                            </ReactMarkdown>
+                          </div>
+                        ),
+                      },
+                    ]}
+                  />
+                ))}
+              </div>
+            )}
+
             {/* Tool calls (for assistant messages) — rendered in original LLM order */}
             {hasToolCalls && (
               <div className="space-y-2">
@@ -246,7 +278,11 @@ export default function ChatMessage({ message: msg, onEditResend, compact }: Pro
                                 <DelegateTaskCard key={tc.id} toolCall={tc} />
                               )
                             ) : (
-                              <ToolCallCard key={tc.id} toolCall={tc} />
+                              <ToolCallCard
+                                key={tc.id}
+                                toolCall={tc}
+                                fileChange={resolveToolFileChange(tc, msg.file_changes, workspaceId)}
+                              />
                             )
                           )}
                         </div>
@@ -276,6 +312,8 @@ export default function ChatMessage({ message: msg, onEditResend, compact }: Pro
                 }
               />
             ))}
+
+            {!isUser && <FileChangeList files={msg.file_changes} />}
 
             {/* Image attachments (user messages only) */}
             {isUser && msg.attachments && msg.attachments.length > 0 && (

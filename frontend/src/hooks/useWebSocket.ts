@@ -12,6 +12,7 @@ const INITIAL_STATE: StreamingState = {
   actionOrder: [],
   confirmations: [],
   confirmationsResolved: {},
+  fileChanges: [],
 };
 
 export function useWebSocket(sessionId: string | null) {
@@ -58,11 +59,30 @@ export function useWebSocket(sessionId: string | null) {
 
         switch (msg.type) {
           case 'thinking':
-            setStreaming((prev) => ({
-              ...prev,
-              isStreaming: true,
-              thinking: prev.thinking + (msg.content || ''),
-            }));
+            setStreaming((prev) => {
+              const content = msg.content || '';
+              const lastAction = prev.actionOrder[prev.actionOrder.length - 1];
+              if (lastAction?.type === 'thinking') {
+                return {
+                  ...prev,
+                  isStreaming: true,
+                  thinking: prev.thinking + content,
+                  thinkingChunks: prev.thinkingChunks.map((chunk, index) =>
+                    index === prev.thinkingChunks.length - 1
+                      ? { ...chunk, content: chunk.content + content }
+                      : chunk,
+                  ),
+                };
+              }
+              const id = `thinking-${prev.thinkingChunks.length}`;
+              return {
+                ...prev,
+                isStreaming: true,
+                thinking: prev.thinking + content,
+                thinkingChunks: [...prev.thinkingChunks, { id, content }],
+                actionOrder: [...prev.actionOrder, { type: 'thinking', id }],
+              };
+            });
             break;
 
           case 'tool_call':
@@ -205,11 +225,30 @@ export function useWebSocket(sessionId: string | null) {
   const handleServerMessage = (msg: WsServerMessage) => {
     switch (msg.type) {
       case 'thinking':
-        setStreaming((prev) => ({
-          ...prev,
-          isStreaming: true,
-          thinking: prev.thinking + (msg.content || ''),
-        }));
+        setStreaming((prev) => {
+          const content = msg.content || '';
+          const lastAction = prev.actionOrder[prev.actionOrder.length - 1];
+          if (lastAction?.type === 'thinking') {
+            return {
+              ...prev,
+              isStreaming: true,
+              thinking: prev.thinking + content,
+              thinkingChunks: prev.thinkingChunks.map((chunk, index) =>
+                index === prev.thinkingChunks.length - 1
+                  ? { ...chunk, content: chunk.content + content }
+                  : chunk,
+              ),
+            };
+          }
+          const id = `thinking-${prev.thinkingChunks.length}`;
+          return {
+            ...prev,
+            isStreaming: true,
+            thinking: prev.thinking + content,
+            thinkingChunks: [...prev.thinkingChunks, { id, content }],
+            actionOrder: [...prev.actionOrder, { type: 'thinking', id }],
+          };
+        });
         break;
       case 'tool_call':
         setStreaming((prev) => ({

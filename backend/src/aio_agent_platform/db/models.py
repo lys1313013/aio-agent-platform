@@ -649,6 +649,16 @@ class Message(Base):
     file_attachments: Mapped[list | None] = mapped_column(
         JSONB, nullable=True, comment="文件附件元数据: [{file_id, filename, mime, size, workspace_path}]",
     )
+    file_changes: Mapped[list | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="本轮工作区文件变更: [{action, workspace_id, path, filename, mime_type, size}]",
+    )
+    reasoning: Mapped[list | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="主智能体推理过程: [{id, content}]",
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="创建时间")
 
     session: Mapped["Session"] = relationship(

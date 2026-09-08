@@ -71,6 +71,15 @@ class FileAttachmentInfo(BaseModel):
     workspace_path: str
 
 
+class FileChangeInfo(BaseModel):
+    action: str
+    workspace_id: UUID
+    path: str
+    filename: str
+    mime_type: str
+    size: int
+
+
 class MessageOut(BaseModel):
     id: UUID
     role: str
@@ -80,6 +89,8 @@ class MessageOut(BaseModel):
     token_usage: dict | None = None
     attachments: list[AttachmentInfo] | None = None
     file_attachments: list[FileAttachmentInfo] | None = None
+    file_changes: list[FileChangeInfo] | None = None
+    reasoning: list[dict] | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

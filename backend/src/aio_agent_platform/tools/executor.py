@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
+import posixpath
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import structlog
@@ -42,6 +44,15 @@ class ToolResult:
     success: bool
     error: str | None = None
     duration_ms: float = 0
+    file_changes: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class SandboxToolOutput:
+    """Sandbox output plus files changed while the tool was running."""
+
+    text: str
+    file_changes: list[dict] = field(default_factory=list)
 
 
 class ToolExecutor:
@@ -288,9 +299,15 @@ class ToolExecutor:
 
             # 3. Execute
             if tool.requires_sandbox:
-                output = await self._execute_in_sandbox(
+                sandbox_output = await self._execute_in_sandbox(
                     tool_name, arguments, user_id, session_id, workspace_id, workspace_slug
                 )
+                if isinstance(sandbox_output, SandboxToolOutput):
+                    output = sandbox_output.text
+                    file_changes = sandbox_output.file_changes
+                else:
+                    output = sandbox_output
+                    file_changes = []
             else:
                 output = await self._execute_direct(
                     tool_name, arguments, user_id, session_id, delegation, event_queue,
@@ -298,6 +315,7 @@ class ToolExecutor:
                     workspace_id=workspace_id,
                     workspace_slug=workspace_slug,
                 )
+                file_changes = []
 
             # 4. Truncate
             output = self._truncate(output)
@@ -308,6 +326,7 @@ class ToolExecutor:
                 arguments=arguments,
                 output=output,
                 success=True,
+                file_changes=file_changes,
                 duration_ms=(time.monotonic() - t_start) * 1000,
             )
 
@@ -444,21 +463,34 @@ class ToolExecutor:
         session_id: str,
         workspace_id: str | None = None,
         workspace_slug: str | None = None,
-    ) -> str:
+    ) -> str | SandboxToolOutput:
         """Execute a tool inside the user's sandbox container."""
         # workspace_id is required for stateless sandbox; fall back to user_id for compat
         ws_id = workspace_id or user_id
         # workspace_slug is required; fall back to "default" for backward compat
         ws_slug = workspace_slug or "default"
         sandbox = await self.sandbox_mgr.get_or_create(user_id, session_id, ws_id, ws_slug)
+        tracked = tool_name in {"run_shell", "run_code", "write_file", "edit_file"}
+        before = await self._workspace_manifest(sandbox, ws_slug) if tracked else {}
+
+        async def finish(text: str) -> SandboxToolOutput:
+            after = await self._workspace_manifest(sandbox, ws_slug)
+            return SandboxToolOutput(
+                text=text,
+                file_changes=(
+                    self._diff_workspace_files(before, after, ws_id)
+                    if before is not None and after is not None
+                    else []
+                ),
+            )
 
         if tool_name == "run_shell":
             command = args.get("command", "")
             result = await self.sandbox_mgr.execute(sandbox, f"bash -c {command!r}")
-            return self._format_exec_result(result)
+            return await finish(self._format_exec_result(result))
 
         elif tool_name == "run_code":
-            return await self._run_code(sandbox, args)
+            return await finish(await self._run_code(sandbox, args))
 
         elif tool_name == "read_file":
             path = self._sandbox_path(args["path"], ws_slug)
@@ -496,15 +528,17 @@ class ToolExecutor:
                 f"echo '{b64_content}' | base64 -d > {qp}"
             )
             result = await self.sandbox_mgr.execute(sandbox, cmd)
-            return (
+            output = (
                 self._format_exec_result(result) if result.exit_code != 0 else f"Written to {path}"
             )
+            return await finish(output)
 
         elif tool_name == "edit_file":
             path = self._sandbox_path(args["path"], ws_slug)
             old_str = args["old_str"]
             new_str = args["new_str"]
-            return await self._edit_file_in_sandbox(sandbox, path, old_str, new_str, ws_slug)
+            output = await self._edit_file_in_sandbox(sandbox, path, old_str, new_str, ws_slug)
+            return await finish(output)
 
         elif tool_name == "list_directory":
             path = self._sandbox_path(args.get("path", "."), ws_slug)
@@ -544,6 +578,67 @@ class ToolExecutor:
             return f"Unknown sandbox tool: {tool_name}"
 
     # ---- File helpers ----
+
+    async def _workspace_manifest(
+        self, sandbox, workspace_slug: str
+    ) -> dict[str, tuple[int, int]] | None:
+        """Return lightweight file metadata for user-authored workspace files."""
+        root = f"/workspace/{workspace_slug}"
+        script = """
+import json, os, sys
+root = sys.argv[1]
+skip = {'.git', 'node_modules', '.venv', '__pycache__', '.cache', 'dist', 'build'}
+files = {}
+for current, dirs, names in os.walk(root):
+    dirs[:] = [name for name in dirs if name not in skip]
+    for name in names:
+        full = os.path.join(current, name)
+        if os.path.islink(full):
+            continue
+        try:
+            stat = os.stat(full, follow_symlinks=False)
+        except OSError:
+            continue
+        files[os.path.relpath(full, root)] = [stat.st_size, stat.st_mtime_ns]
+print(json.dumps(files, ensure_ascii=False))
+"""
+        result = await self.sandbox_mgr.execute(sandbox, f"python3 -c {script!r} {root!r}")
+        if result.exit_code != 0:
+            logger.warning("workspace_manifest_failed", error=result.stderr[:500])
+            return None
+        try:
+            raw = json.loads(result.stdout or "{}")
+            return {path: (int(meta[0]), int(meta[1])) for path, meta in raw.items()}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            logger.warning("workspace_manifest_invalid", output=result.stdout[:500])
+            return None
+
+    @staticmethod
+    def _diff_workspace_files(
+        before: dict[str, tuple[int, int]],
+        after: dict[str, tuple[int, int]],
+        workspace_id: str,
+    ) -> list[dict]:
+        changes: list[dict] = []
+        for path in sorted(before.keys() | after.keys()):
+            if path not in before:
+                action = "created"
+            elif path not in after:
+                action = "deleted"
+            elif before[path] != after[path]:
+                action = "modified"
+            else:
+                continue
+            mime_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+            changes.append({
+                "action": action,
+                "workspace_id": str(workspace_id),
+                "path": path,
+                "filename": posixpath.basename(path),
+                "mime_type": mime_type,
+                "size": after[path][0] if path in after else before[path][0],
+            })
+        return changes
 
     @staticmethod
     def _sandbox_path(path: str, workspace_slug: str | None = None) -> str:

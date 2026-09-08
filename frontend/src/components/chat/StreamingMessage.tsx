@@ -9,14 +9,16 @@ import CodeBlock from './CodeBlock';
 import ToolCallCard from './ToolCallCard';
 import DelegationCard from './DelegationCard';
 import { ConfirmationCard } from '../confirmation';
+import FileChangeList, { resolveToolFileChange } from './FileChangeList';
 
 interface Props {
   streaming: StreamingState;
   /** 紧凑模式：窄浮窗（宠物对话）下缩小头像与间距 */
   compact?: boolean;
+  workspaceId?: string | null;
 }
 
-export default function StreamingMessage({ streaming, compact }: Props) {
+export default function StreamingMessage({ streaming, compact, workspaceId }: Props) {
   const [openThinkings, setOpenThinkings] = useState<Set<string>>(new Set());
 
   // Parse <think> blocks from finalText (some LLMs embed thinking inline)
@@ -34,7 +36,7 @@ export default function StreamingMessage({ streaming, compact }: Props) {
   const hasThinking = streaming.thinkingChunks.length > 0 || inlineThinking.length > 0;
 
   // Loading: streaming active but no content yet
-  const showLoading = streaming.isStreaming && !hasThinking && !hasFinalText && !hasToolCalls && !hasDelegations && !hasConfirmations;
+  const showLoading = streaming.isStreaming && !hasThinking && !hasFinalText && !hasToolCalls && !hasDelegations && !hasConfirmations && streaming.fileChanges.length === 0;
 
   // Waiting for next step: tool calls done but more streaming expected
   const waitingForNextStep =
@@ -126,7 +128,13 @@ export default function StreamingMessage({ streaming, compact }: Props) {
 
               if (action.type === 'tool') {
                 const toolCall = visibleToolCalls.find(tc => tc.id === action.id);
-                return toolCall ? <ToolCallCard key={action.id} toolCall={toolCall} /> : null;
+                return toolCall ? (
+                  <ToolCallCard
+                    key={action.id}
+                    toolCall={toolCall}
+                    fileChange={resolveToolFileChange(toolCall, streaming.fileChanges, workspaceId)}
+                  />
+                ) : null;
               }
 
               if (action.type === 'delegation') {
@@ -156,6 +164,8 @@ export default function StreamingMessage({ streaming, compact }: Props) {
             })}
           </div>
         )}
+
+        <FileChangeList files={streaming.fileChanges} />
 
         {/* Final text (rendered as Markdown) */}
         {hasFinalText && (

@@ -647,6 +647,7 @@ async def persist_assistant_message(
     user_id: UUID,
     content: str,
     tool_calls: list[dict] | None,
+    reasoning: list[dict] | None = None,
 ) -> None:
     """Save an assistant message on its own DB session (rescue path)."""
     if not content and not tool_calls:
@@ -662,6 +663,7 @@ async def persist_assistant_message(
                     role="assistant",
                     content=content,
                     tool_calls=tool_calls if tool_calls else None,
+                    reasoning=reasoning if reasoning else None,
                 )
             )
             await db.commit()

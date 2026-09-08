@@ -24,6 +24,7 @@ const IDLE_STREAMING: StreamingState = {
   actionOrder: [],
   confirmations: [],
   confirmationsResolved: {},
+  fileChanges: [],
 };
 
 const PANEL_W = 340;

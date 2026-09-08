@@ -16,24 +16,14 @@ import { App, Button, Empty, Input, Modal, Popconfirm, Spin, Tag, Tooltip, Typog
 import { workspacesApi } from '@/lib/api';
 import type { WorkspaceFileEntry } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import WorkspaceFilePreview, {
+  FilePreviewContent,
+  inferFileMimeType,
+  isEditableTextFile,
+} from '@/components/files/WorkspaceFilePreview';
 
 const { Text } = Typography;
 const { TextArea } = Input;
-
-const TEXT_EXTS = new Set([
-  'txt', 'md', 'json', 'xml', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf',
-  'py', 'js', 'ts', 'jsx', 'tsx', 'html', 'css', 'scss', 'less',
-  'sh', 'bash', 'zsh', 'fish', 'bat', 'ps1',
-  'c', 'cpp', 'h', 'hpp', 'java', 'go', 'rs', 'rb', 'php', 'swift', 'kt',
-  'sql', 'r', 'lua', 'pl', 'pm', 'tcl',
-  'csv', 'log', 'env', 'gitignore', 'dockerignore', 'editorconfig',
-  'makefile', 'cmake', 'Dockerfile', 'dockerfile',
-]);
-
-function isTextFile(name: string): boolean {
-  const ext = name.split('.').pop()?.toLowerCase() ?? '';
-  return TEXT_EXTS.has(ext) || TEXT_EXTS.has(name.toLowerCase());
-}
 
 interface SandboxFilePanelProps {
   workspaceId: string | null;
@@ -54,6 +44,7 @@ export default function SandboxFilePanel({ workspaceId }: SandboxFilePanelProps)
   const [modalLoading, setModalLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [previewFile, setPreviewFile] = useState<{ path: string; filename: string } | null>(null);
 
   const fetchFiles = useCallback(
     async (path: string) => {
@@ -108,7 +99,7 @@ export default function SandboxFilePanel({ workspaceId }: SandboxFilePanelProps)
     setEditing(startEditing);
     setModalOpen(true);
 
-    if (!isTextFile(entry.path)) {
+    if (!isEditableTextFile(entry.path)) {
       return;
     }
 
@@ -118,7 +109,9 @@ export default function SandboxFilePanel({ workspaceId }: SandboxFilePanelProps)
     setModalLoading(false);
   };
 
-  const handlePreview = (entry: WorkspaceFileEntry) => openModal(entry, false);
+  const handlePreview = (entry: WorkspaceFileEntry) => {
+    setPreviewFile({ path: joinPath(currentPath, entry.path), filename: entry.path });
+  };
   const handleEdit = (entry: WorkspaceFileEntry) => openModal(entry, true);
 
   const handleSave = async () => {
@@ -258,36 +251,29 @@ export default function SandboxFilePanel({ workspaceId }: SandboxFilePanelProps)
             entries.map((entry) => (
               <div
                 key={entry.path}
-                className={cn(
-                  'group flex items-center gap-2 px-2 py-1 text-sm border-b border-border/50 last:border-b-0',
-                  entry.is_dir && 'cursor-pointer hover:bg-muted/50 transition',
-                )}
+                className="group flex items-center gap-2 border-b border-border/50 px-2 py-1 text-sm last:border-b-0 hover:bg-muted/50"
               >
-                <div
-                  className="flex items-center gap-2 flex-1 min-w-0"
-                  onClick={() => navigateTo(entry)}
-                >
+                <div className="flex min-w-0 flex-1 items-center gap-2">
                   {entry.is_dir ? (
                     <FolderOutlined className="text-amber-500 text-sm flex-shrink-0" />
                   ) : (
                     <FileOutlined className="text-muted-foreground text-sm flex-shrink-0" />
                   )}
-                  <span className="truncate">{entry.path}</span>
+                  <button
+                    type="button"
+                    className={cn(
+                      'min-w-0 truncate text-left underline-offset-2',
+                      entry.is_dir ? 'text-foreground' : 'text-primary hover:underline',
+                    )}
+                    onClick={() => entry.is_dir ? navigateTo(entry) : handlePreview(entry)}
+                  >
+                    {entry.path}
+                  </button>
                 </div>
 
                 {/* Actions */}
                 <span className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition flex-shrink-0">
-                  {!entry.is_dir && (
-                    <Tooltip title="预览">
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={<EyeOutlined className="text-xs" />}
-                        onClick={(e) => { e.stopPropagation(); handlePreview(entry); }}
-                      />
-                    </Tooltip>
-                  )}
-                  {!entry.is_dir && isTextFile(entry.path) && (
+                  {!entry.is_dir && isEditableTextFile(entry.path) && (
                     <Tooltip title="编辑">
                       <Button
                         type="text"
@@ -343,7 +329,7 @@ export default function SandboxFilePanel({ workspaceId }: SandboxFilePanelProps)
         onCancel={handleCloseModal}
         width={720}
         footer={
-          modalEntry && isTextFile(modalEntry.path) ? (
+          modalEntry && isEditableTextFile(modalEntry.path) ? (
             <div className="flex justify-between">
               <Button
                 onClick={() => setEditing(!editing)}
@@ -366,7 +352,7 @@ export default function SandboxFilePanel({ workspaceId }: SandboxFilePanelProps)
         }
         destroyOnHidden
       >
-        {modalEntry && !isTextFile(modalEntry.path) ? (
+        {modalEntry && !isEditableTextFile(modalEntry.path) ? (
           <div className="text-center py-8 text-muted-foreground">
             无法预览此文件类型（二进制或未知格式）
           </div>
@@ -383,11 +369,26 @@ export default function SandboxFilePanel({ workspaceId }: SandboxFilePanelProps)
             spellCheck={false}
           />
         ) : (
-          <pre className="max-h-96 overflow-auto rounded bg-muted p-4 text-xs leading-relaxed whitespace-pre-wrap break-all">
-            {modalContent || '（空文件）'}
-          </pre>
+          <div className="max-h-96 overflow-auto">
+            <FilePreviewContent
+              filename={modalEntry?.path || ''}
+              mimeType={inferFileMimeType(modalEntry?.path || '')}
+              text={modalContent}
+              previewUrl=""
+            />
+          </div>
         )}
       </Modal>
+
+      {workspaceId && previewFile && (
+        <WorkspaceFilePreview
+          workspaceId={workspaceId}
+          path={previewFile.path}
+          filename={previewFile.filename}
+          open
+          onClose={() => setPreviewFile(null)}
+        />
+      )}
     </div>
   );
 }

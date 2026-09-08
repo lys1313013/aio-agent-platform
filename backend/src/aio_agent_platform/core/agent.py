@@ -395,8 +395,11 @@ class AgentLoop:
             # Pending tool calls being accumulated from stream deltas
             pending_tool_calls: dict[int, dict] = {}  # index -> {id, name, args_str}
 
-            # Buffer text chunks to decide thinking vs final text after stream ends
+            # Keep text for the completed step/context, but forward each final-text
+            # delta immediately so the HTTP SSE endpoint remains genuinely streaming.
             text_chunks: list[str] = []
+            provider_reasoning_chunks: list[str] = []
+            provider_reasoning_emitted = False
 
             # Usage reported by the provider's final stream event
             step_usage: dict | None = None
@@ -413,10 +416,20 @@ class AgentLoop:
                 try:
                     async for chunk in self.provider.stream(messages, tools=tools):
                         if chunk.type == "text_delta" and chunk.content:
+                            if provider_reasoning_chunks and not provider_reasoning_emitted:
+                                yield f"reasoning:{''.join(provider_reasoning_chunks)}"
+                                provider_reasoning_emitted = True
                             step.thinking += chunk.content
                             text_chunks.append(chunk.content)
+                            yield f"text_delta:{chunk.content}"
+
+                        elif chunk.type == "reasoning_delta" and chunk.content:
+                            provider_reasoning_chunks.append(chunk.content)
 
                         elif chunk.type == "tool_call_start" and chunk.tool_call:
+                            if provider_reasoning_chunks and not provider_reasoning_emitted:
+                                yield f"reasoning:{''.join(provider_reasoning_chunks)}"
+                                provider_reasoning_emitted = True
                             # New tool call starting
                             tc = chunk.tool_call
                             idx = len(pending_tool_calls)
@@ -436,7 +449,11 @@ class AgentLoop:
                             step_usage = chunk.usage
                     break  # stream completed normally
                 except LLMStreamError:
-                    produced = bool(text_chunks) or bool(pending_tool_calls)
+                    produced = (
+                        bool(text_chunks)
+                        or bool(provider_reasoning_chunks)
+                        or bool(pending_tool_calls)
+                    )
                     if produced or stream_attempt > _STREAM_RETRY_MAX:
                         raise
                     delay = _STREAM_RETRY_BASE_DELAY * stream_attempt
@@ -451,6 +468,8 @@ class AgentLoop:
                     # Discard partial state and reopen a fresh stream
                     step.thinking = ""
                     text_chunks = []
+                    provider_reasoning_chunks = []
+                    provider_reasoning_emitted = False
                     pending_tool_calls = {}
                     step_usage = None
 
@@ -478,9 +497,8 @@ class AgentLoop:
                     iteration=step_num,
                     text_length=len(step.thinking),
                 )
-                # Yield all buffered text as text_delta events (final text, not reasoning)
-                for t in text_chunks:
-                    yield f"text_delta:{t}"
+                if provider_reasoning_chunks and not provider_reasoning_emitted:
+                    yield f"reasoning:{''.join(provider_reasoning_chunks)}"
                 step.final_output = step.thinking
                 self._finalize_trace(
                     trace_id, t_start, session_id, user_id, tenant_id,
@@ -494,7 +512,7 @@ class AgentLoop:
                 yield step
                 return
 
-            # Has tool calls -> yield buffered thinking as reasoning, then tool calls
+            # Has tool calls -> flush provider reasoning, then emit tool calls.
             logger.info(
                 "agent_loop_tool_calls",
                 session_id=str(session_id),
@@ -503,8 +521,8 @@ class AgentLoop:
                 tools=[tc.name for tc in step.tool_calls],
                 thinking_length=len(step.thinking),
             )
-            if step.thinking:
-                yield f"reasoning:{step.thinking}"
+            if provider_reasoning_chunks and not provider_reasoning_emitted:
+                yield f"reasoning:{''.join(provider_reasoning_chunks)}"
 
             for tc in step.tool_calls:
                 yield f"tool_call:{tc.id}:{tc.name}:{json.dumps(tc.arguments, ensure_ascii=False)}"
@@ -680,6 +698,8 @@ class AgentLoop:
                     output_length=len(result.output) if result.output else 0,
                 )
                 yield f"tool_result:{tc.id}:{tc.name}:{status}:{json.dumps(output_preview, ensure_ascii=False)}"
+                if result.file_changes:
+                    yield f"file_changes:{json.dumps(result.file_changes, ensure_ascii=False)}"
 
                 # Yield control to event loop so delegation handler and
                 # event_queue drain can run between tool executions.
