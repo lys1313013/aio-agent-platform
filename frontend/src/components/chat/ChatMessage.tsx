@@ -235,7 +235,7 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
                         label: (
                           <span className="flex items-center gap-2 text-sm text-muted-foreground">
                             <BulbOutlined />
-                            {msg.reasoning!.length > 1 ? `推理过程 ${index + 1}` : '推理过程'}
+                            推理过程
                           </span>
                         ),
                         children: (

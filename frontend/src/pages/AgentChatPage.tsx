@@ -12,7 +12,7 @@ import ChatInput from '@/components/chat/ChatInput';
 import AgentConfigSidebar from '@/components/AgentConfigSidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
 import WebpagePreviewPanel from '@/components/chat/WebpagePreviewPanel';
-import { Alert, App, Typography, Spin, Tag, Button, Skeleton } from 'antd';
+import { Alert, App, Typography, Spin, Tag, Button, Skeleton, Tooltip } from 'antd';
 import { PlusOutlined, LinkOutlined, DeleteOutlined } from '@ant-design/icons';
 import { agentsApi } from '@/lib/api';
 import type { Agent, ChatAttachment, FileAttachmentRef, SessionStatus } from '@/lib/types';
@@ -301,23 +301,25 @@ export default function AgentChatPage() {
           ) : (
             <Tag className="text-xs">默认模型</Tag>
           )}
-          <Button
-            danger
-            icon={<DeleteOutlined />}
-            onClick={handleDeleteChat}
-            disabled={!activeSessionId}
-            className="ml-auto"
-          >
-            删除对话
-          </Button>
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={handleNewChat}
-            loading={creatingSession}
-          >
-            新对话
-          </Button>
+          <Tooltip title="删除对话">
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              onClick={handleDeleteChat}
+              disabled={!activeSessionId}
+              className="ml-auto"
+              aria-label="删除对话"
+            />
+          </Tooltip>
+          <Tooltip title="新对话">
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={handleNewChat}
+              loading={creatingSession}
+              aria-label="新对话"
+            />
+          </Tooltip>
         </div>
       )}
 

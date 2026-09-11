@@ -11,7 +11,7 @@ import ChatInput from '@/components/chat/ChatInput';
 import ChatHistorySidebar from '@/components/chat/ChatHistorySidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
 import WebpagePreviewPanel from '@/components/chat/WebpagePreviewPanel';
-import { Alert, App, Button, Spin } from 'antd';
+import { Alert, App, Button, Spin, Tooltip } from 'antd';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 
 export default function ChatPage() {
@@ -172,23 +172,25 @@ export default function ChatPage() {
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Header with new chat button */}
       <div className="flex items-center justify-end gap-2 px-4 py-2 border-b border-border bg-card/50">
-        <Button
-          danger
-          icon={<DeleteOutlined />}
-          onClick={handleDeleteChat}
-          disabled={!activeSessionId}
-          className="ml-auto"
-        >
-          删除对话
-        </Button>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={handleNewChat}
-          loading={creatingSession}
-        >
-          新对话
-        </Button>
+        <Tooltip title="删除对话">
+          <Button
+            danger
+            icon={<DeleteOutlined />}
+            onClick={handleDeleteChat}
+            disabled={!activeSessionId}
+            className="ml-auto"
+            aria-label="删除对话"
+          />
+        </Tooltip>
+        <Tooltip title="新对话">
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={handleNewChat}
+            loading={creatingSession}
+            aria-label="新对话"
+          />
+        </Tooltip>
       </div>
 
       {/* Main content: sidebar + chat */}
