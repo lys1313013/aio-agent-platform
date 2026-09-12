@@ -19,7 +19,7 @@ interface Props {
 }
 
 export default function StreamingMessage({ streaming, compact, workspaceId }: Props) {
-  const [closedThinkings, setClosedThinkings] = useState<Set<string>>(new Set());
+  const [thinkingVisibility, setThinkingVisibility] = useState<Record<string, boolean>>({});
 
   // Parse <think> blocks from finalText (some LLMs embed thinking inline)
   const { thinking: inlineThinking, content: cleanFinalText } =
@@ -102,25 +102,21 @@ export default function StreamingMessage({ streaming, compact, workspaceId }: Pr
                   chunkContent = chunk.content;
                 }
 
-                // Keep reasoning visible when answer text or the next action arrives.
+                // Current thinking expands automatically; completed thinking defaults to collapsed.
                 const isCurrentlyStreaming = isLast && streaming.isStreaming && !hasFinalText;
-                const isOpen = !closedThinkings.has(action.id);
+                const visibilityKey = `${action.id}:${isCurrentlyStreaming ? 'streaming' : 'complete'}`;
+                const isOpen = thinkingVisibility[visibilityKey] ?? isCurrentlyStreaming;
 
                 return (
                   <Collapse
                     key={action.id}
                     ghost
                     activeKey={isOpen ? ['1'] : []}
-                    onChange={() => {
-                      setClosedThinkings((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(action.id)) {
-                          next.delete(action.id);
-                        } else {
-                          next.add(action.id);
-                        }
-                        return next;
-                      });
+                    onChange={(keys) => {
+                      setThinkingVisibility((prev) => ({
+                        ...prev,
+                        [visibilityKey]: keys.includes('1'),
+                      }));
                     }}
                     items={[
                       {

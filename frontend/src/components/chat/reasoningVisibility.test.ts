@@ -30,13 +30,15 @@ afterEach(async () => {
 const header = () => container.querySelector('[aria-expanded]') as HTMLElement;
 
 describe('reasoning visibility', () => {
-  it('keeps streamed reasoning expanded when answer text arrives', async () => {
+  it('collapses streamed reasoning when answer text arrives', async () => {
     await act(async () => root.render(createElement(StreamingMessage, { streaming: state })));
     expect(header().getAttribute('aria-expanded')).toBe('true');
     expect(container.textContent).toContain(reasoning);
     await act(async () => root.render(createElement(StreamingMessage, {
       streaming: { ...state, finalText: '答案' },
     })));
+    expect(header().getAttribute('aria-expanded')).toBe('false');
+    await act(async () => header().click());
     expect(header().getAttribute('aria-expanded')).toBe('true');
   });
 
@@ -50,14 +52,35 @@ describe('reasoning visibility', () => {
     expect(header().getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('shows persisted reasoning after completion or reload', async () => {
+  it('defaults persisted reasoning to collapsed and allows opening it', async () => {
     await act(async () => root.render(createElement(ChatMessage, {
       message: {
         id: 'answer', role: 'assistant', content: '答案',
         reasoning: state.thinkingChunks, created_at: '2026-09-12T00:00:00Z',
       },
     })));
+    expect(header().getAttribute('aria-expanded')).toBe('false');
+    await act(async () => header().click());
     expect(header().getAttribute('aria-expanded')).toBe('true');
     expect(container.textContent).toContain(reasoning);
+  });
+
+  it('collapses when streaming ends without answer text', async () => {
+    await act(async () => root.render(createElement(StreamingMessage, { streaming: state })));
+    expect(header().getAttribute('aria-expanded')).toBe('true');
+    await act(async () => root.render(createElement(StreamingMessage, {
+      streaming: { ...state, isStreaming: false },
+    })));
+    expect(header().getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('defaults saved inline think blocks to collapsed', async () => {
+    await act(async () => root.render(createElement(ChatMessage, {
+      message: {
+        id: 'inline-answer', role: 'assistant', content: `<think>${reasoning}</think>答案`,
+        created_at: '2026-09-12T00:00:00Z',
+      },
+    })));
+    expect(header().getAttribute('aria-expanded')).toBe('false');
   });
 });

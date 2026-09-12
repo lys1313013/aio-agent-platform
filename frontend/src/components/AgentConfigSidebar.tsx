@@ -28,6 +28,7 @@ import {
   ApartmentOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  RightOutlined,
 } from '@ant-design/icons';
 import {
   Button,
@@ -119,6 +120,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
   const [skills, setSkills] = useState<Skill[]>([]);
   const [allTools, setAllTools] = useState<ToolInfo[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [expandedMcpServerIds, setExpandedMcpServerIds] = useState<string[]>([]);
   const [allAgents, setAllAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -1507,7 +1509,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
           {activeSection === 'mcp' && (
             <div className="agent-config-panel">
               <Text type="secondary" className="text-xs block mb-3">
-                按服务或单独选择 MCP 工具。
+                共 {mcpServers.length} 个 MCP 服务。点击服务名称展开工具，勾选复选框选择工具。
               </Text>
 
               {mcpServers.length === 0 ? (
@@ -1543,6 +1545,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                     const allSelected = followsAllTools
                       || (serverToolNames.length > 0 && selectedCount === serverToolNames.length);
                     const someSelected = selectedCount > 0 && !allSelected;
+                    const isExpanded = expandedMcpServerIds.includes(server.id);
 
                     const toggleServerTools = () => {
                       if (allSelected) {
@@ -1569,35 +1572,50 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                         )}
                       >
                         {/* Server header */}
-                        <div
-                          className="flex items-center gap-2 p-2.5 cursor-pointer"
-                          onClick={toggleServerTools}
-                        >
+                        <div className="flex items-center gap-2 p-2.5">
                           <Checkbox
+                            aria-label={`选择 ${server.name} 的全部工具`}
                             checked={allSelected}
                             indeterminate={someSelected}
                             onClick={(e) => e.stopPropagation()}
                             onChange={() => toggleServerTools()}
                           />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <Text className="text-xs font-medium truncate">{server.name}</Text>
-                              <Tag color={statusColor} className="text-[10px] leading-none flex-shrink-0">
-                                {statusLabel}
-                              </Tag>
+                          <button
+                            type="button"
+                            className="flex flex-1 min-w-0 items-center gap-2 rounded text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                            aria-label={`${isExpanded ? '收起' : '展开'} ${server.name} 工具`}
+                            aria-expanded={isExpanded}
+                            aria-controls={`mcp-tools-${server.id}`}
+                            onClick={() => setExpandedMcpServerIds((prev) =>
+                              prev.includes(server.id)
+                                ? prev.filter((id) => id !== server.id)
+                                : [...prev, server.id]
+                            )}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <Text className="text-xs font-medium truncate">{server.name}</Text>
+                                <Tag color={statusColor} className="text-[10px] leading-none flex-shrink-0">
+                                  {statusLabel}
+                                </Tag>
+                              </div>
+                              <Text type="secondary" className="text-[10px] block mt-0.5 truncate">
+                                {server.transport_type} · {server.tools_count} 个工具
+                                {selectedCount > 0 && ` · 已选 ${selectedCount}`}
+                                {followsAllTools && ' · 自动包含新增工具'}
+                              </Text>
                             </div>
-                            <Text type="secondary" className="text-[10px] block mt-0.5 truncate">
-                              {server.transport_type} · {server.tools_count} 个工具
-                              {selectedCount > 0 && ` · 已选 ${selectedCount}`}
-                              {followsAllTools && ' · 自动包含新增工具'}
-                            </Text>
-                          </div>
+                            <RightOutlined className={cn('text-[10px] text-muted-foreground transition-transform', isExpanded && 'rotate-90')} />
+                          </button>
                         </div>
 
                         {/* Tool list */}
-                        {server.tools && server.tools.length > 0 && (
-                          <div className="border-t border-border/30 px-2 py-1.5 space-y-1">
-                            {server.tools.map((tool) => {
+                        <div id={`mcp-tools-${server.id}`} hidden={!isExpanded}>
+                          <div className="max-h-80 overflow-y-auto border-t border-border/30 px-2 py-1.5 space-y-1">
+                            {!server.tools?.length && (
+                              <Text type="secondary" className="text-xs">暂无可用工具</Text>
+                            )}
+                            {(server.tools || []).map((tool) => {
                               const fullName = `${server.tool_prefix || ''}${tool.name}`;
                               const isChecked = followsAllTools || enabledMcpTools.includes(fullName);
                               return (
@@ -1638,7 +1656,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                               );
                             })}
                           </div>
-                        )}
+                        </div>
                       </div>
                     );
                   })}
