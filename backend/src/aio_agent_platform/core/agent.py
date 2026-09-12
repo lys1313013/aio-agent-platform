@@ -259,6 +259,10 @@ class AgentLoop:
         # Tool permission whitelist: None means all tools allowed (parent agent),
         # set of tool names means only those tools can be executed (child agents).
         self.allowed_tools = allowed_tools
+        # Room members share a Session but retain their own observation identity.
+        self.execution_agent_id: UUID | None = None
+        self.execution_tenant_id: UUID | None = None
+        self.stop_reason: str | None = None
 
     async def run(
         self,
@@ -286,8 +290,8 @@ class AgentLoop:
 
         # ---- Observation: open a trace for this execution ----
         trace_id = uuid4()
-        tenant_id = await _resolve_tenant_id(user_id)
-        agent_id = await _resolve_agent_id(session_id)
+        tenant_id = self.execution_tenant_id or await _resolve_tenant_id(user_id)
+        agent_id = self.execution_agent_id or await _resolve_agent_id(session_id)
         set_obs_context(
             ObsContext(
                 trace_id=trace_id,
@@ -425,6 +429,9 @@ class AgentLoop:
 
                         elif chunk.type == "reasoning_delta" and chunk.content:
                             provider_reasoning_chunks.append(chunk.content)
+                            # Live deltas are separate from the complete reasoning
+                            # event used to persist one block per ReAct step.
+                            yield f"reasoning_delta:{chunk.content}"
 
                         elif chunk.type == "tool_call_start" and chunk.tool_call:
                             if provider_reasoning_chunks and not provider_reasoning_emitted:
@@ -795,6 +802,7 @@ class AgentLoop:
             # Continue to next iteration (LLM will see tool results and decide next action)
 
         # Max iterations reached
+        self.stop_reason = "max_iterations"
         logger.warning(
             "agent_loop_max_iterations",
             session_id=str(session_id),

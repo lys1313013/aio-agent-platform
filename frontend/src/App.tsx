@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/authStore';
 import LoginPage from '@/pages/LoginPage';
 import RegisterPage from '@/pages/RegisterPage';
 import ChatPage from '@/pages/ChatPage';
+import RoomsPage from '@/pages/RoomsPage';
 import AgentsPage from '@/pages/AgentsPage';
 import AgentChatPage from '@/pages/AgentChatPage';
 import AgentApiPage from '@/pages/AgentApiPage';
@@ -100,6 +101,8 @@ export default function App() {
         <Route path="/agents/:agentId/chat/:sessionId" element={<AgentChatPage />} />
         <Route path="/agents/:agentId/api" element={<AgentApiPage />} />
         <Route path="/chat" element={<ChatPage />} />
+        <Route path="/rooms" element={<RoomsPage />} />
+        <Route path="/rooms/:roomId" element={<RoomsPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/usage" element={<UsagePage />} />
         <Route path="/observability" element={<ObservabilityPage />} />
@@ -133,6 +136,8 @@ export default function App() {
         }
       >
         <Route path="/portal" element={<PortalAgentListPage />} />
+        <Route path="/portal/rooms" element={<RoomsPage />} />
+        <Route path="/portal/rooms/:roomId" element={<RoomsPage />} />
         <Route path="/portal/agents/:agentId/chat" element={<PortalChatPage />} />
         <Route path="/portal/agents/:agentId/chat/:sessionId" element={<PortalChatPage />} />
       </Route>

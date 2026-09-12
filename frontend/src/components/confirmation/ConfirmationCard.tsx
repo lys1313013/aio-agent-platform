@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { QuestionCircleOutlined } from '@ant-design/icons';
-import { Tag } from 'antd';
+import { App, Tag } from 'antd';
 import type {
   ConfirmationOption,
   ConfirmationContext,
@@ -26,6 +26,7 @@ interface Props {
   tableSchema?: TableSchema;
   context: ConfirmationContext;
   resolved?: ConfirmationResolvedInfo;
+  onRespond?: (response: ConfirmationResponse) => Promise<void>;
 }
 
 const RISK_COLORS: Record<RiskLevel, string> = {
@@ -43,8 +44,10 @@ export default function ConfirmationCard({
   tableSchema,
   context,
   resolved,
+  onRespond,
 }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const { message } = App.useApp();
 
   const riskLevel = (context.risk_level || 'low') as RiskLevel;
   const borderColor = RISK_COLORS[riskLevel];
@@ -60,14 +63,16 @@ export default function ConfirmationCard({
     async (response: ConfirmationResponse) => {
       setIsSubmitting(true);
       try {
-        await confirmationsApi.respond(confirmationId, response);
+        if (onRespond) await onRespond(response);
+        else await confirmationsApi.respond(confirmationId, response);
       } catch (err) {
         console.error('Failed to submit confirmation:', err);
+        message.error(err instanceof Error ? err.message : '提交失败，请重试');
       } finally {
         setIsSubmitting(false);
       }
     },
-    [confirmationId],
+    [confirmationId, onRespond, message],
   );
 
   // Already resolved -> show summary

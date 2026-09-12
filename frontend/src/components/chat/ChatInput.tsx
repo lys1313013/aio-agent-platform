@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type FormEvent, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
-import { ArrowUpOutlined, StopOutlined, PaperClipOutlined, CloseOutlined, LoadingOutlined, FileTextOutlined, FolderOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { ArrowUpOutlined, StopOutlined, PaperClipOutlined, CloseOutlined, LoadingOutlined, FileTextOutlined, FolderOutlined, ThunderboltOutlined, EditOutlined } from '@ant-design/icons';
 import { Input, Button, App, Image, Tooltip, Select } from 'antd';
 import { chatApi } from '@/lib/api';
 import { useChatStore } from '@/stores/chatStore';
@@ -224,6 +224,33 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
   };
 
   // ---- Form submit ----
+
+  const handleQueueEdit = (item: QueuedMessage) => {
+    if (!onQueueRemove || disabled) return;
+    if (input.trim() || pending.length > 0 || pendingFiles.length > 0) {
+      message.warning('请先发送或清空输入框中的草稿，再编辑排队消息');
+      textareaRef.current?.focus({ cursor: 'end' });
+      return;
+    }
+
+    // Remove first so the original message cannot auto-send while being edited.
+    onQueueRemove(item.id);
+    setInput(item.content);
+    setPending(item.attachments.map((attachment, index) => ({
+      localId: `${item.id}-img-${index}`,
+      status: 'done',
+      thumb: attachment.url,
+      attachment,
+    })));
+    setPendingFiles((item.fileAttachments ?? []).map((fileRef, index) => ({
+      localId: `${item.id}-file-${index}`,
+      status: 'done',
+      fileName: fileRef.filename,
+      fileSize: fileRef.size,
+      fileRef,
+    })));
+    requestAnimationFrame(() => textareaRef.current?.focus({ cursor: 'end' }));
+  };
 
   const handleSubmit = (e?: FormEvent) => {
     e?.preventDefault();
@@ -542,6 +569,19 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
               <span className="flex-shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
                 排队中
               </span>
+              {onQueueRemove && (
+                <Tooltip title="编辑消息，放回输入框">
+                  <button
+                    type="button"
+                    aria-label="编辑排队消息"
+                    disabled={disabled}
+                    onClick={() => handleQueueEdit(q)}
+                    className="flex-shrink-0 flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <EditOutlined className="text-xs" />
+                  </button>
+                </Tooltip>
+              )}
               <Tooltip title="中断当前回复，立即发送">
                 <button
                   onClick={() => onQueueSendNow?.(q.id)}

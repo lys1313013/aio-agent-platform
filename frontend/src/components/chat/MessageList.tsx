@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { PlusOutlined } from '@ant-design/icons';
 import type { Message, StreamingState } from '@/lib/types';
@@ -25,18 +25,44 @@ interface Props {
   compact?: boolean;
 }
 
-export default function MessageList({ messages, streaming, agent, onNewChat, onEditResend, emptyTitle, emptySubtitle, emptyIcon, scrollToBottomOnMount, compact }: Props) {
+export default function MessageList({ messages, streaming, agent, onNewChat, onEditResend, emptyTitle, emptySubtitle, emptyIcon, scrollToBottomOnMount = true, compact }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const followBottom = useRef(scrollToBottomOnMount);
+  const firstMessageId = messages[0]?.id;
+  const lastUserMessageId = [...messages].reverse().find((message) => message.role === 'user')?.id;
+  const hasContent = messages.length > 0 || streaming.isStreaming;
   const workspaceId = useChatStore((state) => (
     state.sessions.find((session) => session.id === state.activeSessionId)?.workspace_id
     ?? state.selectedWorkspaceId
   ));
 
-  useEffect(() => {
-    if (!scrollToBottomOnMount) return;
+  // Reset when opening a conversation; sending also resumes following.
+  useLayoutEffect(() => {
+    followBottom.current = scrollToBottomOnMount;
+  }, [firstMessageId, scrollToBottomOnMount]);
+
+  useLayoutEffect(() => {
+    if (lastUserMessageId) followBottom.current = true;
+  }, [lastUserMessageId]);
+
+  useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [scrollToBottomOnMount]);
+    if (el && followBottom.current) el.scrollTop = el.scrollHeight;
+  }, [messages, streaming]);
+
+  // Images, tool cards and input resizing can change layout after rendering.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const content = contentRef.current;
+    if (!el || !content) return;
+    const observer = new ResizeObserver(() => {
+      if (followBottom.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [hasContent]);
 
   if (messages.length === 0 && !streaming.isStreaming) {
     const title = emptyTitle ?? (agent ? `欢迎使用 ${agent.name}` : '欢迎使用智能体平台');
@@ -82,8 +108,16 @@ export default function MessageList({ messages, streaming, agent, onNewChat, onE
 
   return (
     // data-ui-exclude：text_delta 每 token 改 DOM，快照引擎 MutationObserver 排除本区域（docs/22 §2.2a 规则 8）
-    <div ref={scrollRef} className="flex-1 overflow-y-auto" data-ui-exclude>
-      <div className={compact ? 'px-3 py-4 space-y-4' : 'max-w-4xl mx-auto px-4 py-6 space-y-6'}>
+    <div
+      ref={scrollRef}
+      className="min-h-0 flex-1 overflow-y-auto"
+      onScroll={() => {
+        const el = scrollRef.current;
+        if (el) followBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 90;
+      }}
+      data-ui-exclude
+    >
+      <div ref={contentRef} className={compact ? 'px-3 py-4 space-y-4' : 'max-w-4xl mx-auto px-4 py-6 space-y-6'}>
         {messages.map((msg) => (
           <ChatMessage
             key={msg.id}

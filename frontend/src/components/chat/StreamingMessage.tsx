@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { StreamingState } from '@/lib/types';
 import { BulbOutlined, LoadingOutlined } from '@ant-design/icons';
 import { Collapse } from 'antd';
@@ -19,7 +19,7 @@ interface Props {
 }
 
 export default function StreamingMessage({ streaming, compact, workspaceId }: Props) {
-  const [openThinkings, setOpenThinkings] = useState<Set<string>>(new Set());
+  const [closedThinkings, setClosedThinkings] = useState<Set<string>>(new Set());
 
   // Parse <think> blocks from finalText (some LLMs embed thinking inline)
   const { thinking: inlineThinking, content: cleanFinalText } =
@@ -37,6 +37,17 @@ export default function StreamingMessage({ streaming, compact, workspaceId }: Pr
 
   // Loading: streaming active but no content yet
   const showLoading = streaming.isStreaming && !hasThinking && !hasFinalText && !hasToolCalls && !hasDelegations && !hasConfirmations && streaming.fileChanges.length === 0;
+
+  const [waitingSeconds, setWaitingSeconds] = useState(0);
+  useEffect(() => {
+    setWaitingSeconds(0);
+    if (!showLoading) return;
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setWaitingSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [showLoading]);
 
   // Waiting for next step: tool calls done but more streaming expected
   const waitingForNextStep =
@@ -64,9 +75,14 @@ export default function StreamingMessage({ streaming, compact, workspaceId }: Pr
       <div className={`flex-1 ${compact ? 'space-y-2' : 'space-y-3'}`}>
         {/* Loading indicator — no content yet */}
         {showLoading && (
-          <div className="flex items-center gap-2 text-muted-foreground py-1">
-            <LoadingOutlined spin />
-            <span className="text-sm">正在思考...</span>
+          <div className="space-y-1 py-1 text-muted-foreground" role="status">
+            <div className="flex items-center gap-2">
+              <LoadingOutlined spin />
+              <span className="text-sm">等待模型响应{waitingSeconds > 0 ? ` · ${waitingSeconds} 秒` : '…'}</span>
+            </div>
+            {waitingSeconds >= 10 && (
+              <p className="text-xs">尚未收到回复内容，返回后会实时显示。你也可以停止本次请求。</p>
+            )}
           </div>
         )}
 
@@ -86,9 +102,9 @@ export default function StreamingMessage({ streaming, compact, workspaceId }: Pr
                   chunkContent = chunk.content;
                 }
 
-                // Show open when this is the last action, still streaming, and no text yet
+                // Keep reasoning visible when answer text or the next action arrives.
                 const isCurrentlyStreaming = isLast && streaming.isStreaming && !hasFinalText;
-                const isOpen = isCurrentlyStreaming || openThinkings.has(action.id);
+                const isOpen = !closedThinkings.has(action.id);
 
                 return (
                   <Collapse
@@ -96,7 +112,7 @@ export default function StreamingMessage({ streaming, compact, workspaceId }: Pr
                     ghost
                     activeKey={isOpen ? ['1'] : []}
                     onChange={() => {
-                      setOpenThinkings((prev) => {
+                      setClosedThinkings((prev) => {
                         const next = new Set(prev);
                         if (next.has(action.id)) {
                           next.delete(action.id);

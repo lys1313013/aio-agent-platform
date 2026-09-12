@@ -121,10 +121,10 @@ function forceLogout(): never {
 }
 
 /** Fetch wrapper with automatic JWT injection and token refresh */
-async function request<T>(
+export async function apiFetch(
   path: string,
   options: RequestInit = {},
-): Promise<T> {
+): Promise<Response> {
   const isAuthPath = AUTH_PATHS.some((p) => path.startsWith(p));
 
   // Proactively refresh if access token is about to expire
@@ -173,6 +173,11 @@ async function request<T>(
     throw new ApiError(resp.status, message);
   }
 
+  return resp;
+}
+
+export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const resp = await apiFetch(path, options);
   if (resp.status === 204) return undefined as T;
   return resp.json();
 }

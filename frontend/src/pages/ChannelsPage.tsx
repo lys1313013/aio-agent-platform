@@ -532,6 +532,19 @@ export default function ChannelsPage() {
               </Form.Item>
             </div>
 
+            {channelType === 'feishu' && (
+              <Paragraph type="secondary">
+                还没有飞书智能体？{' '}
+                <Typography.Link
+                  href="https://open.feishu.cn/page/openclaw?form=multiAgent"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <LinkOutlined /> 快速创建智能体
+                </Typography.Link>
+              </Paragraph>
+            )}
+
             <Form.Item
               name="enable_streaming"
               label="流式回复"

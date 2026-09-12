@@ -519,8 +519,8 @@ async def _proxy_child_event(
     event: str,
 ) -> None:
     """Proxy child agent events to parent's SSE stream with delegation prefix."""
-    if event.startswith("reasoning:"):
-        content = event[len("reasoning:"):]
+    if event.startswith("reasoning_delta:"):
+        content = event[len("reasoning_delta:"):]
         await event_queue.put({
             "type": "delegation_thinking",
             "delegation_id": str(delegation_id),

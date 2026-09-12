@@ -126,6 +126,45 @@ class TestStreamDisconnectRetry:
         assert "text_delta:第二段" in remaining
 
     @pytest.mark.asyncio
+    async def test_reasoning_deltas_arrive_before_answer_and_are_persisted_once(self):
+        provider = MagicMock()
+        provider.model = "test-model"
+        release_stream = asyncio.Event()
+
+        async def stream(messages, tools=None):
+            yield _reasoning_chunk("先分析")
+            await release_stream.wait()
+            yield _reasoning_chunk("再核对")
+            yield _text_chunk("答案")
+            yield _done_chunk()
+
+        provider.stream = stream
+        loop = AgentLoop(
+            provider=provider,
+            tool_executor=MagicMock(),
+            system_prompt="test",
+            max_iterations=5,
+        )
+        iterator = loop.run(
+            user_input="hi", user_id=uuid.uuid4(), session_id=uuid.uuid4(),
+            conversation_history=[], tools=[],
+        )
+        try:
+            # No answer can be produced until the first reasoning delta arrives.
+            first = await asyncio.wait_for(anext(iterator), timeout=2)
+            assert first == "reasoning_delta:先分析"
+            release_stream.set()
+            remaining = [event async for event in iterator]
+        finally:
+            release_stream.set()
+            await iterator.aclose()
+        assert remaining[0] == "reasoning_delta:再核对"
+        assert [e for e in remaining if isinstance(e, str) and e.startswith("reasoning:")] == [
+            "reasoning:先分析再核对",
+        ]
+        assert remaining[-1].final_output == "答案"
+
+    @pytest.mark.asyncio
     async def test_zero_output_disconnect_retries_and_succeeds(self, monkeypatch):
         """First stream raises before any chunk; retry succeeds, content intact."""
         monkeypatch.setattr("aio_agent_platform.core.agent.asyncio.sleep", _no_sleep)

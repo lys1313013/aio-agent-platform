@@ -407,6 +407,12 @@ async def upload_workspace_file(
     session = session_result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    if session.source == "room":
+        from aio_agent_platform.rooms.service import owned_room, require_idle
+        room = await owned_room(db, session_id, user, lock=True)
+        await require_idle(db, room)
+        if room.is_archived:
+            raise HTTPException(409, "请先恢复已归档的聊天室")
 
     workspace_id, _workspace_slug = await _resolve_workspace(db, session, user.id)
 
@@ -450,10 +456,11 @@ async def upload_workspace_file(
         if key in sandbox_mgr._active:
             sandbox = sandbox_mgr._active[key]
             import base64
+            import shlex
             b64_data = base64.b64encode(data).decode()
             cmd = (
                 f"mkdir -p /workspace/uploads && "
-                f"echo '{b64_data}' | base64 -d > /workspace/{workspace_path}"
+                f"echo '{b64_data}' | base64 -d > {shlex.quote('/workspace/' + workspace_path)}"
             )
             await sandbox_mgr.execute(sandbox, cmd)
             logger.info(
@@ -510,7 +517,7 @@ async def chat(
     session = None
     if req.session_id:
         result = await db.execute(
-            select(Session).where(Session.id == req.session_id, Session.user_id == user.id)
+            select(Session).where(Session.id == req.session_id, Session.user_id == user.id, Session.source != "room")
         )
         session = result.scalar_one_or_none()
         if not session:
@@ -841,7 +848,7 @@ async def _handle_command_stream(
     if req.session_id:
         result = await db.execute(
             select(Session).where(
-                Session.id == req.session_id, Session.user_id == user.id
+                Session.id == req.session_id, Session.user_id == user.id, Session.source != "room"
             )
         )
         session = result.scalar_one_or_none()
@@ -966,7 +973,7 @@ async def chat_stream(
     session = None
     if req.session_id:
         result = await db.execute(
-            select(Session).where(Session.id == req.session_id, Session.user_id == user.id)
+            select(Session).where(Session.id == req.session_id, Session.user_id == user.id, Session.source != "room")
         )
         session = result.scalar_one_or_none()
         if not session:
@@ -1387,8 +1394,13 @@ async def chat_stream(
                             yield _sse_event({
                                 "type": "delegation_heartbeat",
                             })
+                        elif event.startswith("reasoning_delta:"):
+                            yield _sse_event({
+                                "type": "thinking",
+                                "content": event[len("reasoning_delta:"):],
+                            })
                         elif event.startswith("reasoning:"):
-                            # Bulk reasoning (thinking before tool calls)
+                            # Persist the complete block; deltas were sent live.
                             content = event[len("reasoning:"):]
                             _append_reasoning_chunk(reasoning_chunks, content)
                             logger.debug(
@@ -1396,10 +1408,6 @@ async def chat_stream(
                                 session_id=str(session_id),
                                 length=len(content),
                             )
-                            yield _sse_event({
-                                "type": "thinking",
-                                "content": content,
-                            })
                         elif event.startswith("text_delta:"):
                             # Final answer text streaming
                             delta = event[len("text_delta:"):]
@@ -1766,7 +1774,7 @@ async def chat_websocket(
             return
         # Verify session belongs to user
         result = await db.execute(
-            select(Session).where(Session.id == session_id, Session.user_id == user_id)
+            select(Session).where(Session.id == session_id, Session.user_id == user_id, Session.source != "room")
         )
         session = result.scalar_one_or_none()
         if not session:
@@ -1876,6 +1884,8 @@ async def chat_websocket(
                             if event.startswith("reasoning:"):
                                 content = event[len("reasoning:") :]
                                 _append_reasoning_chunk(reasoning_chunks, content)
+                            elif event.startswith("reasoning_delta:"):
+                                content = event[len("reasoning_delta:"):]
                                 await websocket.send_json(
                                     {
                                         "type": "thinking",

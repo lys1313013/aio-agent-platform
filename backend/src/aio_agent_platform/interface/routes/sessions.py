@@ -146,7 +146,7 @@ async def list_sessions(
     offset: int = 0,
 ) -> list[Session]:
     """List all sessions for the current user, optionally filtered by agent."""
-    query = select(Session).where(Session.user_id == user.id)
+    query = select(Session).where(Session.user_id == user.id, Session.source != "room")
     if agent_id is not None:
         query = query.where(Session.agent_id == agent_id)
     query = query.order_by(Session.updated_at.desc()).offset(offset).limit(limit)
@@ -163,7 +163,7 @@ async def get_session(
     """Get a session with its message history."""
     result = await db.execute(
         select(Session)
-        .where(Session.id == session_id, Session.user_id == user.id)
+        .where(Session.id == session_id, Session.user_id == user.id, Session.source != "room")
         .options(selectinload(Session.messages))
     )
     session = result.scalar_one_or_none()
@@ -185,7 +185,7 @@ async def get_session_status(
     触发的会话会返回 running=true，前端据此显示「重新连接」入口。
     """
     result = await db.execute(
-        select(Session.id).where(Session.id == session_id, Session.user_id == user.id)
+        select(Session.id).where(Session.id == session_id, Session.user_id == user.id, Session.source != "room")
     )
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -222,7 +222,7 @@ async def session_events_stream(
     Redis 不可用时流为空，前端收到 EOF 以 ``closed`` 收尾。
     """
     result = await db.execute(
-        select(Session.id).where(Session.id == session_id, Session.user_id == user.id)
+        select(Session.id).where(Session.id == session_id, Session.user_id == user.id, Session.source != "room")
     )
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -272,7 +272,7 @@ async def update_session(
 ) -> Session:
     """Update a session (rename title and/or rebind agent)."""
     result = await db.execute(
-        select(Session).where(Session.id == session_id, Session.user_id == user.id)
+        select(Session).where(Session.id == session_id, Session.user_id == user.id, Session.source != "room")
     )
     session = result.scalar_one_or_none()
     if not session:
@@ -295,7 +295,7 @@ async def delete_session(
 ) -> None:
     """Delete a session and all its messages."""
     result = await db.execute(
-        select(Session).where(Session.id == session_id, Session.user_id == user.id)
+        select(Session).where(Session.id == session_id, Session.user_id == user.id, Session.source != "room")
     )
     session = result.scalar_one_or_none()
     if not session:

@@ -688,6 +688,112 @@ def _scrub_message_nul_bytes(mapper, connection, target: "Message") -> None:
         target.tool_calls = sanitize_pg_text(target.tool_calls)
 
 
+# ---- Collaborative rooms (execution is independent of browser connections) ----
+
+
+class ChatRoom(Base):
+    __tablename__ = "chat_rooms"
+
+    # Same id as the backing Session, used by tools, attachments and confirmations.
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    workspace_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    goal: Mapped[str] = mapped_column(Text, nullable=False)
+    default_member_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    message_sequence: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text)
+    summary_sequence: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+
+    __table_args__ = (Index("idx_chat_rooms_owner", "tenant_id", "user_id", "updated_at"),)
+
+
+class ChatRoomMember(Base):
+    __tablename__ = "chat_room_members"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    room_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    agent_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    icon: Mapped[str | None] = mapped_column(String(128))
+    description: Mapped[str | None] = mapped_column(Text)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    __table_args__ = (UniqueConstraint("room_id", "agent_id", name="uq_room_member_agent"),)
+
+
+class ChatRoomRun(Base):
+    __tablename__ = "chat_room_runs"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    room_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    request_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    input: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="queued", nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    stop_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("room_id", "request_id", name="uq_room_run_request"),
+        Index("uq_room_active_run", "room_id", unique=True,
+              postgresql_where=text("status IN ('queued', 'running', 'stopping')")),
+    )
+
+
+class ChatRoomTask(Base):
+    __tablename__ = "chat_room_tasks"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    room_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    run_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    message_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="queued", nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    context_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+    retry_of: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    confirmation: Mapped[dict | None] = mapped_column(JSONB)
+    confirmation_response: Mapped[dict | None] = mapped_column(JSONB)
+    token_usage: Mapped[dict | None] = mapped_column(JSONB)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (UniqueConstraint("run_id", "position", name="uq_room_task_position"),)
+
+
+class ChatRoomMessage(Base):
+    __tablename__ = "chat_room_messages"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    room_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    run_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    member_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    icon: Mapped[str | None] = mapped_column(String(128))
+    content: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="completed", nullable=False)
+    reply_to_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+
+    __table_args__ = (UniqueConstraint("room_id", "sequence", name="uq_room_message_sequence"),)
+
+
 # ---- Memory (4 layers) ----
 
 

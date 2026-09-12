@@ -144,6 +144,7 @@ export default function AppLayout() {
       label: '智能体',
       items: [
         { path: '/agents', icon: <RobotOutlined />, label: '智能体' },
+        { path: '/rooms', icon: <MessageOutlined />, label: '协作聊天室' },
         { path: '/skills', icon: <ThunderboltOutlined />, label: '技能' },
         { path: '/memory', icon: <BulbOutlined />, label: '记忆' },
         { path: '/pets', icon: <SmileOutlined />, label: '宠物' },

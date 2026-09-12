@@ -228,6 +228,7 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
                 {msg.reasoning.map((chunk, index) => (
                   <Collapse
                     key={chunk.id || `thinking-${index}`}
+                    defaultActiveKey={['1']}
                     ghost
                     items={[
                       {
@@ -390,9 +391,10 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
 
               return (
                 <>
-                  {/* Thinking block — collapsed by default for saved messages */}
+                  {/* Thinking block — keep saved reasoning visible after completion/reload */}
                   {hasThinkContent && (
                     <Collapse
+                      defaultActiveKey={['1']}
                       ghost
                       items={[
                         {

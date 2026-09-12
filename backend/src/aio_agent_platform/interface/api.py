@@ -55,6 +55,7 @@ from aio_agent_platform.interface.routes import (
     web_tools_router,
     webpages_router,
 )
+from aio_agent_platform.interface.routes.rooms import router as rooms_router
 from aio_agent_platform.knowledge.handlers import KNOWLEDGE_HANDLERS
 from aio_agent_platform.memory.handlers import MEMORY_HANDLERS
 from aio_agent_platform.observation import init_langfuse, shutdown_langfuse
@@ -614,6 +615,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # ---- Shutdown ----
+    from aio_agent_platform.rooms.runtime import shutdown as shutdown_rooms
+    await shutdown_rooms()
     conn_manager = getattr(app.state, "channel_connection_manager", None)
     if conn_manager:
         await conn_manager.stop_all()
@@ -657,6 +660,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions_router)
     app.include_router(analytics_router)
     app.include_router(chat_router)
+    app.include_router(rooms_router)
     app.include_router(commands_router)
     app.include_router(models_router)
     app.include_router(observability_router)

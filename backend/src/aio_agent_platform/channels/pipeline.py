@@ -1125,11 +1125,11 @@ class ChannelInboundPipeline:
                     if not final_output:
                         final_output = step.final_output or ""
                 elif isinstance(step, str):
-                    if step.startswith("reasoning:"):
+                    if step.startswith("reasoning_delta:"):
                         # 推理过程实时广播（Web 端「重新连接」回放用）
                         event_logger.submit({
                             "type": "thinking",
-                            "content": step[len("reasoning:"):],
+                            "content": step[len("reasoning_delta:"):],
                         })
                     elif step.startswith("text_delta:"):
                         delta = step[len("text_delta:"):]

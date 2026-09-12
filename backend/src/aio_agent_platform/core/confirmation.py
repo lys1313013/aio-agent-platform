@@ -95,7 +95,7 @@ class ConfirmationManager:
     ) -> bool:
         """Resolve a pending confirmation with user's response."""
         confirmation = self._pending.get(confirmation_id)
-        if not confirmation:
+        if not confirmation or confirmation.response is not None:
             logger.warning(
                 "Confirmation not found or already resolved",
                 confirmation_id=confirmation_id,

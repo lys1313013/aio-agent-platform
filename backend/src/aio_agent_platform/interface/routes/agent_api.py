@@ -696,7 +696,7 @@ async def sse_chat(
 
     # Load session
     result = await db.execute(
-        select(Session).where(Session.id == session_id, Session.user_id == user.id)
+        select(Session).where(Session.id == session_id, Session.user_id == user.id, Session.source != "room")
     )
     session = result.scalar_one_or_none()
     if not session:
@@ -881,7 +881,7 @@ async def get_session_messages(
 ) -> dict:
     """Get conversation history for an external API session."""
     result = await db.execute(
-        select(Session).where(Session.id == session_id, Session.user_id == user.id)
+        select(Session).where(Session.id == session_id, Session.user_id == user.id, Session.source != "room")
     )
     session = result.scalar_one_or_none()
     if not session:
@@ -916,7 +916,7 @@ async def clear_session(
 ) -> dict:
     """Clear all messages in a session (keep the session)."""
     result = await db.execute(
-        select(Session).where(Session.id == session_id, Session.user_id == user.id)
+        select(Session).where(Session.id == session_id, Session.user_id == user.id, Session.source != "room")
     )
     session = result.scalar_one_or_none()
     if not session:
@@ -937,7 +937,7 @@ async def delete_external_session(
 ) -> dict:
     """Delete an external API session and its messages."""
     result = await db.execute(
-        select(Session).where(Session.id == session_id, Session.user_id == user.id)
+        select(Session).where(Session.id == session_id, Session.user_id == user.id, Session.source != "room")
     )
     session = result.scalar_one_or_none()
     if not session:
@@ -963,7 +963,7 @@ async def submit_message_feedback(
     # user's message feedback.
     owned = await db.scalar(
         select(Session.id).where(
-            Session.id == session_id, Session.user_id == user.id
+            Session.id == session_id, Session.user_id == user.id, Session.source != "room"
         )
     )
     if not owned:
