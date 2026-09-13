@@ -112,7 +112,8 @@ async def handle_create_webpage(
             "page_id": page_id,
             "title": title,
             "url": url,
-            "hint": "网页已生成。告知用户可以点击下方的网页卡片内嵌预览或新标签页打开，不要在回复中粘贴 HTML 源码。",
+            "artifact_url": f"/artifacts/webpages/{page_id}",
+            "hint": "网页已生成。必须在最终回复中使用 Markdown 链接交付：[网页标题](artifact_url 的值)。使用返回的 artifact_url，不要使用带 token 的临时 url，不要只说去工具记录里查看，也不要粘贴 HTML 源码。",
         },
         ensure_ascii=False,
     )

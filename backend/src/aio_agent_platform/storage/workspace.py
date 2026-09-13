@@ -280,14 +280,15 @@ class WorkspaceStorage:
 
             # 5. Upload changed/new files
             for rel_path, data in container_files.items():
-                hashlib.sha256(data).hexdigest()
                 existing = existing_objects.get(rel_path)
 
-                # Compare by checking if file exists and size matches
-                # (MinIO etag is MD5, so we use size as a quick check)
+                # Size alone cannot detect same-length edits. Hash the stored
+                # bytes rather than trusting ETags (multipart uploads differ)
+                # or meta.json, which may be stale after direct file uploads.
                 if existing and existing.size == len(data):
-                    # Size matches — likely unchanged (skip for performance)
-                    continue
+                    stored_data = self._storage.get(existing.key)
+                    if hashlib.sha256(stored_data).digest() == hashlib.sha256(data).digest():
+                        continue
 
                 object_key = self._object_key(workspace_id, rel_path)
                 content_type = self._guess_content_type(rel_path)

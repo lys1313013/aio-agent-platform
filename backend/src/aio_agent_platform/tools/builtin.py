@@ -1055,7 +1055,7 @@ WEB_FETCH = Tool(
 CREATE_WEBPAGE = Tool(
     name="create_webpage",
     description=(
-        "生成一个完整 HTML 网页并返回可点击的网页卡片，用户可在对话中内嵌预览或新标签页打开。"
+        "生成一个完整 HTML 网页并返回 artifact_url；必须在最终回复中用 Markdown 链接引用 artifact_url，用户点击可预览。"
         "适用场景：数据可视化报告、方案对比、图文教程、可交互的小工具演示等——"
         "当纯文本或 Markdown 不足以讲清楚时使用。"
         "要求：单个自包含 HTML 文件（内联 CSS/JS），可通过公共 CDN 引入 ECharts 等库；"

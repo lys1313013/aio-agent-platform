@@ -58,7 +58,7 @@ def build_system_prompt(
     """
     if agent_prompt:
         # Use agent's custom prompt as base, then append memories/skills context
-        parts = [agent_prompt]
+        parts = [agent_prompt, _env.get_template("artifact_delivery.j2").render()]
 
         if user_portrait:
             parts.append("\n## 用户画像 (User Portrait)")

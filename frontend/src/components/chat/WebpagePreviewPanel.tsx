@@ -19,7 +19,12 @@ export default function WebpagePreviewPanel() {
   // 标记面板已挂载：无面板挂载的聊天场景（宠物浮窗）点击卡片时降级为新标签页打开
   useEffect(() => {
     useWebpagePreviewStore.getState().setPanelAvailable(true);
-    return () => useWebpagePreviewStore.getState().setPanelAvailable(false);
+    return () => {
+      const store = useWebpagePreviewStore.getState();
+      store.setPanelAvailable(false);
+      // 预览属于当前页面，离开后不能残留到下次进入或其他聊天页面。
+      store.closePreview();
+    };
   }, []);
 
   useEffect(() => {

@@ -7,7 +7,8 @@ import type { Message, ToolCallInfo, DelegationInfo, PersistedConfirmation } fro
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
-import ToolCallCard from './ToolCallCard';
+import ToolCallCard, { parseWebpageResult } from './ToolCallCard';
+import ArtifactLink from './ArtifactLink';
 import DelegationCard from './DelegationCard';
 import { ConfirmationCard } from '../confirmation';
 import FileChangeList, { resolveToolFileChange } from './FileChangeList';
@@ -154,6 +155,12 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
   const nonConfirmationCalls = allToolCalls.filter((tc) => tc.name !== 'AskUserQuestion');
   const hasToolCalls = nonConfirmationCalls.length > 0;
   const regularToolCalls = nonConfirmationCalls.filter(tc => tc.name !== 'delegate_task');
+  // 旧回答未引用网页时，从已持久化的成功工具结果恢复交付入口。
+  const deliveredPages = [...new Map(allToolCalls
+    .filter((tc) => tc.name === 'create_webpage' && tc.result?.status === 'ok')
+    .map((tc) => parseWebpageResult(tc.result?.preview))
+    .filter((page) => page !== null)
+    .map((page) => [page.page_id, page] as const)).values()];
 
   const handleCopy = async () => {
     if (msg.content) {
@@ -442,6 +449,9 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
                           <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
                             components={{
+                              a: ({ href, children }) => (
+                                <ArtifactLink href={href} workspaceId={workspaceId}>{children}</ArtifactLink>
+                              ),
                               code: ({ node, className, children, ...props }) => {
                                 const match = /language-(\w+)/.exec(className || '');
                                 const codeString = String(children).replace(/\n$/, '');
@@ -470,6 +480,14 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
                 </>
               );
             })()}
+
+            {!isUser && deliveredPages.filter((page) =>
+              !msg.content?.includes(`](/artifacts/webpages/${page.page_id})`)
+            ).map((page) => (
+              <div key={page.page_id} className="rounded-lg border border-border bg-card px-3 py-2 text-sm text-primary">
+                <ArtifactLink href={`/artifacts/webpages/${page.page_id}`}>{page.title}</ArtifactLink>
+              </div>
+            ))}
 
             {/* Actions */}
             <div
