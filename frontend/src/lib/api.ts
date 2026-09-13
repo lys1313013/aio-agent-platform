@@ -1523,8 +1523,9 @@ export const channelBindingsApi = {
 // ---- Memories ----
 
 export const memoriesApi = {
-  list(params?: { layer?: string; limit?: number; offset?: number }) {
+  list(params?: { agent_id?: string; layer?: string; limit?: number; offset?: number }) {
     const searchParams = new URLSearchParams();
+    if (params?.agent_id) searchParams.set('agent_id', params.agent_id);
     if (params?.layer) searchParams.set('layer', params.layer);
     if (params?.limit) searchParams.set('limit', String(params.limit));
     if (params?.offset) searchParams.set('offset', String(params.offset));
@@ -1536,7 +1537,7 @@ export const memoriesApi = {
     return request<Memory>(`/memories/${id}`);
   },
 
-  create(data: { layer: MemoryLayer; content: string; metadata?: Record<string, unknown> }) {
+  create(data: { agent_id?: string | null; layer: MemoryLayer; content: string; metadata?: Record<string, unknown> }) {
     return request<Memory>('/memories', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -1545,7 +1546,7 @@ export const memoriesApi = {
 
   update(
     id: string,
-    data: { content?: string; layer?: MemoryLayer; metadata?: Record<string, unknown> },
+    data: { agent_id?: string | null; content?: string; layer?: MemoryLayer; metadata?: Record<string, unknown> },
   ) {
     return request<Memory>(`/memories/${id}`, {
       method: 'PUT',
@@ -1564,12 +1565,13 @@ export const memoriesApi = {
     });
   },
 
-  stats() {
-    return request<Record<'L1' | 'L2' | 'L3', number>>('/memories/stats');
+  stats(agentId?: string) {
+    return request<Record<'L1' | 'L2' | 'L3', number>>(`/memories/stats${agentId ? `?agent_id=${agentId}` : ''}`);
   },
 
-  search(query: string, params?: { layer?: string; top_k?: number }) {
+  search(query: string, params?: { agent_id?: string; layer?: string; top_k?: number }) {
     const searchParams = new URLSearchParams({ q: query });
+    if (params?.agent_id) searchParams.set('agent_id', params.agent_id);
     if (params?.layer) searchParams.set('layer', params.layer);
     if (params?.top_k) searchParams.set('top_k', String(params.top_k));
     return request<MemorySearchResult[]>(`/memories/search?${searchParams.toString()}`);
@@ -1577,8 +1579,9 @@ export const memoriesApi = {
 };
 
 export const dailyMemoriesApi = {
-  list(params?: { date?: string; start?: string; end?: string; limit?: number; offset?: number }) {
+  list(params?: { agent_id?: string; date?: string; start?: string; end?: string; limit?: number; offset?: number }) {
     const searchParams = new URLSearchParams();
+    if (params?.agent_id) searchParams.set('agent_id', params.agent_id);
     if (params?.date) searchParams.set('date', params.date);
     if (params?.start) searchParams.set('start', params.start);
     if (params?.end) searchParams.set('end', params.end);
@@ -1588,12 +1591,12 @@ export const dailyMemoriesApi = {
     return request<DailyMemory[]>(`/memories/daily${qs ? `?${qs}` : ''}`);
   },
 
-  regenerate(day: string) {
-    return request<DailyMemory>(`/memories/daily/${day}/regenerate`, { method: 'POST' });
+  regenerate(day: string, agentId?: string) {
+    return request<DailyMemory>(`/memories/daily/${day}/regenerate${agentId ? `?agent_id=${agentId}` : ''}`, { method: 'POST' });
   },
 
-  delete(day: string) {
-    return request<void>(`/memories/daily/${day}`, { method: 'DELETE' });
+  delete(day: string, agentId?: string) {
+    return request<void>(`/memories/daily/${day}${agentId ? `?agent_id=${agentId}` : ''}`, { method: 'DELETE' });
   },
 };
 

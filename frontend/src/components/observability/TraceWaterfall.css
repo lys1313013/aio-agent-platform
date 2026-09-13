@@ -1,0 +1,11 @@
+.trace-waterfall { border: 1px solid var(--trace-border); border-radius: 8px; overflow: hidden; }
+.trace-waterfall-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; padding: 16px; }
+.trace-waterfall-note { display: block; padding: 0 16px 16px; font-size: 12px; }
+.trace-node-name { display: inline-flex; align-items: center; max-width: 240px; vertical-align: middle; }
+.trace-node-name .ant-tag { flex-shrink: 0; }
+.trace-axis { display: flex; justify-content: space-between; font: 11px ui-monospace, monospace; font-weight: normal; }
+.trace-track { height: 28px; position: relative; background: repeating-linear-gradient(to right, var(--trace-border) 0, var(--trace-border) 1px, transparent 1px, transparent 25%); border-right: 1px solid var(--trace-border); }
+.trace-bar { position: absolute; top: 6px; height: 16px; min-width: 2px; max-width: 100%; border-radius: 3px; }
+.trace-row-selected > td { background: var(--trace-selected) !important; }
+.trace-node-detail { padding: 16px; border-top: 1px solid var(--trace-border); }
+.trace-node-detail > .ant-space { margin-bottom: 16px; }

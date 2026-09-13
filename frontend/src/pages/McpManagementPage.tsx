@@ -182,7 +182,10 @@ export default function McpManagementPage() {
   const handleRefresh = async (id: string) => {
     setRefreshingId(id);
     try {
-      await mcpApi.refresh(id);
+      const result = await mcpApi.refresh(id);
+      if (result.status !== 'connected') {
+        throw new Error(result.last_error || 'MCP Server 连接失败');
+      }
       message.success('MCP Server 已刷新');
       fetchData();
     } catch (err: any) {

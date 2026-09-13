@@ -11,7 +11,12 @@ import structlog
 from sqlalchemy import select
 
 from aio_agent_platform.core.agent import AgentStep
-from aio_agent_platform.core.chat import build_agent_loop, filter_tools_by_agent, load_agent
+from aio_agent_platform.core.chat import (
+    build_agent_loop,
+    filter_tools_by_agent,
+    load_agent,
+    refresh_mcp_tools_for_agent,
+)
 from aio_agent_platform.core.confirmation import confirmation_manager
 from aio_agent_platform.core.context import (
     ContextBudget,
@@ -352,6 +357,7 @@ async def _execute_task(app, room_id, run_id, task_id):
                 raise RoomExecutionError("工作区不存在或无权使用")
             token = current_agent_id.set(str(agent.id))
             blacklist = set(FRONTEND_TOOL_NAMES) | {"delegate_task"}
+            await refresh_mcp_tools_for_agent(app.state.tool_executor, agent)
             tools_list, tools_schema = filter_tools_by_agent(app.state.tool_executor, agent, extra_blacklist=blacklist)
             if run.input["mode"] == "summary":
                 tools_list, tools_schema = [], []

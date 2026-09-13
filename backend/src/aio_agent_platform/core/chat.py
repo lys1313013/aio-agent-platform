@@ -127,6 +127,15 @@ async def load_agent(
 # ---------------------------------------------------------------------------
 
 
+async def refresh_mcp_tools_for_agent(tool_executor: ToolExecutor, agent: Agent | None) -> None:
+    manager = tool_executor.mcp_manager
+    if manager:
+        server_ids = None
+        if agent and agent.mcp_server_ids is not None:
+            server_ids = {str(sid) for sid in agent.mcp_server_ids}
+        await manager.ensure_tools_fresh(server_ids)
+
+
 def filter_tools_by_agent(
     tool_executor: ToolExecutor,
     agent: Agent | None,
@@ -295,7 +304,7 @@ async def build_system_prompt_with_memories(
     """Build system prompt with L1/L2/L3 memories and relevant skills injected."""
     memory_top_k = await get_memory_top_k(db, user_id)
     memory_data = await MemoryService.get_memories_for_prompt(
-        db, user_id, user_message, top_k=memory_top_k
+        db, user_id, user_message, top_k=memory_top_k, agent_id=agent.id if agent else None
     )
 
     if agent and agent.skills:
@@ -634,7 +643,7 @@ def fire_memory_extraction(
             from aio_agent_platform.memory.daily import DailyMemoryService
 
             await DailyMemoryService.append_session_summary(
-                user_id, session_id, l3_memory.content
+                user_id, session_id, l3_memory.content, agent_id=l3_memory.agent_id
             )
 
     task = asyncio.create_task(_extract_and_merge_daily())

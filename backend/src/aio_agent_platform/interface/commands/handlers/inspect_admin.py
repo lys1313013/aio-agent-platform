@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 
 from aio_agent_platform.channels.connection_manager import get_global_channel_manager
-from aio_agent_platform.core.chat import filter_tools_by_agent
+from aio_agent_platform.core.chat import filter_tools_by_agent, refresh_mcp_tools_for_agent
 from aio_agent_platform.cron_jobs.scheduler import get_global_scheduler
 from aio_agent_platform.cron_jobs.service import CronJobService
 from aio_agent_platform.db.models import Agent, LLMModel, MCPServer, Skill
@@ -26,6 +26,7 @@ async def cmd_tools(ctx: CommandContext) -> CommandResult:
         agent = await ctx.db.get(Agent, ctx.session.agent_id)
 
     if agent is not None:
+        await refresh_mcp_tools_for_agent(ctx.tool_executor, agent)
         tools_list, _tools_schema = filter_tools_by_agent(ctx.tool_executor, agent)
     else:
         tools_list = ctx.tool_executor.registry.list_tools()

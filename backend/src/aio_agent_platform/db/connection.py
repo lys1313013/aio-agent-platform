@@ -239,6 +239,14 @@ async def _run_manual_migrations(conn) -> None:
     # 限定锁等待 10s，超时即放弃让启动继续（迁移幂等，下次启动可重试）。
     await conn.execute(text("SET LOCAL lock_timeout = '10s'"))
     migrations = [
+        # Keep legacy/bootstrap databases aligned with the scoped-memory migration.
+        "ALTER TABLE memories ADD COLUMN IF NOT EXISTS agent_id UUID",
+        "ALTER TABLE daily_memories ADD COLUMN IF NOT EXISTS agent_id UUID",
+        "CREATE INDEX IF NOT EXISTS idx_memories_user_agent_layer ON memories (user_id, agent_id, layer)",
+        "ALTER TABLE daily_memories DROP CONSTRAINT IF EXISTS uq_daily_memories_user_date",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_memories_shared_date ON daily_memories (user_id, date) WHERE agent_id IS NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_memories_agent_date ON daily_memories (user_id, agent_id, date) WHERE agent_id IS NOT NULL",
+
         # Tenant isolation. Existing installations are moved into one default tenant
         # so their current sharing behaviour is preserved after upgrading.
         """CREATE TABLE IF NOT EXISTS tenants (

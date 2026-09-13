@@ -220,6 +220,7 @@ export interface WsServerMessage {
 export type MemoryLayer = 'L1' | 'L2' | 'L3';
 
 export interface Memory {
+  agent_id: string | null;
   id: string;
   layer: MemoryLayer;
   content: string;
@@ -235,6 +236,7 @@ export interface MemoryListResponse {
 }
 
 export interface MemorySearchResult {
+  agent_id: string | null;
   id: string;
   layer: MemoryLayer;
   content: string;
@@ -250,6 +252,7 @@ export interface DailyHighlight {
 }
 
 export interface DailyMemory {
+  agent_id: string | null;
   id: string;
   date: string; // YYYY-MM-DD
   content: string;

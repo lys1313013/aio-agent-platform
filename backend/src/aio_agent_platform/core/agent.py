@@ -867,6 +867,7 @@ class AgentLoop:
                 user_id=user_id,
                 tenant_id=tenant_id,
                 status=status,
+                agent_id=agent_id,
                 iteration_count=iteration_count,
                 tool_call_count=tool_call_count,
                 total_tokens=total_tokens,
@@ -908,6 +909,7 @@ class AgentLoop:
             user_id=ctx.user_id,
             tenant_id=ctx.tenant_id,
             status="error",
+            agent_id=ctx.agent_id,
             duration_ms=0,
         )
         # ---- Hook: session ended (error path) ----

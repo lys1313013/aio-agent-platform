@@ -377,6 +377,7 @@ async def lifespan(app: FastAPI):
             build_system_prompt_with_memories,
             filter_tools_by_agent,
             load_agent,
+            refresh_mcp_tools_for_agent,
         )
         from aio_agent_platform.db.models import CronJobRun, User
         from aio_agent_platform.db.models import Session as ChatSession
@@ -439,7 +440,7 @@ async def lifespan(app: FastAPI):
         # (wait_for_response has no backend timeout), and ui_* page actions
         # have no browser to execute in.
         from aio_agent_platform.tools.builtin import FRONTEND_TOOL_NAMES
-
+        await refresh_mcp_tools_for_agent(tool_executor, agent)
         tools_list, tools_schema = filter_tools_by_agent(
             tool_executor, agent,
             extra_blacklist={"delegate_task", "AskUserQuestion", *FRONTEND_TOOL_NAMES},

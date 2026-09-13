@@ -328,7 +328,15 @@ async def refresh_mcp_server(
     if not mcp_manager:
         raise HTTPException(status_code=503, detail="MCP Manager 未初始化")
 
-    status, error, tools_count, tools_list = await _try_connect(mcp_manager, server)
+    if mcp_manager.get_server_tools(server_id) is not None:
+        try:
+            await mcp_manager.refresh_tools(server_id)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"MCP 刷新失败: {exc}") from exc
+        tools_count, tools_list = _get_live_tools(mcp_manager, server)
+        status, error = "connected", None
+    else:
+        status, error, tools_count, tools_list = await _try_connect(mcp_manager, server)
     server.status = status
     server.last_error = error
     await db.flush()

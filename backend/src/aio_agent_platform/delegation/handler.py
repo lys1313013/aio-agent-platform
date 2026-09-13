@@ -435,7 +435,7 @@ async def _build_child_system_prompt(
     """Build system prompt for child agent with inheritance."""
     # Get memory context
     memory_data = await MemoryService.get_memories_for_prompt(
-        db, user_id, task, top_k=settings.agent.memory_top_k
+        db, user_id, task, top_k=settings.agent.memory_top_k, agent_id=child_agent.id
     )
 
     # Get skills — use child's bound skills or search by task relevance

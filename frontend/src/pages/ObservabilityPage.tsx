@@ -39,6 +39,7 @@ import {
 import { useAuthStore } from '@/stores/authStore';
 import { useThemeStore } from '@/stores/themeStore';
 import './ObservabilityPage.css';
+import TraceWaterfall from '@/components/observability/TraceWaterfall';
 
 const { Title, Text } = Typography;
 
@@ -256,39 +257,18 @@ function TracesTab({ range }: { range: ObsRangeQuery }) {
     setDetail(null);
     setDetailOpen(true);
     setDetailLoading(true);
-    observabilityApi.trace(id).then(setDetail).finally(() => setDetailLoading(false));
+    observabilityApi.trace(id).then(setDetail).catch(() => setDetail(null)).finally(() => setDetailLoading(false));
   };
 
   const columns: ColumnsType<ObsTraceItem> = [
     { title: 'Trace ID', dataIndex: 'trace_id', width: 120, render: (v: string) => <Text code copyable={{ text: v }}>{v.slice(0, 8)}</Text> },
-    { title: '开始时间', dataIndex: 'created_at', width: 170, render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss') },
+    { title: '开始时间', dataIndex: 'created_at', width: 170, render: (v: string, record) => record.duration_ms == null ? '-' : dayjs(v).subtract(record.duration_ms, 'millisecond').format('YYYY-MM-DD HH:mm:ss') },
     { title: '会话', dataIndex: 'session_title', ellipsis: true, render: (v: string | null) => v || <Text type="secondary">未命名会话</Text> },
     { title: '状态', dataIndex: 'status', width: 90, render: (v: string) => <StatusTag status={v} /> },
     { title: 'LLM 轮数', dataIndex: 'iteration_count', width: 100, align: 'right' },
     { title: '工具调用', dataIndex: 'tool_call_count', width: 100, align: 'right' },
     { title: 'Token', dataIndex: 'total_tokens', width: 110, align: 'right', render: (v: number) => fmt(v) },
     { title: '端到端耗时', dataIndex: 'duration_ms', width: 120, align: 'right', render: (v: number | null) => dur(v) },
-  ];
-
-  const llmCols: ColumnsType<Record<string, unknown>> = [
-    { title: '#', dataIndex: 'call_order', width: 48 },
-    { title: '模型', dataIndex: 'model', ellipsis: true },
-    { title: '输入', dataIndex: 'prompt_tokens', align: 'right', render: (v) => fmt(v as number) },
-    { title: '输出', dataIndex: 'completion_tokens', align: 'right', render: (v) => fmt(v as number) },
-    { title: '缓存', dataIndex: 'cache_read_tokens', align: 'right', render: (v) => fmt(v as number) },
-    { title: 'TTFT', dataIndex: 'ttft_ms', render: (v) => dur(v as number | null) },
-    { title: '总耗时', dataIndex: 'duration_ms', render: (v) => dur(v as number | null) },
-    { title: '结果', dataIndex: 'final_status', width: 90, render: (v: string, r) => v === 'failed' ? <Tag color="error">{String(r.error_type ?? '失败')}</Tag> : <Tag color="success">成功</Tag> },
-  ];
-
-  const toolCols: ColumnsType<Record<string, unknown>> = [
-    { title: '#', dataIndex: 'call_order', width: 48 },
-    { title: '工具', dataIndex: 'tool_name', ellipsis: true },
-    { title: '类型', dataIndex: 'exec_type', width: 90 },
-    { title: '耗时', dataIndex: 'duration_ms', render: (v) => dur(v as number | null) },
-    { title: '输出', dataIndex: 'output_bytes', render: (v) => v == null ? '-' : `${fmt(v as number)} B` },
-    { title: '注入 Token', dataIndex: 'est_injected_tokens', render: (v) => v == null ? '-' : fmt(v as number) },
-    { title: '结果', dataIndex: 'is_error', width: 90, render: (v: boolean, r) => v ? <Tag color="error">{String(r.error_type ?? '失败')}</Tag> : <Tag color="success">成功</Tag> },
   ];
 
   const trace = detail?.trace ?? {};
@@ -308,19 +288,18 @@ function TracesTab({ range }: { range: ObsRangeQuery }) {
           onRow={(record) => ({ onClick: () => openDetail(record.trace_id), style: { cursor: 'pointer' } })}
           pagination={{ current: page, pageSize: 20, total, showSizeChanger: false, showTotal: (t) => `共 ${t} 条`, onChange: setPage }} />
       </Card>
-      <Drawer title={detail ? `Trace ${String(trace.trace_id).slice(0, 8)}` : 'Trace 明细'} width="min(960px, 92vw)" open={detailOpen} onClose={() => setDetailOpen(false)}>
+      <Drawer title={detail ? `Trace ${String(trace.trace_id).slice(0, 8)}` : 'Trace 明细'} width="min(1440px, 96vw)" open={detailOpen} onClose={() => setDetailOpen(false)}>
         {detailLoading ? <Skeleton active paragraph={{ rows: 12 }} /> : detail ? <>
           <Descriptions size="small" bordered column={{ xs: 1, sm: 2, lg: 3 }} className="obs-detail-summary" items={[
             { key: 'status', label: '状态', children: <StatusTag status={String(trace.status)} /> },
-            { key: 'created', label: '开始时间', children: trace.created_at ? dayjs(String(trace.created_at)).format('YYYY-MM-DD HH:mm:ss') : '-' },
+            { key: 'created', label: '开始时间', children: trace.created_at && typeof trace.duration_ms === 'number' ? dayjs(String(trace.created_at)).subtract(trace.duration_ms, 'millisecond').format('YYYY-MM-DD HH:mm:ss') : '-' },
             { key: 'duration', label: '端到端耗时', children: dur(trace.duration_ms as number | null) },
             { key: 'llm', label: 'LLM 轮数', children: String(trace.iteration_count ?? 0) },
             { key: 'tools', label: '工具调用', children: String(trace.tool_call_count ?? 0) },
             { key: 'tokens', label: '总 Token', children: fmt(trace.total_tokens as number) },
             { key: 'session', label: '会话 ID', span: 3, children: <Text copyable>{String(trace.session_id ?? '-')}</Text> },
           ]} />
-          <Card size="small" title={`LLM 调用 (${detail.llm_calls.length})`} className="obs-detail-card"><Table rowKey="call_order" columns={llmCols} dataSource={detail.llm_calls} size="small" pagination={false} scroll={{ x: 760 }} /></Card>
-          <Card size="small" title={`工具调用 (${detail.tool_calls.length})`} className="obs-detail-card"><Table rowKey="call_order" columns={toolCols} dataSource={detail.tool_calls} size="small" pagination={false} scroll={{ x: 700 }} /></Card>
+          <TraceWaterfall key={String(trace.trace_id)} detail={detail} />
         </> : <Empty description="Trace 明细加载失败" />}
       </Drawer>
     </div>
@@ -357,9 +336,9 @@ function StatsTab({ range }: { range: ObsRangeQuery }) {
       </div>
       {loading ? <Skeleton active paragraph={{ rows: 10 }} /> : !items.length ? <Empty description="该时间范围内暂无聚合数据" /> : <>
         <Card size="small" title={`${metricName}分布`} className="obs-chart-card">
-          <Bar data={items.slice(0, 20)} xField={field} yField="label" height={Math.max(300, items.slice(0, 20).length * 38)} color="#1677ff"
-            scale={{ x: { nice: true } }} axis={{ x: { title: false }, y: { title: false, labelAutoHide: false } }} label={{ text: field, position: 'right', formatter: (v: number) => metric === 'duration' ? dur(v) : fmt(v) }}
-            tooltip={{ items: [{ channel: 'x', name: metricName, valueFormatter: (value: unknown) => metric === 'duration' ? dur(Number(value)) : fmt(Number(value)) }] }} />
+          <Bar data={items.slice(0, 20)} xField="label" yField={field} height={Math.max(300, items.slice(0, 20).length * 38)} color="#1677ff"
+            scale={{ y: { nice: true, zero: true } }} axis={{ x: { title: false, labelAutoHide: false }, y: { title: false, labelFormatter: (v: number) => metric === 'duration' ? dur(Number(v)) : fmt(Number(v)) } }} label={{ text: field, position: 'right', formatter: (v: number) => metric === 'duration' ? dur(v) : fmt(v) }}
+            tooltip={{ items: [{ channel: 'y', name: metricName, valueFormatter: (value: unknown) => metric === 'duration' ? dur(Number(value)) : fmt(Number(value)) }] }} />
         </Card>
         <Card size="small" className="obs-table-card obs-table-card--spaced">
           <Table<ObsDistributionItem> rowKey="key" size="small" dataSource={items} pagination={{ pageSize: 20, hideOnSinglePage: true }} columns={[

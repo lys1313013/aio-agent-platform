@@ -23,6 +23,7 @@ router = APIRouter(prefix="/api/memories/daily", tags=["memories"])
 
 
 class DailyMemoryOut(BaseModel):
+    agent_id: UUID | None = None
     id: UUID
     date: date
     content: str
@@ -43,15 +44,16 @@ async def list_daily_memories(
     end: date | None = Query(default=None, description="范围结束(含)"),
     limit: int = Query(default=30, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    agent_id: UUID | None = Query(default=None),
 ) -> list[DailyMemory]:
     """Query daily memories by exact date or date range (default: recent 30 days)."""
     if day is not None:
-        memory = await DailyMemoryService.get_by_date(db, user.id, day)
+        memory = await DailyMemoryService.get_by_date(db, user.id, day, agent_id=agent_id)
         return [memory] if memory else []
     if start and end and start > end:
         raise HTTPException(status_code=422, detail="start must be <= end")
     return await DailyMemoryService.list_range(
-        db, user.id, start=start, end=end, limit=limit, offset=offset
+        db, user.id, start=start, end=end, limit=limit, offset=offset, agent_id=agent_id
     )
 
 
@@ -60,9 +62,10 @@ async def regenerate_daily_memory(
     day: date,
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
+    agent_id: UUID | None = Query(default=None),
 ) -> DailyMemory:
     """Re-run LLM consolidation for a specific day (uses its own DB session)."""
-    memory = await DailyMemoryService.consolidate_day(user.id, day)
+    memory = await DailyMemoryService.consolidate_day(user.id, day, agent_id=agent_id)
     if memory is None:
         raise HTTPException(
             status_code=404,
@@ -76,8 +79,9 @@ async def delete_daily_memory(
     day: date,
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
+    agent_id: UUID | None = Query(default=None),
 ) -> None:
     """Delete a day's record (L3 source data is untouched; can regenerate)."""
-    deleted = await DailyMemoryService.delete_by_date(db, user.id, day)
+    deleted = await DailyMemoryService.delete_by_date(db, user.id, day, agent_id=agent_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Daily memory not found")

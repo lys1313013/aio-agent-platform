@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from uuid import UUID
 
 import structlog
@@ -9,6 +11,9 @@ import structlog
 from aio_agent_platform.tools.mcp.adapter import MCPServerConnection, MCPToolInfo
 
 logger = structlog.get_logger()
+
+TOOLS_CACHE_TTL_SECONDS = 60
+REFRESH_RETRY_SECONDS = 60
 
 
 class MCPManager:
@@ -23,6 +28,8 @@ class MCPManager:
     """
 
     def __init__(self) -> None:
+        self._refresh_locks: dict[UUID, asyncio.Lock] = {}
+        self._retry_after: dict[UUID, float] = {}
         self._connections: dict[UUID, MCPServerConnection] = {}
         self._tool_to_server: dict[str, UUID] = {}  # full_tool_name -> server_id
 
@@ -48,6 +55,7 @@ class MCPManager:
         await conn.connect()
 
         self._connections[server_id] = conn
+        self._retry_after.pop(server_id, None)
 
         # Register tool mappings
         prefix = config.get("tool_prefix") or ""
@@ -86,29 +94,49 @@ class MCPManager:
         await self.remove_server(server_id)
         return await self.add_server(server_id, config)
 
-    async def refresh_tools(self, server_id: UUID) -> list[MCPToolInfo]:
-        """Refresh tool list for a specific server (without reconnecting)."""
-        conn = self._connections.get(server_id)
-        if not conn:
-            raise RuntimeError(f"MCP Server not connected: {server_id}")
-
-        # Clear old tool mappings for this server
-        old_tools = [
-            name for name, sid in self._tool_to_server.items() if sid == server_id
-        ]
-        for name in old_tools:
-            del self._tool_to_server[name]
-
-        # Refresh tools
-        tools = await conn.refresh_tools()
-
-        # Re-register mappings
+    def _sync_tool_mappings(self, server_id: UUID, conn: MCPServerConnection) -> None:
+        if self._connections.get(server_id) is not conn:
+            return
+        mappings = {name: sid for name, sid in self._tool_to_server.items() if sid != server_id}
         prefix = conn.config.get("tool_prefix") or ""
-        for tool in tools:
-            full_name = f"{prefix}{tool.name}" if prefix else tool.name
-            self._tool_to_server[full_name] = server_id
+        mappings.update({f"{prefix}{tool.name}": server_id for tool in conn.tools})
+        self._tool_to_server = mappings
 
-        return tools
+    async def refresh_tools(self, server_id: UUID, *, force: bool = True) -> list[MCPToolInfo]:
+        """Refresh atomically; force bypasses the 60s TTL and failure backoff."""
+        lock = self._refresh_locks.setdefault(server_id, asyncio.Lock())
+        async with lock:
+            conn = self._connections.get(server_id)
+            if not conn:
+                raise RuntimeError(f"MCP Server not connected: {server_id}")
+            now = time.monotonic()
+            if not force and (
+                now - conn.tools_refreshed_at < TOOLS_CACHE_TTL_SECONDS
+                or now < self._retry_after.get(server_id, 0)
+            ):
+                return conn.tools
+            try:
+                async with asyncio.timeout(float(conn.config.get("timeout", 60))):
+                    tools = await conn.refresh_tools()
+            except Exception:
+                self._retry_after[server_id] = time.monotonic() + REFRESH_RETRY_SECONDS
+                raise
+            self._sync_tool_mappings(server_id, conn)
+            self._retry_after.pop(server_id, None)
+            return tools
+
+    async def ensure_tools_fresh(self, server_ids: set[str] | None = None) -> None:
+        """Refresh selected servers on demand; preserve cached tools on failure."""
+        async def refresh(server_id: UUID) -> None:
+            try:
+                await self.refresh_tools(server_id, force=False)
+            except Exception as exc:
+                logger.warning("mcp_tools_refresh_failed", server_id=str(server_id), error=str(exc))
+
+        await asyncio.gather(*(
+            refresh(server_id) for server_id in list(self._connections)
+            if server_ids is None or str(server_id) in server_ids
+        ))
 
     def get_tool_info(self, tool_name: str) -> MCPToolInfo | None:
         """Get tool info by full name (with prefix)."""
@@ -175,7 +203,11 @@ class MCPManager:
             else tool_name
         )
 
-        return await conn.call_tool(base_name, arguments)
+        try:
+            return await conn.call_tool(base_name, arguments)
+        finally:
+            # A tool call may have reconnected and rediscovered the upstream tools.
+            self._sync_tool_mappings(server_id, conn)
 
     async def shutdown(self) -> None:
         """Close all MCP Server connections."""

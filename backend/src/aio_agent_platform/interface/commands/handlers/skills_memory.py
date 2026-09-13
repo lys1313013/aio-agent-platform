@@ -46,13 +46,18 @@ async def cmd_skill(ctx: CommandContext) -> CommandResult:
     return await run_skill(ctx, ctx.args["name"], ctx.args.get("input"))
 
 
+def _memory_agent_id(ctx: CommandContext) -> UUID | None:
+    value = current_agent_id.get() or getattr(ctx.session, "agent_id", None)
+    return UUID(str(value)) if value else None
+
+
 # ---- Memory ----
 
 
 @command("memory", group="记忆", desc="查看当前用户长期记忆列表")
 async def cmd_memory(ctx: CommandContext) -> CommandResult:
     memories = await MemoryService.list_memories(
-        ctx.db, UUID(ctx.user_id), limit=50
+        ctx.db, UUID(ctx.user_id), limit=50, agent_id=_memory_agent_id(ctx)
     )
     if not memories:
         return CommandResult(content="暂无长期记忆，发送 /remember <内容> 写入一条。")
@@ -74,7 +79,7 @@ async def cmd_remember(ctx: CommandContext) -> CommandResult:
     if not content:
         return CommandResult(content="记忆内容不能为空。")
     await MemoryService.create_memory(
-        ctx.db, UUID(ctx.user_id), layer="L2", content=content
+        ctx.db, UUID(ctx.user_id), layer="L2", content=content, agent_id=_memory_agent_id(ctx)
     )
     return CommandResult(content=f"✅ 已写入长期记忆：{content[:80]}")
 
@@ -103,7 +108,7 @@ async def cmd_forget(ctx: CommandContext) -> CommandResult:
 
     # Otherwise treat as keyword: search then delete matches.
     matches = await MemoryService.search_memories(
-        ctx.db, UUID(ctx.user_id), keyword, top_k=20
+        ctx.db, UUID(ctx.user_id), keyword, top_k=20, agent_id=_memory_agent_id(ctx)
     )
     if not matches:
         return CommandResult(content=f"未找到包含「{keyword}」的记忆。")

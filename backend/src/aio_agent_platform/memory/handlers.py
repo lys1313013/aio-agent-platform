@@ -7,7 +7,9 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
+from aio_agent_platform.core.context import current_agent_id
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
+from aio_agent_platform.db.models import Session
 from aio_agent_platform.memory.service import MemoryService
 
 _LAYER_LABELS = {"L1": "常驻上下文", "L2": "长期记忆", "L3": "情景记忆"}
@@ -16,6 +18,16 @@ _LAYER_LABELS = {"L1": "常驻上下文", "L2": "长期记忆", "L3": "情景记
 async def _set_rls_context(db, user_id: str) -> None:
     """Set PostgreSQL RLS context using set_config (supports parameterized queries)."""
     await db.execute(select(func.set_config("app.current_user_id", user_id, True)))
+
+
+async def _active_agent(db, user_id: UUID, session_id: str) -> UUID | None:
+    # Delegation switches the ContextVar; channels can resolve the saved session.
+    active = current_agent_id.get()
+    if active:
+        return UUID(active)
+    return await db.scalar(select(Session.agent_id).where(
+        Session.id == UUID(session_id), Session.user_id == user_id,
+    ))
 
 
 async def handle_memory_read(arguments: dict, user_id: str, session_id: str, **kwargs) -> str:
@@ -34,8 +46,9 @@ async def handle_memory_read(arguments: dict, user_id: str, session_id: str, **k
     async with factory() as db:
         current_user_id.set(user_id)
         await _set_rls_context(db, user_id)
+        agent_id = await _active_agent(db, uid, session_id)
         results = await MemoryService.search_memories(
-            db, uid, query, layers=layers, top_k=top_k
+            db, uid, query, layers=layers, top_k=top_k, agent_id=agent_id
         )
         await db.commit()
 
@@ -66,14 +79,18 @@ async def handle_memory_write(arguments: dict, user_id: str, session_id: str, **
         return "Error: content is required"
 
     uid = UUID(user_id)
+    scope = arguments.get("scope", "agent")
+    if scope not in ("agent", "user"):
+        return "Error: scope must be agent or user"
     meta = {"tags": tags, "source": "agent_tool", "source_session": session_id}
 
     factory = get_session_factory()
     async with factory() as db:
         current_user_id.set(user_id)
         await _set_rls_context(db, user_id)
+        agent_id = await _active_agent(db, uid, session_id) if scope == "agent" else None
         memory, action = await MemoryService.create_or_update_memory(
-            db, uid, layer, content, meta=meta
+            db, uid, layer, content, meta=meta, agent_id=agent_id
         )
         await db.commit()
 

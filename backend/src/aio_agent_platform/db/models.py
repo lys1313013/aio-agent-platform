@@ -801,6 +801,7 @@ class Memory(Base):
     __tablename__ = "memories"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    agent_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, comment="记忆归属智能体;空为用户共享")
     user_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         nullable=False,
@@ -825,6 +826,7 @@ class Memory(Base):
     )
 
     __table_args__ = (
+        Index("idx_memories_user_agent_layer", "user_id", "agent_id", "layer"),
         Index("idx_memories_user_layer", "user_id", "layer", "created_at"),
         Index("idx_memories_tenant", "tenant_id"),
         {"comment": "记忆表"},
@@ -837,6 +839,7 @@ class DailyMemory(Base):
     __tablename__ = "daily_memories"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
+    agent_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, comment="记忆归属智能体;空为用户共享")
     user_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         nullable=False,
@@ -861,7 +864,8 @@ class DailyMemory(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("user_id", "date", name="uq_daily_memories_user_date"),
+        Index("uq_daily_memories_shared_date", "user_id", "date", unique=True, postgresql_where=text("agent_id IS NULL")),
+        Index("uq_daily_memories_agent_date", "user_id", "agent_id", "date", unique=True, postgresql_where=text("agent_id IS NOT NULL")),
         Index("idx_daily_memories_user_date", "user_id", "date"),
         Index("idx_daily_memories_tenant", "tenant_id"),
         {"comment": "每日记忆表(一人一天一条)"},

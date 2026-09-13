@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from uuid import UUID
 
@@ -74,6 +75,7 @@ class MCPServerConnection:
         self.config = config
         self.session = None  # ClientSession
         self.tools: list[MCPToolInfo] = []
+        self.tools_refreshed_at = 0.0
         self._transport_cm = None  # transport context manager
         self._session_cm = None  # session context manager
         self._connected = False
@@ -191,16 +193,24 @@ class MCPServerConnection:
         if not self.session:
             raise RuntimeError("Not connected")
 
-        result = await self.session.list_tools()
-        self.tools = []
-        for tool in result.tools:
-            self.tools.append(
+        # Build the complete snapshot before publishing it; failures retain the cache.
+        tools = []
+        cursor = None
+        while True:
+            result = await self.session.list_tools(cursor=cursor)
+            tools.extend(
                 MCPToolInfo(
                     name=tool.name,
                     description=tool.description or "",
                     input_schema=tool.inputSchema if hasattr(tool, "inputSchema") else {},
                 )
+                for tool in result.tools
             )
+            cursor = getattr(result, "nextCursor", None)
+            if not cursor:
+                break
+        self.tools = tools
+        self.tools_refreshed_at = time.monotonic()
 
         logger.info(
             "mcp_tools_discovered",

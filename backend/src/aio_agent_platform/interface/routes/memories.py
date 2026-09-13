@@ -8,13 +8,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.db.connection import get_db
-from aio_agent_platform.db.models import Memory
-from aio_agent_platform.memory.service import MemoryService
+from aio_agent_platform.db.models import Agent, Memory
+from aio_agent_platform.memory.service import MemoryService, memory_scope
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 
@@ -23,6 +23,7 @@ router = APIRouter(prefix="/api/memories", tags=["memories"])
 
 
 class MemoryOut(BaseModel):
+    agent_id: UUID | None = None
     id: UUID
     layer: str
     content: str
@@ -36,6 +37,7 @@ class MemoryOut(BaseModel):
     def from_model(cls, m: Memory) -> MemoryOut:
         return cls(
             id=m.id,
+            agent_id=m.agent_id,
             layer=m.layer,
             content=m.content,
             metadata=m.meta or {},
@@ -45,12 +47,14 @@ class MemoryOut(BaseModel):
 
 
 class MemoryCreate(BaseModel):
+    agent_id: UUID | None = None
     layer: str = Field(..., pattern="^(L1|L2|L3)$")
     content: str = Field(..., min_length=1, max_length=5000)
     metadata: dict | None = None
 
 
 class MemoryUpdate(BaseModel):
+    agent_id: UUID | None = None
     content: str | None = Field(default=None, min_length=1, max_length=5000)
     layer: str | None = Field(default=None, pattern="^(L1|L2|L3)$")
     metadata: dict | None = None
@@ -67,11 +71,24 @@ class MemoryBatchDelete(BaseModel):
 
 
 class MemorySearchResult(BaseModel):
+    agent_id: UUID | None = None
     id: UUID
     layer: str
     content: str
     score: float
     created_at: datetime
+
+
+async def validate_memory_agent(db: AsyncSession, user, agent_id: UUID | None) -> None:
+    if agent_id is None:
+        return
+    agent = await db.scalar(select(Agent.id).where(
+        Agent.id == agent_id,
+        Agent.tenant_id == user.tenant_id,
+        or_(Agent.visibility == "tenant", Agent.created_by == user.id),
+    ))
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
 
 
 # ---- Endpoints ----
@@ -84,15 +101,17 @@ async def search_memories(
     q: str = Query(..., min_length=1, max_length=500),
     layer: str | None = Query(default=None, pattern="^(L1|L2|L3)$"),
     top_k: int = Query(default=10, ge=1, le=50),
+    agent_id: UUID | None = Query(default=None),
 ) -> list[dict]:
     """Search memories by similarity."""
     layers = [layer] if layer else None
     results = await MemoryService.search_memories(
-        db, user.id, q, layers=layers, top_k=top_k
+        db, user.id, q, layers=layers, top_k=top_k, agent_id=agent_id, include_shared=False
     )
     return [
         MemorySearchResult(
             id=m.id,
+            agent_id=m.agent_id,
             layer=m.layer,
             content=m.content,
             score=round(score, 4),
@@ -106,11 +125,12 @@ async def search_memories(
 async def memory_stats(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
+    agent_id: UUID | None = Query(default=None),
 ) -> dict:
     """Return memory counts per layer."""
     rows = await db.execute(
         select(Memory.layer, func.count())
-        .where(Memory.user_id == user.id)
+        .where(Memory.user_id == user.id, memory_scope(Memory, agent_id))
         .group_by(Memory.layer)
     )
     counts = {"L1": 0, "L2": 0, "L3": 0}
@@ -126,14 +146,15 @@ async def list_memories(
     layer: str | None = Query(default=None, pattern="^(L1|L2|L3)$"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    agent_id: UUID | None = Query(default=None),
 ) -> dict:
     """List memories, optionally filtered by layer."""
     memories = await MemoryService.list_memories(
-        db, user.id, layer=layer, limit=limit, offset=offset
+        db, user.id, layer=layer, limit=limit, offset=offset, agent_id=agent_id
     )
 
     # Count total
-    count_stmt = select(func.count()).select_from(Memory).where(Memory.user_id == user.id)
+    count_stmt = select(func.count()).select_from(Memory).where(Memory.user_id == user.id, memory_scope(Memory, agent_id))
     if layer:
         count_stmt = count_stmt.where(Memory.layer == layer)
     total_result = await db.execute(count_stmt)
@@ -153,8 +174,9 @@ async def create_memory(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Create a new memory."""
+    await validate_memory_agent(db, user, req.agent_id)
     memory = await MemoryService.create_memory(
-        db, user.id, req.layer, req.content, meta=req.metadata, tenant_id=user.tenant_id
+        db, user.id, req.layer, req.content, meta=req.metadata, tenant_id=user.tenant_id, agent_id=req.agent_id
     )
     return MemoryOut.from_model(memory).model_dump(mode="json")
 
@@ -191,6 +213,8 @@ async def update_memory(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Update an existing memory."""
+    if "agent_id" in req.model_fields_set:
+        await validate_memory_agent(db, user, req.agent_id)
     memory = await MemoryService.update_memory(
         db,
         memory_id,
@@ -201,6 +225,10 @@ async def update_memory(
     )
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
+    if "agent_id" in req.model_fields_set:
+        memory.agent_id = req.agent_id
+        await db.flush()
+        await db.refresh(memory)
     return MemoryOut.from_model(memory).model_dump(mode="json")
 
 

@@ -241,6 +241,11 @@ MEMORY_WRITE = Tool(
     parameters={
         "type": "object",
         "properties": {
+            "scope": {
+                "type": "string",
+                "enum": ["agent", "user"],
+                "description": "Defaults to agent: private to this user and current agent. Use user only for explicitly shared preferences or facts across agents.",
+            },
             "layer": {
                 "type": "string",
                 "enum": ["L1", "L2", "L3"],

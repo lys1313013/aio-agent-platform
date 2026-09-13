@@ -124,6 +124,7 @@ class ChannelOut(BaseModel):
     last_error: str | None = None
     created_at: str
     updated_at: str
+    webhook_url: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -157,7 +158,7 @@ class WebhookURLOut(BaseModel):
 
 
 def _channel_to_dict(ch: ChannelConfig) -> dict:
-    return {
+    result = {
         "id": ch.id,
         "channel_type": ch.channel_type,
         "name": ch.name,
@@ -173,6 +174,13 @@ def _channel_to_dict(ch: ChannelConfig) -> dict:
         "created_at": ch.created_at.isoformat() if ch.created_at else "",
         "updated_at": ch.updated_at.isoformat() if ch.updated_at else "",
     }
+
+    if ch.mode == "webhook" and ch.status == "enabled":
+        from aio_agent_platform.core.config import settings
+
+        base_url = settings.server.server_url or f"http://localhost:{settings.server.port}"
+        result["webhook_url"] = f"{base_url}/api/channels/webhook/{ch.channel_key}"
+    return result
 
 
 def _binding_to_dict(b: ChannelBinding) -> dict:
@@ -223,10 +231,14 @@ async def list_channels(
 @router.post("", response_model=ChannelOut, status_code=201)
 async def create_channel(
     req: ChannelCreate,
+    request: Request,
     user: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    """Create a new channel. Validates Feishu credentials before saving."""
+    """Validate, save, and start a new channel by default."""
+    conn_mgr = getattr(request.app.state, "channel_connection_manager", None)
+    if conn_mgr is None:
+        raise HTTPException(status_code=503, detail="渠道管理器未初始化")
     # Verify agent exists and belongs to tenant
     agent_result = await db.execute(
         select(Agent).where(
@@ -258,7 +270,7 @@ async def create_channel(
         encrypt_key_encrypted=req.encrypt_key,  # TODO: encrypt at rest
         verification_token_encrypted=req.verification_token,  # TODO: encrypt at rest
         mode=req.mode,
-        status="disabled",
+        status="enabled",
         channel_key=secrets.token_urlsafe(32),
         tool_blacklist=req.tool_blacklist,
         enable_streaming=req.enable_streaming,
@@ -267,6 +279,15 @@ async def create_channel(
     )
     db.add(channel)
     await db.commit()
+    await db.refresh(channel)
+    try:
+        await conn_mgr.start_channel(channel)
+    except Exception as e:
+        # Creation succeeded: return the saved channel with an actionable error
+        # rather than encouraging a duplicate submission of the create form.
+        channel.status = "error"
+        channel.last_error = str(e)
+        await db.commit()
     await db.refresh(channel)
     return _channel_to_dict(channel)
 
@@ -374,13 +395,7 @@ async def enable_channel(
         await conn_mgr.start_channel(channel)
         await db.refresh(channel)
 
-        result_data = _channel_to_dict(channel)
-        if channel.mode == "webhook":
-            from aio_agent_platform.core.config import settings
-            base_url = settings.server.server_url or f"http://localhost:{settings.server.port}"
-            result_data["webhook_url"] = f"{base_url}/api/channels/webhook/{channel.channel_key}"
-
-        return result_data
+        return _channel_to_dict(channel)
     except HTTPException:
         raise
     except Exception as e:

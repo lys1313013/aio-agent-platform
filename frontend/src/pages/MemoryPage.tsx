@@ -28,8 +28,8 @@ import {
 } from '@ant-design/icons';
 import type { TabsProps } from 'antd';
 import { CalendarOutlined } from '@ant-design/icons';
-import { memoriesApi } from '@/lib/api';
-import type { Memory, MemoryLayer } from '@/lib/types';
+import { agentsApi, memoriesApi } from '@/lib/api';
+import type { Agent, Memory, MemoryLayer } from '@/lib/types';
 import DailyMemoryTimeline from '@/components/memory/DailyMemoryTimeline';
 
 type MemoryTab = MemoryLayer | 'daily';
@@ -83,6 +83,14 @@ function formatRelativeTime(iso: string): string {
 
 export default function MemoryPage() {
   const { message } = App.useApp();
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [scopeAgent, setScopeAgent] = useState('');
+  const [formAgent, setFormAgent] = useState('');
+  useEffect(() => { agentsApi.list().then(setAgents).catch(() => message.error('加载智能体失败')); }, [message]);
+  const scopeOptions = [
+    { value: '', label: '用户共享记忆' },
+    ...agents.map((agent) => ({ value: agent.id, label: `${agent.name} · 专属记忆` })),
+  ];
   const [activeLayer, setActiveLayer] = useState<MemoryTab>('L1');
   const [searchQuery, setSearchQuery] = useState('');
   const [memories, setMemories] = useState<Memory[]>([]);
@@ -113,11 +121,12 @@ export default function MemoryPage() {
     setLoading(true);
     try {
       if (searchQuery.trim()) {
-        const results = await memoriesApi.search(searchQuery, { layer: activeLayer });
+        const results = await memoriesApi.search(searchQuery, { layer: activeLayer, agent_id: scopeAgent || undefined });
         setScores(Object.fromEntries(results.map((r) => [r.id, r.score])));
         setMemories(
           results.map((r) => ({
             id: r.id,
+            agent_id: r.agent_id,
             layer: r.layer,
             content: r.content,
             metadata: {},
@@ -127,7 +136,7 @@ export default function MemoryPage() {
         );
         setTotal(results.length);
       } else {
-        const resp = await memoriesApi.list({ layer: activeLayer });
+        const resp = await memoriesApi.list({ layer: activeLayer, agent_id: scopeAgent || undefined });
         setScores({});
         setMemories(resp.items);
         setTotal(resp.total);
@@ -137,16 +146,16 @@ export default function MemoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [activeLayer, searchQuery, message]);
+  }, [activeLayer, searchQuery, message, scopeAgent]);
 
   const fetchCounts = useCallback(async () => {
     try {
-      const stats = await memoriesApi.stats();
+      const stats = await memoriesApi.stats(scopeAgent || undefined);
       setCounts({ L1: stats.L1, L2: stats.L2, L3: stats.L3 });
     } catch {
       // 统计失败不阻塞主流程
     }
-  }, []);
+  }, [scopeAgent]);
 
   useEffect(() => {
     fetchMemories();
@@ -189,7 +198,7 @@ export default function MemoryPage() {
     if (!formContent.trim()) return;
     setSubmitting(true);
     try {
-      await memoriesApi.create({ layer: formLayer, content: formContent.trim() });
+      await memoriesApi.create({ layer: formLayer, content: formContent.trim(), agent_id: formAgent || null });
       message.success('记忆已创建');
       setCreateModalOpen(false);
       setFormContent('');
@@ -209,6 +218,7 @@ export default function MemoryPage() {
       await memoriesApi.update(editingMemory.id, {
         content: formContent.trim(),
         layer: formLayer,
+        agent_id: formAgent || null,
       });
       message.success('记忆已更新');
       setEditingMemory(null);
@@ -253,11 +263,13 @@ export default function MemoryPage() {
   const openCreateModal = () => {
     setFormLayer(activeLayer === 'daily' ? 'L1' : activeLayer);
     setFormContent('');
+    setFormAgent(scopeAgent);
     setCreateModalOpen(true);
   };
 
   const openEditModal = (memory: Memory) => {
     setFormLayer(memory.layer);
+    setFormAgent(memory.agent_id || '');
     setFormContent(memory.content);
     setEditingMemory(memory);
   };
@@ -317,6 +329,13 @@ export default function MemoryPage() {
           )}
         </div>
 
+        <div className="mb-6 flex flex-wrap items-center gap-3">
+          <Text>记忆范围</Text>
+          <Select aria-label="记忆范围" value={scopeAgent} onChange={(value) => { setScopeAgent(value); setSelectedIds(new Set()); }}
+            options={scopeOptions} className="min-w-64" showSearch optionFilterProp="label" />
+          <Text type="secondary">共享记忆供您的所有智能体使用；专属记忆仅供您与该智能体使用。</Text>
+        </div>
+
         {/* Layer stat cards */}
         <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
           {LAYERS.map((layer) => {
@@ -366,7 +385,7 @@ export default function MemoryPage() {
         </div>
 
         {isDailyTab ? (
-          <DailyMemoryTimeline />
+          <DailyMemoryTimeline key={scopeAgent} agentId={scopeAgent || undefined} />
         ) : (
           <>
         {/* Toolbar: search + batch actions */}
@@ -536,6 +555,10 @@ export default function MemoryPage() {
         >
           <div className="space-y-4 pt-2">
             <div>
+              <Text className="mb-1 block text-sm font-medium">记忆范围</Text>
+              <Select aria-label="保存记忆范围" value={formAgent} onChange={setFormAgent} options={scopeOptions} className="w-full" showSearch optionFilterProp="label" />
+            </div>
+            <div>
               <Text className="mb-1 block text-sm font-medium">层级</Text>
               <Select value={formLayer} onChange={(v) => setFormLayer(v)} options={layerOptions} className="w-full" />
             </div>
@@ -564,6 +587,10 @@ export default function MemoryPage() {
           cancelText="取消"
         >
           <div className="space-y-4 pt-2">
+            <div>
+              <Text className="mb-1 block text-sm font-medium">记忆范围</Text>
+              <Select aria-label="保存记忆范围" value={formAgent} onChange={setFormAgent} options={scopeOptions} className="w-full" showSearch optionFilterProp="label" />
+            </div>
             <div>
               <Text className="mb-1 block text-sm font-medium">层级</Text>
               <Select value={formLayer} onChange={(v) => setFormLayer(v)} options={layerOptions} className="w-full" />

@@ -514,11 +514,15 @@ async def _execute_agent_inner(
         history.append(LLMMessage(role=msg.role, content=msg.content or ""))
 
     # Build system prompt
+    if tool_executor.mcp_manager:
+        await tool_executor.mcp_manager.ensure_tools_fresh(
+            {str(sid) for sid in config_snapshot.get("mcp_server_ids", [])}
+        )
     tools_list, tools_schema = _filter_tools_for_agent(tool_executor, config_snapshot)
 
     memory_top_k = 5
     memory_data = await MemoryService.get_memories_for_prompt(
-        db, user.id, req.user_input, top_k=memory_top_k
+        db, user.id, req.user_input, top_k=memory_top_k, agent_id=agent_id
     )
     from aio_agent_platform.db import UserProfile
     profile_result = await db.execute(
@@ -740,10 +744,14 @@ async def sse_chat(
                 history.append(LLMMessage(role=msg.role, content=msg.content or ""))
 
             # Build tools and system prompt
+            if tool_executor.mcp_manager:
+                await tool_executor.mcp_manager.ensure_tools_fresh(
+                    {str(sid) for sid in config_snapshot.get("mcp_server_ids", [])}
+                )
             tools_list, tools_schema = _filter_tools_for_agent(tool_executor, config_snapshot)
 
             memory_data = await MemoryService.get_memories_for_prompt(
-                db_session, user.id, req.message, top_k=5
+                db_session, user.id, req.message, top_k=5, agent_id=agent_id
             )
             from aio_agent_platform.db import UserProfile
             profile_result = await db_session.execute(

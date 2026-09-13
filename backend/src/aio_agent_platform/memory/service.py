@@ -8,7 +8,7 @@ from uuid import UUID
 
 import rjieba
 import structlog
-from sqlalchemy import delete, func, literal, select
+from sqlalchemy import delete, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.db.models import DEFAULT_TENANT_ID, Memory, User
@@ -94,6 +94,12 @@ async def create_default_provider_for_user(user_id: UUID, temperature: float | N
     )
 
 
+def memory_scope(model, agent_id: UUID | None, include_shared: bool = False):
+    """Scope is orthogonal to L1/L2/L3; never includes another agent's records."""
+    exact = model.agent_id == agent_id
+    return or_(model.agent_id.is_(None), exact) if include_shared else exact
+
+
 class MemoryService:
     """
     Stateless memory service — all methods take an explicit db session and user_id.
@@ -126,11 +132,12 @@ class MemoryService:
         layer: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        agent_id: UUID | None = None,
     ) -> list[Memory]:
         """List memories for a user, optionally filtered by layer."""
         stmt = (
             select(Memory)
-            .where(Memory.user_id == user_id)
+            .where(Memory.user_id == user_id, memory_scope(Memory, agent_id))
             .order_by(Memory.created_at.desc())
             .limit(limit)
             .offset(offset)
@@ -160,11 +167,13 @@ class MemoryService:
         content: str,
         meta: dict | None = None,
         tenant_id: UUID | None = None,
+        agent_id: UUID | None = None,
     ) -> Memory:
         """Create a new memory. Auto-generates search_vec via jieba tokenization."""
         search_vec = MemoryService._tokenize(content)
         memory = Memory(
             user_id=user_id,
+            agent_id=agent_id,
             tenant_id=tenant_id or await resolve_tenant_id(db, user_id),
             layer=layer,
             content=content,
@@ -185,11 +194,12 @@ class MemoryService:
         meta: dict | None = None,
         tenant_id: UUID | None = None,
         dedupe_threshold: float | None = None,
+        agent_id: UUID | None = None,
     ) -> tuple[Memory, str]:
         """
         Create a memory, or update a near-duplicate instead of inserting a copy.
 
-        Compares against the user's existing memories in the SAME layer via
+        Compares against the user's existing memories in the SAME layer and agent scope via
         pg_trgm similarity. When the best match exceeds ``dedupe_threshold``
         (defaults to ``AgentSettings.memory_dedupe_threshold``), that row is
         updated in place (content replaced, meta merged) and
@@ -208,7 +218,7 @@ class MemoryService:
         search_vec = MemoryService._tokenize(content)
 
         existing = await MemoryService._find_top_similar(
-            db, user_id, layer, search_vec, threshold
+            db, user_id, layer, search_vec, threshold, agent_id=agent_id
         )
         if existing is not None:
             existing.content = content
@@ -221,6 +231,7 @@ class MemoryService:
 
         memory = Memory(
             user_id=user_id,
+            agent_id=agent_id,
             tenant_id=tenant_id or await resolve_tenant_id(db, user_id),
             layer=layer,
             content=content,
@@ -239,6 +250,7 @@ class MemoryService:
         layer: str,
         search_vec: str,
         threshold: float,
+        agent_id: UUID | None = None,
     ) -> Memory | None:
         """Return the user's most similar memory in ``layer`` above ``threshold``, if any."""
         if not search_vec:
@@ -249,6 +261,7 @@ class MemoryService:
             .where(
                 Memory.user_id == user_id,
                 Memory.layer == layer,
+                memory_scope(Memory, agent_id),
                 Memory.search_vec.isnot(None),
                 func.similarity(Memory.search_vec, search_vec) > threshold,
             )
@@ -323,6 +336,8 @@ class MemoryService:
         layers: list[str] | None = None,
         top_k: int = 5,
         threshold: float = 0.1,
+        agent_id: UUID | None = None,
+        include_shared: bool = True,
     ) -> list[tuple[Memory, float]]:
         """
         Search memories using pg_trgm similarity on jieba-tokenized search_vec.
@@ -339,7 +354,7 @@ class MemoryService:
             # Browse-all mode: return all memories without similarity filter
             stmt = (
                 select(Memory, literal(1.0).label("score"))
-                .where(Memory.user_id == user_id)
+                .where(Memory.user_id == user_id, memory_scope(Memory, agent_id, include_shared))
                 .order_by(Memory.created_at.desc())
                 .limit(top_k)
             )
@@ -359,6 +374,7 @@ class MemoryService:
             select(Memory, sim_score)
             .where(
                 Memory.user_id == user_id,
+                memory_scope(Memory, agent_id, include_shared),
                 Memory.search_vec.isnot(None),
                 func.similarity(Memory.search_vec, tokenized_query) > threshold,
             )
@@ -379,6 +395,7 @@ class MemoryService:
         user_id: UUID,
         user_message: str,
         top_k: int = 5,
+        agent_id: UUID | None = None,
     ) -> dict:
         """
         Get memories to inject into the system prompt.
@@ -392,25 +409,25 @@ class MemoryService:
         # L1: Load ALL L1 memories (always present)
         l1_result = await db.execute(
             select(Memory)
-            .where(Memory.user_id == user_id, Memory.layer == "L1")
+            .where(Memory.user_id == user_id, Memory.layer == "L1", memory_scope(Memory, agent_id, True))
             .order_by(Memory.created_at.desc())
         )
         l1_memories = list(l1_result.scalars().all())
 
         # L2: Search by relevance, top-K
         l2_results = await MemoryService.search_memories(
-            db, user_id, user_message, layers=["L2"], top_k=top_k
+            db, user_id, user_message, layers=["L2"], top_k=top_k, agent_id=agent_id
         )
         l2_memories = [m for m, _score in l2_results]
 
         # L3: Relevance + recency (half relevant, half recent, deduplicated)
         half_k = max(top_k // 2, 1)
         l3_relevant = await MemoryService.search_memories(
-            db, user_id, user_message, layers=["L3"], top_k=half_k
+            db, user_id, user_message, layers=["L3"], top_k=half_k, agent_id=agent_id
         )
         l3_recent_result = await db.execute(
             select(Memory)
-            .where(Memory.user_id == user_id, Memory.layer == "L3")
+            .where(Memory.user_id == user_id, Memory.layer == "L3", memory_scope(Memory, agent_id, True))
             .order_by(Memory.created_at.desc())
             .limit(half_k)
         )
@@ -432,7 +449,7 @@ class MemoryService:
         # imports MemoryService so a top-level import would be circular
         from aio_agent_platform.memory.daily import DailyMemoryService
 
-        daily_memories = await DailyMemoryService.get_for_prompt(db, user_id, user_message)
+        daily_memories = await DailyMemoryService.get_for_prompt(db, user_id, user_message, agent_id=agent_id)
 
         return {
             "l1_memories": l1_memories,
@@ -448,6 +465,7 @@ class MemoryService:
         user_id: UUID,
         session_id: UUID,
         messages: list[dict],
+        agent_id: UUID | None = None,
     ) -> list[Memory]:
         """
         Background task: use LLM to extract noteworthy info from a conversation.
@@ -494,6 +512,12 @@ class MemoryService:
                     select(func.set_config("app.current_user_id", str(user_id), True))
                 )
 
+                if agent_id is None:
+                    from aio_agent_platform.db.models import Session
+
+                    agent_id = await db.scalar(select(Session.agent_id).where(
+                        Session.id == session_id, Session.user_id == user_id,
+                    ))
                 created: list[Memory] = []
 
                 for item in extracted.get("l2_memories", []):
@@ -505,6 +529,7 @@ class MemoryService:
                         user_id,
                         "L2",
                         content=content,
+                        agent_id=agent_id,
                         meta={
                             "tags": item.get("tags", []),
                             "source_session": str(session_id),
@@ -525,6 +550,7 @@ class MemoryService:
                         user_id,
                         "L3",
                         content=summary,
+                        agent_id=agent_id,
                         meta={"source_session": str(session_id)},
                     )
                     created.append(mem)

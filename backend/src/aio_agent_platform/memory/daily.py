@@ -1,4 +1,4 @@
-"""DailyMemoryService — per-day consolidated memories (one row per user per local day).
+"""DailyMemoryService — per-day consolidated memories (one row per user/agent scope per local day).
 
 Day boundary is pinned to Asia/Shanghai, consistent with cron_jobs.scheduler.CRON_TIMEZONE.
 """
@@ -19,6 +19,7 @@ from aio_agent_platform.db.models import DailyMemory, Memory, Session
 from aio_agent_platform.memory.service import (
     MemoryService,
     create_default_provider_for_user,
+    memory_scope,
     resolve_tenant_id,
 )
 
@@ -90,10 +91,12 @@ class DailyMemoryService:
         db: AsyncSession,
         user_id: UUID,
         day: date,
+        agent_id: UUID | None = None,
     ) -> DailyMemory | None:
         result = await db.execute(
             select(DailyMemory).where(
-                DailyMemory.user_id == user_id, DailyMemory.date == day
+                DailyMemory.user_id == user_id, DailyMemory.date == day,
+                memory_scope(DailyMemory, agent_id)
             )
         )
         return result.scalar_one_or_none()
@@ -106,10 +109,11 @@ class DailyMemoryService:
         end: date | None = None,
         limit: int = 30,
         offset: int = 0,
+        agent_id: UUID | None = None,
     ) -> list[DailyMemory]:
         stmt = (
             select(DailyMemory)
-            .where(DailyMemory.user_id == user_id)
+            .where(DailyMemory.user_id == user_id, memory_scope(DailyMemory, agent_id))
             .order_by(DailyMemory.date.desc())
             .limit(limit)
             .offset(offset)
@@ -130,13 +134,15 @@ class DailyMemoryService:
         highlights: list | None = None,
         source_session_ids: list | None = None,
         tenant_id: UUID | None = None,
+        agent_id: UUID | None = None,
     ) -> DailyMemory:
-        """Insert or update the daily memory for (user_id, day)."""
-        memory = await DailyMemoryService.get_by_date(db, user_id, day)
+        """Insert or update the daily memory for (user_id, agent_id, day)."""
+        memory = await DailyMemoryService.get_by_date(db, user_id, day, agent_id=agent_id)
         search_vec = MemoryService._tokenize(content)
         if memory is None:
             memory = DailyMemory(
                 user_id=user_id,
+                agent_id=agent_id,
                 tenant_id=tenant_id or await resolve_tenant_id(db, user_id),
                 date=day,
                 content=content,
@@ -157,10 +163,11 @@ class DailyMemoryService:
         return memory
 
     @staticmethod
-    async def delete_by_date(db: AsyncSession, user_id: UUID, day: date) -> bool:
+    async def delete_by_date(db: AsyncSession, user_id: UUID, day: date, agent_id: UUID | None = None) -> bool:
         result = await db.execute(
             delete(DailyMemory).where(
-                DailyMemory.user_id == user_id, DailyMemory.date == day
+                DailyMemory.user_id == user_id, DailyMemory.date == day,
+                memory_scope(DailyMemory, agent_id)
             )
         )
         await db.flush()
@@ -175,6 +182,7 @@ class DailyMemoryService:
         user_message: str,
         recent_days: int = 2,
         max_items: int = 4,
+        agent_id: UUID | None = None,
     ) -> list[DailyMemory]:
         """
         Daily memories to inject into the system prompt.
@@ -195,6 +203,7 @@ class DailyMemoryService:
             select(DailyMemory).where(
                 DailyMemory.user_id == user_id,
                 DailyMemory.date.in_(target_dates),
+                memory_scope(DailyMemory, agent_id, True),
             )
         )
         memories = list(result.scalars().all())
@@ -203,7 +212,7 @@ class DailyMemoryService:
         if not memories and mentioned:
             result = await db.execute(
                 select(DailyMemory)
-                .where(DailyMemory.user_id == user_id)
+                .where(DailyMemory.user_id == user_id, memory_scope(DailyMemory, agent_id, True))
                 .order_by(DailyMemory.date.desc())
                 .limit(recent_days)
             )
@@ -249,6 +258,7 @@ class DailyMemoryService:
         user_id: UUID,
         session_id: UUID,
         summary: str,
+        agent_id: UUID | None = None,
     ) -> DailyMemory | None:
         """
         Incrementally merge a finished session's L3 summary into today's record.
@@ -270,7 +280,7 @@ class DailyMemoryService:
                 await db.execute(
                     select(func.set_config("app.current_user_id", str(user_id), True))
                 )
-                existing = await DailyMemoryService.get_by_date(db, user_id, day)
+                existing = await DailyMemoryService.get_by_date(db, user_id, day, agent_id=agent_id)
                 existing_content = existing.content if existing else None
                 existing_session_ids = list(existing.source_session_ids or []) if existing else []
 
@@ -309,6 +319,7 @@ class DailyMemoryService:
                     content=content,
                     highlights=highlights,
                     source_session_ids=existing_session_ids,
+                    agent_id=agent_id,
                 )
                 await db.commit()
 
@@ -331,7 +342,7 @@ class DailyMemoryService:
             return None
 
     @staticmethod
-    async def consolidate_day(user_id: UUID, day: date) -> DailyMemory | None:
+    async def consolidate_day(user_id: UUID, day: date, agent_id: UUID | None = None) -> DailyMemory | None:
         """
         Consolidate one day's sessions + L3 summaries into a daily memory via LLM.
 
@@ -355,6 +366,7 @@ class DailyMemoryService:
                     select(Session.id, Session.title)
                     .where(
                         Session.user_id == user_id,
+                        Session.agent_id == agent_id,
                         Session.updated_at >= start,
                         Session.updated_at < end,
                     )
@@ -367,6 +379,7 @@ class DailyMemoryService:
                     .where(
                         Memory.user_id == user_id,
                         Memory.layer == "L3",
+                        memory_scope(Memory, agent_id),
                         Memory.created_at >= start,
                         Memory.created_at < end,
                     )
@@ -408,6 +421,7 @@ class DailyMemoryService:
                     content=content,
                     highlights=highlights,
                     source_session_ids=session_ids,
+                    agent_id=agent_id,
                 )
                 await db.commit()
 
@@ -443,18 +457,18 @@ async def run_daily_consolidation(day: date | None = None) -> dict:
     factory = get_session_factory()
     async with factory() as db:
         result = await db.execute(
-            select(Session.user_id)
+            select(Session.user_id, Session.agent_id)
             .where(Session.updated_at >= start, Session.updated_at < end)
-            .group_by(Session.user_id)
+            .group_by(Session.user_id, Session.agent_id)
         )
-        user_ids = [row[0] for row in result.all()]
+        user_scopes = list(result.all())
 
     consolidated = 0
-    for uid in user_ids:
-        memory = await DailyMemoryService.consolidate_day(uid, day)
+    for uid, agent_id in user_scopes:
+        memory = await DailyMemoryService.consolidate_day(uid, day, agent_id=agent_id)
         if memory is not None:
             consolidated += 1
 
-    stats = {"day": str(day), "users": len(user_ids), "consolidated": consolidated}
+    stats = {"day": str(day), "users": len({uid for uid, _ in user_scopes}), "consolidated": consolidated}
     logger.info("daily_memory_consolidation_run", **stats)
     return stats

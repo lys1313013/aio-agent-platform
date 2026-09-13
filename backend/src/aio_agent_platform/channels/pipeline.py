@@ -55,6 +55,7 @@ from aio_agent_platform.core.chat import (
     inject_file_refs_into_message,
     load_agent,
     load_conversation_history,
+    refresh_mcp_tools_for_agent,
     resolve_provider_type,
     resolve_workspace,
     update_context_summary,
@@ -1005,6 +1006,7 @@ class ChannelInboundPipeline:
         from aio_agent_platform.tools.builtin import FRONTEND_TOOL_NAMES
 
         blacklist.update(FRONTEND_TOOL_NAMES)
+        await refresh_mcp_tools_for_agent(self.tool_executor, agent)
         tools_list, tools_schema = filter_tools_by_agent(
             self.tool_executor, agent, extra_blacklist=blacklist
         )

@@ -46,6 +46,7 @@ from aio_agent_platform.core.chat import (
     _resolve_provider_type,
     _resolve_workspace,
     _update_context_summary,
+    refresh_mcp_tools_for_agent,
 )
 from aio_agent_platform.core.config import settings
 from aio_agent_platform.core.context import (
@@ -564,6 +565,7 @@ async def chat(
 
     # Build system prompt with memories (using agent config)
     # 非流式路径 event_queue=None，无前端执行通道，黑名单 ui_*（docs/22 §2.2）
+    await refresh_mcp_tools_for_agent(tool_executor, agent)
     tools_list, tools_schema = _filter_tools_by_agent(
         tool_executor, agent, extra_blacklist=set(FRONTEND_TOOL_NAMES)
     )
@@ -1094,6 +1096,7 @@ async def chat_stream(
                     # 宠物闲聊：白名单工具（记忆类 + pet_action），人设合成，禁用高成本工具
                     # 例外：ui_* 前端工具保留——宠物操作页面是核心场景，且无沙箱成本
                     ensure_pet_tools_registered(tool_executor)
+                    await refresh_mcp_tools_for_agent(tool_executor, agent)
                     tools_list, tools_schema = _filter_tools_by_agent(tool_executor, agent)
                     tools_list = [
                         t for t in tools_list
@@ -1109,6 +1112,7 @@ async def chat_stream(
                     pet_ctx_pet, pet_ctx_pkg, pet_ctx_vocab = pet_ctx
                     system_prompt = build_chat_persona(agent, pet_ctx_pet, pet_ctx_pkg, pet_ctx_vocab)
                 else:
+                    await refresh_mcp_tools_for_agent(tool_executor, agent)
                     tools_list, tools_schema = _filter_tools_by_agent(tool_executor, agent)
                     system_prompt = await _build_system_prompt_with_memories(
                         gen_db, user.id, req.message, tools_list, agent=agent,

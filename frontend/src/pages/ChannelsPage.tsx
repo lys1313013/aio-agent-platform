@@ -201,7 +201,7 @@ export default function ChannelsPage() {
         await channelsApi.update(editingChannel.id, payload);
         message.success('渠道已更新；如修改了凭证或连接模式，需重新启用');
       } else {
-        await channelsApi.create({
+        const channel = await channelsApi.create({
           name: values.name,
           channel_type: values.channel_type,
           agent_id: values.agent_id,
@@ -214,7 +214,15 @@ export default function ChannelsPage() {
           tool_blacklist: values.tool_blacklist ?? [],
           extra_config: isWecom ? { agentid: Number(values.agentid) } : undefined,
         });
-        message.success('渠道已创建');
+        if (channel.status === 'enabled') {
+          message.success('渠道已创建并启用');
+          if (channel.webhook_url) {
+            setWebhookUrl(channel.webhook_url);
+            setWebhookChannelType(channel.channel_type);
+          }
+        } else {
+          message.warning(`渠道已创建，但自动启用失败：${channel.last_error || '请稍后重试启用'}`);
+        }
       }
       setModalOpen(false);
       fetchData();
@@ -327,19 +335,9 @@ export default function ChannelsPage() {
               接入飞书等 IM 渠道，让用户在 IM 中直接与 Agent 对话
             </Text>
           </div>
-          <Space>
-            <Button
-              icon={<LinkOutlined />}
-              href="https://open.feishu.cn/page/openclaw?form=multiAgent"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              创建飞书机器人
-            </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
-              添加渠道
-            </Button>
-          </Space>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
+            添加渠道
+          </Button>
         </div>
 
         {/* Empty state */}

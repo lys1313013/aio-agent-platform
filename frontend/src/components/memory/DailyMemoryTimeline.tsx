@@ -32,7 +32,7 @@ function formatDateLabel(iso: string): { primary: string; secondary: string } {
   return { primary, secondary: d.format('YYYY') };
 }
 
-export default function DailyMemoryTimeline() {
+export default function DailyMemoryTimeline({ agentId }: { agentId?: string }) {
   const { message } = App.useApp();
   const [items, setItems] = useState<DailyMemory[]>([]);
   const [loading, setLoading] = useState(true);
@@ -43,7 +43,7 @@ export default function DailyMemoryTimeline() {
   const fetchList = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await dailyMemoriesApi.list({ limit: 90 });
+      const list = await dailyMemoriesApi.list({ limit: 90, agent_id: agentId });
       setItems(list);
       setSelectedDate((prev) =>
         prev && list.some((m) => m.date === prev) ? prev : (list[0]?.date ?? null),
@@ -53,7 +53,7 @@ export default function DailyMemoryTimeline() {
     } finally {
       setLoading(false);
     }
-  }, [message]);
+  }, [message, agentId]);
 
   useEffect(() => {
     fetchList();
@@ -72,7 +72,7 @@ export default function DailyMemoryTimeline() {
     // 列表里没有(可能超出最近 90 条),精确查一次
     setLoading(true);
     try {
-      const found = await dailyMemoriesApi.list({ date: day });
+      const found = await dailyMemoriesApi.list({ date: day, agent_id: agentId });
       if (found.length > 0) {
         setItems((prev) =>
           [...prev, found[0]].sort((a, b) => (a.date < b.date ? 1 : -1)),
@@ -92,7 +92,7 @@ export default function DailyMemoryTimeline() {
     if (!selectedDate) return;
     setRegenerating(true);
     try {
-      const regenerated = await dailyMemoriesApi.regenerate(selectedDate);
+      const regenerated = await dailyMemoriesApi.regenerate(selectedDate, agentId);
       setItems((prev) =>
         prev.some((m) => m.date === regenerated.date)
           ? prev.map((m) => (m.date === regenerated.date ? regenerated : m))
@@ -109,7 +109,7 @@ export default function DailyMemoryTimeline() {
   const handleDelete = async () => {
     if (!selectedDate) return;
     try {
-      await dailyMemoriesApi.delete(selectedDate);
+      await dailyMemoriesApi.delete(selectedDate, agentId);
       setItems((prev) => {
         const next = prev.filter((m) => m.date !== selectedDate);
         setSelectedDate(next[0]?.date ?? null);
