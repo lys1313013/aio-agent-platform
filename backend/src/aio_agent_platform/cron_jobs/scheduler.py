@@ -14,6 +14,12 @@ from apscheduler.triggers.date import DateTrigger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from aio_agent_platform.cron_jobs.claims import (
+    MISFIRE_GRACE_SECONDS,
+    OccurrenceClaims,
+    OccurrenceExecutor,
+    scheduled_run_time,
+)
 from aio_agent_platform.cron_jobs.service import CronJobService
 from aio_agent_platform.db.models import CronJob, CronJobRun
 
@@ -49,7 +55,12 @@ class Scheduler:
         session_factory: async_sessionmaker[AsyncSession],
         executor: JobExecutor | None = None,
     ):
-        self._scheduler = AsyncIOScheduler(timezone=CRON_TIMEZONE)
+        self._scheduler = AsyncIOScheduler(
+            timezone=CRON_TIMEZONE,
+            executors={"default": OccurrenceExecutor()},
+            job_defaults={"coalesce": True, "misfire_grace_time": MISFIRE_GRACE_SECONDS},
+        )
+        self._claims = OccurrenceClaims()
         self._session_factory = session_factory
         self._executor = executor
 
@@ -69,6 +80,7 @@ class Scheduler:
 
     async def shutdown(self) -> None:
         self._scheduler.shutdown(wait=False)
+        await self._claims.close()
         logger.info("scheduler_shutdown")
 
     def add_system_job(
@@ -79,8 +91,13 @@ class Scheduler:
     ) -> None:
         """Register a built-in platform job (not backed by a CronJob DB row)."""
         trigger = CronTrigger.from_crontab(cron_expr, timezone=CRON_TIMEZONE)
+
+        async def execute_once() -> None:
+            if await self._claims.claim(f"system:{job_id}", scheduled_run_time.get()):
+                await handler()
+
         self._scheduler.add_job(
-            handler,
+            execute_once,
             trigger=trigger,
             id=f"system:{job_id}",
             name=job_id,
@@ -156,6 +173,9 @@ class Scheduler:
                 return
 
             if not job.is_active:
+                return
+
+            if not await self._claims.claim(str(job_id), scheduled_run_time.get()):
                 return
 
             # For one-shot jobs, deactivate after execution

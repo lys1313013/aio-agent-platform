@@ -1,8 +1,10 @@
 """Tests for cron job scheduler linkage and execution run logging."""
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -19,6 +21,15 @@ from aio_agent_platform.db.models import (
     User,
 )
 from aio_agent_platform.interface.api import app
+
+
+@pytest.fixture(autouse=True)
+def allow_occurrence_claim(monkeypatch):
+    """Run-log tests isolate Redis; real contention is covered in test_cron_claims."""
+    monkeypatch.setattr(
+        "aio_agent_platform.cron_jobs.claims.OccurrenceClaims.claim",
+        AsyncMock(return_value=True),
+    )
 
 
 @pytest_asyncio.fixture
