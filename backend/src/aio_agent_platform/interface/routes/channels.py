@@ -1,4 +1,4 @@
-"""Channel management routes — admin CRUD + user binding endpoints."""
+"""Channel management — tenant member configuration and channel-scoped bindings."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from aio_agent_platform.db.models import (
     ChannelBindCode,
     ChannelBinding,
     ChannelConfig,
+    ChannelSessionMapping,
 )
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
@@ -130,6 +131,7 @@ class ChannelOut(BaseModel):
 
 
 class ChannelBindingOut(BaseModel):
+    channel_id: UUID | None
     id: UUID
     tenant_id: UUID
     external_id: str
@@ -141,6 +143,7 @@ class ChannelBindingOut(BaseModel):
 
 
 class BindCodeRequest(BaseModel):
+    channel_id: UUID
     code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
@@ -187,6 +190,7 @@ def _binding_to_dict(b: ChannelBinding) -> dict:
     return {
         "id": b.id,
         "tenant_id": b.tenant_id,
+        "channel_id": b.channel_id,
         "external_id": b.external_id,
         "user_id": b.user_id,
         "created_at": b.created_at.isoformat() if b.created_at else "",
@@ -211,15 +215,15 @@ def _sensitive_config_changed(channel: ChannelConfig, req: ChannelUpdate) -> boo
     )
 
 
-# ---- Admin CRUD ----
+# ---- Channel configuration ----
 
 
 @router.get("", response_model=list[ChannelOut])
 async def list_channels(
-    user: AdminUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
-    """List all channels for the admin's tenant."""
+    """List channels in the current tenant for all signed-in users."""
     result = await db.execute(
         select(ChannelConfig)
         .where(ChannelConfig.tenant_id == user.tenant_id)
@@ -232,7 +236,7 @@ async def list_channels(
 async def create_channel(
     req: ChannelCreate,
     request: Request,
-    user: AdminUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Validate, save, and start a new channel by default."""
@@ -296,7 +300,7 @@ async def create_channel(
 async def update_channel(
     channel_id: UUID,
     req: ChannelUpdate,
-    user: AdminUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Update channel configuration. Requires re-enable after mode/credential changes."""
@@ -440,11 +444,7 @@ async def delete_channel(
     user: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
-    """Delete a channel and clean up its bind codes and session mappings.
-
-    Channel bindings are tenant-scoped and shared across channels, so they
-    survive channel deletion.
-    """
+    """Delete a channel and its bindings, bind codes and session mappings."""
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.id == channel_id,
@@ -459,6 +459,8 @@ async def delete_channel(
     if conn_mgr:
         await conn_mgr.stop_channel(channel_id)
 
+    await db.execute(delete(ChannelBinding).where(ChannelBinding.channel_id == channel_id))
+    await db.execute(delete(ChannelSessionMapping).where(ChannelSessionMapping.channel_id == channel_id))
     await db.execute(delete(ChannelBindCode).where(ChannelBindCode.channel_id == channel_id))
     await db.execute(delete(ChannelConfig).where(ChannelConfig.id == channel_id))
     await db.commit()
@@ -467,11 +469,10 @@ async def delete_channel(
 @router.get("/{channel_id}/bindings", response_model=list[ChannelBindingOut])
 async def list_channel_bindings(
     channel_id: UUID,
-    user: AdminUser,
+    user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
-    """List user bindings for the channel's tenant (bindings are tenant-scoped
-    and shared by all channels in the tenant)."""
+    """Admins see channel bindings; other users only see their own."""
     # Verify channel belongs to tenant
     ch_result = await db.execute(
         select(ChannelConfig).where(
@@ -485,7 +486,11 @@ async def list_channel_bindings(
 
     result = await db.execute(
         select(ChannelBinding)
-        .where(ChannelBinding.tenant_id == channel.tenant_id)
+        .where(
+            ChannelBinding.tenant_id == channel.tenant_id,
+            ChannelBinding.channel_id == channel.id,
+            *([] if user.role in ("admin", "superadmin") else [ChannelBinding.user_id == user.id]),
+        )
         .order_by(ChannelBinding.created_at.desc())
     )
     return [_binding_to_dict(b) for b in result.scalars().all()]
@@ -504,7 +509,7 @@ async def list_my_bindings(
     """List the current user's channel bindings."""
     result = await db.execute(
         select(ChannelBinding)
-        .where(ChannelBinding.user_id == user.id)
+        .where(ChannelBinding.user_id == user.id, ChannelBinding.tenant_id == user.tenant_id, ChannelBinding.channel_id.is_not(None))
         .order_by(ChannelBinding.created_at.desc())
     )
     return [_binding_to_dict(b) for b in result.scalars().all()]
@@ -520,12 +525,17 @@ async def bind_with_code(
 
     The code is only valid within the tenant whose channel issued it.
     """
+    channel = await db.scalar(select(ChannelConfig).where(
+        ChannelConfig.id == req.channel_id, ChannelConfig.tenant_id == user.tenant_id,
+    ))
+    if channel is None:
+        raise HTTPException(status_code=404, detail="渠道不存在")
     try:
-        await consume_bind_code(db, req.code, user.id, user.tenant_id)
+        await consume_bind_code(db, req.code, user.id, user.tenant_id, req.channel_id)
         await db.commit()
         return {
-            "message": "绑定成功，现在可以在当前租户的所有渠道与 Agent 对话",
-            "channel_id": None,
+            "message": "绑定成功，现在可以在该渠道与 Agent 对话",
+            "channel_id": req.channel_id,
             "external_id": None,
         }
     except BindCodeRateLimited as e:
@@ -542,11 +552,12 @@ async def unbind(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
-    """Unbind a channel. Shadow accounts are disabled; real accounts are unlinked."""
+    """Unlink an identity in the current tenant; admins may manage other users."""
     result = await db.execute(
         select(ChannelBinding).where(
             ChannelBinding.id == binding_id,
-            ChannelBinding.user_id == user.id,
+            ChannelBinding.tenant_id == user.tenant_id,
+            *([] if user.role in ("admin", "superadmin") else [ChannelBinding.user_id == user.id]),
         )
     )
     binding = result.scalar_one_or_none()
@@ -555,5 +566,5 @@ async def unbind(
 
     from aio_agent_platform.channels.binding import unbind_external
 
-    await unbind_external(db, binding.tenant_id, binding.external_id)
+    await unbind_external(db, binding.tenant_id, binding.channel_id, binding.external_id)
     await db.commit()

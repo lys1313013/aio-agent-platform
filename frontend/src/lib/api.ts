@@ -1508,10 +1508,10 @@ export const channelBindingsApi = {
     return request<ChannelBinding[]>('/channel-bindings');
   },
 
-  bind(code: string) {
+  bind(channelId: string, code: string) {
     return request<{ message: string }>('/channel-bindings/bind', {
       method: 'POST',
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ channel_id: channelId, code }),
     });
   },
 

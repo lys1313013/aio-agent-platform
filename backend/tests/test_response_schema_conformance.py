@@ -43,7 +43,7 @@ REGISTRY = [
     (MessageOut, Message, set()),
     (CronJobOut, CronJob, set()),
     (CronJobRunOut, CronJobRun, {"job_name"}),  # LEFT JOIN CronJob.name 跨表填充
-    (ChannelOut, ChannelConfig, set()),
+    (ChannelOut, ChannelConfig, {"webhook_url"}),  # Computed by _channel_to_dict.
     (ChannelBindingOut, ChannelBinding, set()),
     (
         AgentOut, Agent,

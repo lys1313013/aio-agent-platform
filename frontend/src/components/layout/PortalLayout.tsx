@@ -34,6 +34,7 @@ export default function PortalLayout() {
   }, []);
 
   const userMenuItems: MenuProps['items'] = [
+    { key: 'channels', label: '渠道管理', onClick: () => navigate('/channels') },
     {
       key: 'appearance',
       icon: <BgColorsOutlined />,

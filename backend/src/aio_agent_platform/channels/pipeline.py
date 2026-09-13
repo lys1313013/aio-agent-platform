@@ -675,7 +675,7 @@ class ChannelInboundPipeline:
 
     async def _resolve_context(self, db: AsyncSession, event: InboundEvent) -> _ResolvedContext:
         user_id = await resolve_external_user(
-            db, self.channel.tenant_id, event.external_id
+            db, self.channel.tenant_id, self.channel.id, event.external_id
         )
         if user_id is None:
             return _ResolvedContext(user_id=None, session_id=None)
@@ -719,7 +719,7 @@ class ChannelInboundPipeline:
             "🔒 你还没有绑定平台账号，暂时无法与我对话。\n\n"
             "完成绑定后即可使用：\n"
             "1. 在此会话发送 /bind 获取 6 位绑定码\n"
-            "2. 登录 Web 端「账号设置 → 渠道绑定」，输入绑定码完成关联\n\n"
+            "2. 登录 Web 端「渠道管理 → 对应渠道 → 用户绑定」，输入绑定码完成关联\n\n"
             f"绑定码有效期为 {BIND_CODE_TTL_MINUTES} 分钟。"
         )
         await self.adapter.send(event, reply)
@@ -745,7 +745,7 @@ class ChannelInboundPipeline:
         reply = (
             f"📋 你的绑定码是：\n\n"
             f"    {code}\n\n"
-            f"请在 {minutes} 分钟内登录 Web 端「账号设置 → 渠道绑定」输入该码完成关联。"
+            f"请在 {minutes} 分钟内登录 Web 端「渠道管理 → 对应渠道 → 用户绑定」输入该码完成关联。"
         )
         await self.adapter.send(event, reply)
 

@@ -1351,9 +1351,10 @@ async def test_manager_stop_unknown_channel_is_noop() -> None:
 
 async def test_resolve_external_user_unbound_and_bound(db_session) -> None:
     tenant_id = uuid4()
+    channel_id = uuid4()
 
     # 无任何绑定 → None，且不创建任何账户
-    assert await resolve_external_user(db_session, tenant_id, "ou_ext1") is None
+    assert await resolve_external_user(db_session, tenant_id, channel_id, "ou_ext1") is None
     assert (await db_session.execute(select(User))).scalars().all() == []
 
     # 建立绑定后 → 返回平台 user_id
@@ -1361,19 +1362,21 @@ async def test_resolve_external_user_unbound_and_bound(db_session) -> None:
     db_session.add(real_user)
     await db_session.flush()
     db_session.add(ChannelBinding(
-        tenant_id=tenant_id, external_id="ou_ext1", user_id=real_user.id,
+        tenant_id=tenant_id, channel_id=channel_id, external_id="ou_ext1", user_id=real_user.id,
     ))
     await db_session.flush()
 
-    assert await resolve_external_user(db_session, tenant_id, "ou_ext1") == real_user.id
+    assert await resolve_external_user(db_session, tenant_id, channel_id, "ou_ext1") == real_user.id
 
     # 其他租户查不到该绑定
-    assert await resolve_external_user(db_session, uuid4(), "ou_ext1") is None
+    assert await resolve_external_user(db_session, uuid4(), channel_id, "ou_ext1") is None
+
+    assert await resolve_external_user(db_session, tenant_id, uuid4(), "ou_ext1") is None
 
     # 绑定用户被停用 → 视为未绑定
     real_user.is_active = False
     await db_session.flush()
-    assert await resolve_external_user(db_session, tenant_id, "ou_ext1") is None
+    assert await resolve_external_user(db_session, tenant_id, channel_id, "ou_ext1") is None
 
 
 async def test_issue_bind_code_invalidates_previous(db_session) -> None:
@@ -1387,7 +1390,7 @@ async def test_issue_bind_code_invalidates_previous(db_session) -> None:
     assert code2 != code1 or True  # 随机可能相同，不强制
     # 旧码已被作废
     with pytest.raises(BindCodeInvalid):
-        await consume_bind_code(db_session, code1, uuid4(), tenant_id)
+        await consume_bind_code(db_session, code1, uuid4(), tenant_id, channel_id)
 
 
 async def test_issue_bind_code_rate_limited(db_session) -> None:
@@ -1410,7 +1413,7 @@ async def test_consume_bind_code_creates_binding(db_session) -> None:
     db_session.add(real_user)
     await db_session.flush()
 
-    await consume_bind_code(db_session, code, real_user.id, tenant_id)
+    await consume_bind_code(db_session, code, real_user.id, tenant_id, channel_id)
 
     binding = (
         await db_session.execute(
@@ -1421,6 +1424,7 @@ async def test_consume_bind_code_creates_binding(db_session) -> None:
         )
     ).scalar_one()
     assert binding.user_id == real_user.id
+    assert binding.channel_id == channel_id
 
 
 async def test_consume_bind_code_rejects_cross_tenant(db_session) -> None:
@@ -1435,32 +1439,34 @@ async def test_consume_bind_code_rejects_cross_tenant(db_session) -> None:
 
     # 其他租户的用户不能消费该绑定码
     with pytest.raises(BindCodeInvalid, match="其他租户"):
-        await consume_bind_code(db_session, code, real_user.id, uuid4())
+        await consume_bind_code(db_session, code, real_user.id, uuid4(), channel_id)
 
     # 码未被消费，同租户仍可正常使用
-    await consume_bind_code(db_session, code, real_user.id, tenant_id)
+    await consume_bind_code(db_session, code, real_user.id, tenant_id, channel_id)
 
 
 async def test_consume_bind_code_rejects_invalid(db_session) -> None:
+    channel_id = uuid4()
     with pytest.raises(BindCodeInvalid):
-        await consume_bind_code(db_session, "000000", uuid4(), uuid4())
+        await consume_bind_code(db_session, "000000", uuid4(), uuid4(), channel_id)
 
 
 async def test_consume_bind_code_rejects_expired(db_session) -> None:
     from aio_agent_platform.db.models import ChannelBindCode
 
     tenant_id = uuid4()
+    channel_id = uuid4()
     record = ChannelBindCode(
         code="999888",
         tenant_id=tenant_id,
-        channel_id=uuid4(),
+        channel_id=channel_id,
         external_id="ou_expired",
         expires_at=datetime.now(UTC) - timedelta(minutes=1),
     )
     db_session.add(record)
     await db_session.flush()
     with pytest.raises(BindCodeInvalid, match="过期"):
-        await consume_bind_code(db_session, "999888", uuid4(), tenant_id)
+        await consume_bind_code(db_session, "999888", uuid4(), tenant_id, channel_id)
 
 
 async def test_consume_bind_code_rejects_already_bound(db_session) -> None:
@@ -1470,14 +1476,14 @@ async def test_consume_bind_code_rejects_already_bound(db_session) -> None:
     db_session.add(real_user)
     await db_session.flush()
     db_session.add(ChannelBinding(
-        tenant_id=tenant_id, external_id="ou_self", user_id=real_user.id,
+        tenant_id=tenant_id, channel_id=channel_id, external_id="ou_self", user_id=real_user.id,
     ))
     await db_session.flush()
 
     # 绑定到同一账号 → 拒绝
     code, _ = await issue_bind_code(db_session, channel_id, "ou_self", tenant_id)
     with pytest.raises(BindCodeInvalid, match="已绑定"):
-        await consume_bind_code(db_session, code, real_user.id, tenant_id)
+        await consume_bind_code(db_session, code, real_user.id, tenant_id, channel_id)
 
     # 绑定到其他账号 → 拒绝
     other = User(username="real_other", email="real_other@test.com", password_hash="x")
@@ -1485,20 +1491,21 @@ async def test_consume_bind_code_rejects_already_bound(db_session) -> None:
     await db_session.flush()
     code2, _ = await issue_bind_code(db_session, channel_id, "ou_self", tenant_id)
     with pytest.raises(BindCodeInvalid, match="其他账号"):
-        await consume_bind_code(db_session, code2, other.id, tenant_id)
+        await consume_bind_code(db_session, code2, other.id, tenant_id, channel_id)
 
 
 async def test_unbind_external(db_session) -> None:
     tenant_id = uuid4()
+    channel_id = uuid4()
     real_user = User(username="real_unbind", email="real_unbind@test.com", password_hash="x")
     db_session.add(real_user)
     await db_session.flush()
     db_session.add(ChannelBinding(
-        tenant_id=tenant_id, external_id="ou_unbind", user_id=real_user.id,
+        tenant_id=tenant_id, channel_id=channel_id, external_id="ou_unbind", user_id=real_user.id,
     ))
     await db_session.flush()
 
-    await unbind_external(db_session, tenant_id, "ou_unbind")
+    await unbind_external(db_session, tenant_id, channel_id, "ou_unbind")
 
     binding = (
         await db_session.execute(
@@ -1514,4 +1521,30 @@ async def test_unbind_external(db_session) -> None:
     assert real_user.is_active is True
 
     # 再次解绑是 no-op
-    await unbind_external(db_session, tenant_id, "ou_unbind")
+    await unbind_external(db_session, tenant_id, channel_id, "ou_unbind")
+
+
+async def test_binding_and_unbinding_are_channel_scoped(db_session):
+    tenant_id, first, second = uuid4(), uuid4(), uuid4()
+    user = User(username='channel_scope', email='scope@test.com', password_hash='x')
+    db_session.add(user)
+    await db_session.flush()
+    code, _ = await issue_bind_code(db_session, first, 'same_external', tenant_id)
+    with pytest.raises(BindCodeInvalid):
+        await consume_bind_code(db_session, code, user.id, tenant_id, second)
+    await consume_bind_code(db_session, code, user.id, tenant_id, first)
+    code, _ = await issue_bind_code(db_session, second, 'same_external', tenant_id)
+    await consume_bind_code(db_session, code, user.id, tenant_id, second)
+    await unbind_external(db_session, tenant_id, first, 'same_external')
+    assert await resolve_external_user(db_session, tenant_id, first, 'same_external') is None
+    assert await resolve_external_user(db_session, tenant_id, second, 'same_external') == user.id
+
+
+async def test_legacy_binding_does_not_resolve_for_any_channel(db_session):
+    tenant_id = uuid4()
+    user = User(username='legacy_scope', email='legacy@test.com', password_hash='x')
+    db_session.add(user)
+    await db_session.flush()
+    db_session.add(ChannelBinding(tenant_id=tenant_id, external_id='legacy', user_id=user.id))
+    await db_session.flush()
+    assert await resolve_external_user(db_session, tenant_id, uuid4(), 'legacy') is None

@@ -1,7 +1,7 @@
 """Channel binding — external-user resolution, bind-code lifecycle.
 
-Bindings are scoped by tenant: an external user binds once per tenant and the
-binding is shared by every channel in that tenant.
+Bindings are scoped by tenant and channel. External identities never carry
+over to another channel.
 
 Flow overview:
   1. External user sends first message → ``resolve_external_user`` finds no
@@ -42,9 +42,10 @@ def _generate_code() -> str:
 async def resolve_external_user(
     db: AsyncSession,
     tenant_id: UUID,
+    channel_id: UUID,
     external_id: str,
 ) -> UUID | None:
-    """Return the bound platform user_id for an external user within a tenant.
+    """Return the bound platform user_id for an external user within a channel.
 
     Never creates a ``User`` row. Returns ``None`` when the external user has
     no live binding — the pipeline then guides them through the bind-code
@@ -53,6 +54,7 @@ async def resolve_external_user(
     result = await db.execute(
         select(ChannelBinding).where(
             ChannelBinding.tenant_id == tenant_id,
+            ChannelBinding.channel_id == channel_id,
             ChannelBinding.external_id == external_id,
         )
     )
@@ -120,12 +122,13 @@ async def consume_bind_code(
     code: str,
     real_user_id: UUID,
     real_tenant_id: UUID,
+    channel_id: UUID,
 ) -> None:
     """Consume a bind code and link the external user to ``real_user_id``.
 
     The code is only valid within the tenant whose channel issued it —
     cross-tenant consumption is rejected. Creates a ``ChannelBinding``
-    (scoped to the tenant) on success. Raises BindCodeInvalid on any failure
+    (scoped to the channel) on success. Raises BindCodeInvalid on any failure
     (expired / already used / unknown code / tenant mismatch / already bound).
     """
     now = datetime.now(UTC)
@@ -133,7 +136,8 @@ async def consume_bind_code(
         select(ChannelBindCode).where(
             ChannelBindCode.code == code,
             ChannelBindCode.used_at.is_(None),
-        )
+            ChannelBindCode.channel_id == channel_id,
+        ).with_for_update()
     )
     record = result.scalar_one_or_none()
     if record is None:
@@ -143,10 +147,11 @@ async def consume_bind_code(
     if record.tenant_id != real_tenant_id:
         raise BindCodeInvalid("该绑定码属于其他租户，请切换到对应租户后再绑定")
 
-    # Locate the binding row for this external user (tenant-scoped).
+    # Locate the binding row for this external user (channel-scoped).
     binding = await db.scalar(
         select(ChannelBinding).where(
             ChannelBinding.tenant_id == record.tenant_id,
+            ChannelBinding.channel_id == channel_id,
             ChannelBinding.external_id == record.external_id,
         )
     )
@@ -159,6 +164,7 @@ async def consume_bind_code(
     db.add(
         ChannelBinding(
             tenant_id=record.tenant_id,
+            channel_id=channel_id,
             external_id=record.external_id,
             user_id=real_user_id,
         )
@@ -180,6 +186,7 @@ async def consume_bind_code(
 async def unbind_external(
     db: AsyncSession,
     tenant_id: UUID,
+    channel_id: UUID,
     external_id: str,
 ) -> None:
     """Remove the binding for an external user. The linked platform account
@@ -188,6 +195,7 @@ async def unbind_external(
     result = await db.execute(
         select(ChannelBinding).where(
             ChannelBinding.tenant_id == tenant_id,
+            ChannelBinding.channel_id == channel_id,
             ChannelBinding.external_id == external_id,
         )
     )

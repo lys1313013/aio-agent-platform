@@ -30,11 +30,11 @@ import {
   Switch,
   Table,
 } from 'antd';
-import { channelsApi, agentsApi, toolsApi, usersApi } from '@/lib/api';
+import { channelBindingsApi, agentsApi, channelsApi, toolsApi, usersApi } from '@/lib/api';
 import type { AdminUser } from '@/lib/api';
 import type { Agent, Channel, ChannelBinding, ChannelMode, ChannelType, ToolInfo } from '@/lib/types';
 import { useAuthStore } from '@/stores/authStore';
-import { Navigate, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 
 const { Text, Paragraph } = Typography;
@@ -94,6 +94,8 @@ export default function ChannelsPage() {
   const [bindingsChannel, setBindingsChannel] = useState<Channel | null>(null);
   const [bindings, setBindings] = useState<ChannelBinding[]>([]);
   const [bindingsLoading, setBindingsLoading] = useState(false);
+  const [bindForm] = Form.useForm();
+  const [bindingSaving, setBindingSaving] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -111,18 +113,15 @@ export default function ChannelsPage() {
     const [agentList, toolList, userList] = await Promise.all([
       agentsApi.list().catch(() => [] as Agent[]),
       toolsApi.list().catch(() => [] as ToolInfo[]),
-      usersApi.list().catch(() => [] as AdminUser[]),
+      isAdmin ? usersApi.list().catch(() => [] as AdminUser[]) : Promise.resolve([] as AdminUser[]),
     ]);
     setAgents(agentList);
     setTools(toolList);
     setUsers(userList);
-  }, [message]);
+  }, [message, isAdmin]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  if (!isAdmin) {
-    return <Navigate to="/" replace />;
-  }
 
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
 
@@ -280,6 +279,8 @@ export default function ChannelsPage() {
 
   const openBindings = async (channel: Channel) => {
     setBindingsChannel(channel);
+    setBindings([]);
+    bindForm.resetFields();
     setBindingsLoading(true);
     try {
       setBindings(await channelsApi.bindings(channel.id));
@@ -287,6 +288,30 @@ export default function ChannelsPage() {
       message.error(`加载绑定列表失败：${err.message}`);
     } finally {
       setBindingsLoading(false);
+    }
+  };
+
+  const handleBind = async ({ code }: { code: string }) => {
+    if (!bindingsChannel) return;
+    setBindingSaving(true);
+    try {
+      const result = await channelBindingsApi.bind(bindingsChannel.id, code.trim());
+      message.success(result.message);
+      await openBindings(bindingsChannel);
+    } catch (err: any) {
+      message.error(err.message || '绑定失败');
+    } finally {
+      setBindingSaving(false);
+    }
+  };
+
+  const handleUnbind = async (binding: ChannelBinding) => {
+    try {
+      await channelBindingsApi.unbind(binding.id);
+      message.success('已解绑');
+      if (bindingsChannel) await openBindings(bindingsChannel);
+    } catch (err: any) {
+      message.error(err.message || '解绑失败');
     }
   };
 
@@ -376,7 +401,7 @@ export default function ChannelsPage() {
                   }
                   extra={
                     <Space size={4}>
-                      {channel.status === 'enabled' ? (
+                      {isAdmin && (channel.status === 'enabled' ? (
                         <Tooltip title="停用">
                           <Button
                             type="text"
@@ -396,8 +421,8 @@ export default function ChannelsPage() {
                             loading={actingChannelId === channel.id}
                           />
                         </Tooltip>
-                      )}
-                      <Tooltip title="绑定用户">
+                      ))}
+                      <Tooltip title="用户绑定">
                         <Button
                           type="text"
                           size="small"
@@ -413,7 +438,7 @@ export default function ChannelsPage() {
                           onClick={() => openModal(channel)}
                         />
                       </Tooltip>
-                      <Popconfirm
+                      {isAdmin && <Popconfirm
                         title="删除渠道？"
                         description="将连带删除该渠道的用户绑定与会话映射，且不可恢复。"
                         onConfirm={() => handleDelete(channel)}
@@ -425,7 +450,7 @@ export default function ChannelsPage() {
                         <Tooltip title="删除">
                           <Button type="text" size="small" danger icon={<DeleteOutlined />} />
                         </Tooltip>
-                      </Popconfirm>
+                      </Popconfirm>}
                     </Space>
                   }
                 >
@@ -753,12 +778,21 @@ export default function ChannelsPage() {
 
         {/* ---- Bindings Modal ---- */}
         <Modal
-          title={`绑定用户 — ${bindingsChannel?.name ?? ''}(按租户共享)`}
+          title={`用户绑定 — ${bindingsChannel?.name ?? ''}`}
           open={!!bindingsChannel}
           onCancel={() => setBindingsChannel(null)}
           footer={null}
           width={720}
         >
+          <Alert type="info" showIcon className="mb-4" message="绑定仅对当前渠道生效" description="向该渠道机器人发送 /bind 获取 6 位绑定码，再在下方绑定到当前登录账号。" />
+          <Form form={bindForm} layout="inline" onFinish={handleBind} className="mb-4">
+            <Form.Item name="code" rules={[{ required: true, message: '请输入绑定码' }, { pattern: /^\d{6}$/, message: '绑定码为 6 位数字' }]}>
+              <Input placeholder="6 位绑定码" maxLength={6} />
+            </Form.Item>
+            <Form.Item>
+              <Button type="primary" htmlType="submit" loading={bindingSaving}>绑定我的账号</Button>
+            </Form.Item>
+          </Form>
           <Table
             rowKey="id"
             size="small"
@@ -776,6 +810,7 @@ export default function ChannelsPage() {
                 title: '平台用户',
                 dataIndex: 'user_id',
                 render: (userId: string) => {
+                  if (!isAdmin) return <Text>当前账号</Text>;
                   const user = users.find((u) => u.id === userId);
                   if (!user) {
                     return (
@@ -804,6 +839,14 @@ export default function ChannelsPage() {
                 dataIndex: 'created_at',
                 width: 180,
                 render: (v: string) => (v ? new Date(v).toLocaleString() : '-'),
+              },
+              {
+                title: '操作',
+                render: (_: unknown, binding: ChannelBinding) => (
+                  <Popconfirm title="解除该渠道的账号绑定？" description="只解除此渠道的关联，其他渠道不受影响。" onConfirm={() => handleUnbind(binding)}>
+                    <Button type="link" danger>解绑</Button>
+                  </Popconfirm>
+                ),
               },
             ]}
           />

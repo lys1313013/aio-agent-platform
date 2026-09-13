@@ -1675,8 +1675,12 @@ class ChannelConfig(Base):
 
 
 class ChannelBinding(Base):
-    """渠道外部用户 ↔ 平台用户绑定关系(按租户生效，租户内所有渠道共享)。"""
+    """渠道外部用户 ↔ 平台用户绑定关系；旧记录无法定位渠道时不参与身份识别。"""
     __tablename__ = "channel_bindings"
+
+    channel_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True, comment="所属渠道ID；NULL仅用于待重新绑定的旧记录"
+    )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
     tenant_id: Mapped[UUID] = mapped_column(
@@ -1696,15 +1700,16 @@ class ChannelBinding(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("tenant_id", "external_id", name="uq_channel_binding_external"),
+        UniqueConstraint("tenant_id", "channel_id", "external_id", name="uq_channel_binding_external"),
         Index("idx_channel_bindings_user", "user_id"),
         Index("idx_channel_bindings_tenant", "tenant_id"),
+        Index("idx_channel_bindings_channel", "channel_id"),
         {"comment": "渠道用户绑定表"},
     )
 
 
 class ChannelBindCode(Base):
-    """绑定码 — 飞书用户发送 /bind 后生成，Web 端输入完成账号合并。"""
+    """绑定码 — IM 用户发送 /bind 后生成，在对应渠道中输入以关联平台账号。"""
     __tablename__ = "channel_bind_codes"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")

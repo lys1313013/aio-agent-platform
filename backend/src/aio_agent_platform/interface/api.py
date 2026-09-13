@@ -334,6 +334,7 @@ async def lifespan(app: FastAPI):
         binding_result = await db.execute(
             select(ChannelBinding).where(
                 ChannelBinding.tenant_id == channel.tenant_id,
+                ChannelBinding.channel_id == channel.id,
                 ChannelBinding.user_id == job.user_id,
             )
         )

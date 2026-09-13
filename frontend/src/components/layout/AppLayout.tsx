@@ -166,10 +166,10 @@ export default function AppLayout() {
       key: 'resources',
       label: '资源与集成',
       items: [
+        { path: '/channels', icon: <MessageOutlined />, label: '渠道管理' },
         ...(isAdmin
           ? [
               { path: '/models', icon: <ApiOutlined />, label: '模型管理' },
-              { path: '/channels', icon: <MessageOutlined />, label: '渠道管理' },
               {
                 label: '知识库',
                 icon: <DatabaseOutlined />,

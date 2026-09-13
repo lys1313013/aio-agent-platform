@@ -485,6 +485,7 @@ export interface ChannelUpdate {
 }
 
 export interface ChannelBinding {
+  channel_id: string | null;
   id: string;
   tenant_id: string;
   external_id: string;
