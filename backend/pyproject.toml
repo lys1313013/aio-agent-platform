@@ -159,3 +159,4 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["postgres: real PostgreSQL integration tests (opt in with --run-postgres)"]

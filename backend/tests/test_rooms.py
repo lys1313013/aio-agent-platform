@@ -108,7 +108,7 @@ async def room_env(monkeypatch):
             await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
     except Exception as exc:
         await admin.dispose()
-        pytest.skip(f"Disposable room test database unavailable: {type(exc).__name__}")
+        pytest.fail(f"Disposable room test database unavailable: {type(exc).__name__}")
     engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema}})
     factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
     async with engine.begin() as conn:
@@ -215,6 +215,7 @@ async def wait_state(env, room_id, predicate, timeout=8):
             await asyncio.sleep(0.03)
 
 
+@pytest.mark.postgres
 async def test_single_mention_history_usage_and_direct_route_guard(room_env):
     env = room_env
     room = await new_room(env)
@@ -234,6 +235,7 @@ async def test_single_mention_history_usage_and_direct_route_guard(room_env):
     assert (await env.client.post('/api/chat/stream', json={"session_id": room["id"], "message": "bypass"})).status_code == 404
 
 
+@pytest.mark.postgres
 async def test_sequential_context_and_summary_mode_removed(room_env):
     env = room_env
     room = await new_room(env)
@@ -254,6 +256,7 @@ async def test_sequential_context_and_summary_mode_removed(room_env):
     assert len(env.calls) == 3
 
 
+@pytest.mark.postgres
 async def test_concurrent_submissions_are_serialized_and_idempotent(room_env, monkeypatch):
     env = room_env
     monkeypatch.setattr(rooms, "start_run", lambda *a: None)
@@ -269,6 +272,7 @@ async def test_concurrent_submissions_are_serialized_and_idempotent(room_env, mo
     assert len(state["runs"]) == 1 and len([m for m in state["messages"] if m["role"] == "user"]) == 1
 
 
+@pytest.mark.postgres
 async def test_stop_preserves_partial_output_and_never_starts_next_member(room_env):
     env = room_env
     async def slow(_iteration):
@@ -285,6 +289,7 @@ async def test_stop_preserves_partial_output_and_never_starts_next_member(room_e
     assert any(m["content"] == "部分结果" for m in state["messages"])
 
 
+@pytest.mark.postgres
 async def test_confirmations_block_queue_and_duplicate_or_late_answers_fail(room_env):
     env = room_env
     async def ask(iteration):
@@ -309,6 +314,7 @@ async def test_confirmations_block_queue_and_duplicate_or_late_answers_fail(room
     assert (await env.client.post(path, json=body)).status_code == 409
 
 
+@pytest.mark.postgres
 async def test_failed_tool_retry_requires_acknowledgement_and_keeps_old_context(room_env):
     env = room_env
     async def fail_after_tool(iteration):
@@ -332,6 +338,7 @@ async def test_failed_tool_retry_requires_acknowledgement_and_keeps_old_context(
     assert "[架构，消息 #" not in retry_context
 
 
+@pytest.mark.postgres
 async def test_owner_tenant_and_agent_visibility_checks(room_env):
     env = room_env
     room = await new_room(env)
@@ -351,6 +358,7 @@ async def test_owner_tenant_and_agent_visibility_checks(room_env):
     assert response.status_code == 404
 
 
+@pytest.mark.postgres
 async def test_stale_run_recovery_and_membership_history(room_env, monkeypatch):
     env = room_env
     monkeypatch.setattr(rooms, "start_run", lambda *a: None)

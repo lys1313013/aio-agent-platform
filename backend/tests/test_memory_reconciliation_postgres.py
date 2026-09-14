@@ -1,32 +1,20 @@
-"""Business decisions run against explicit mocked query results, without PostgreSQL."""
+"""Semantic decisions use a fake model; persistence/locks use real PostgreSQL."""
 
+import asyncio
 import json
-from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from aio_agent_platform.db.models import Memory
 from aio_agent_platform.memory.reconciliation import reconcile_memory
 from aio_agent_platform.memory.service import MemoryService
 
-
-@pytest.fixture
-def db_session(monkeypatch):
-    db = MagicMock(spec=AsyncSession)
-    db.scalar.side_effect = [True, None]  # Lock granted; no exact duplicate.
-
-    async def create(_db, user_id, layer, content, meta=None, agent_id=None):
-        memory = Memory(id=uuid4(), user_id=user_id, layer=layer, content=content,
-                        agent_id=agent_id, meta=meta or {}, updated_at=datetime.now(UTC))
-        db.scalars.return_value = SimpleNamespace(all=lambda: [memory])
-        return memory
-
-    monkeypatch.setattr(MemoryService, "create_memory", AsyncMock(side_effect=create))
-    return db
+pytestmark = pytest.mark.postgres
 
 
 @pytest.fixture
@@ -49,7 +37,6 @@ async def test_exact_duplicate_keeps_details_and_merges_sources(db_session, mode
         "英语初学者，使用扇贝背单词",
         meta={"tags": ["english"], "source_session": "s1"},
     )
-    db_session.scalar.side_effect = [True, original]
     memory, action = await reconcile_memory(
         db_session,
         uid,
@@ -94,7 +81,7 @@ async def test_semantic_decisions_preserve_id_and_revision(db_session, model, de
         assert memory.meta["revisions"][0]["content"] == "英语初学者，使用扇贝背单词"
         assert memory.meta["revisions"][0]["source_session"] == "s1"
         assert memory.search_vec == MemoryService._tokenize(combined)
-    MemoryService.create_memory.assert_awaited_once()
+    assert await db_session.scalar(select(func.count()).select_from(Memory)) == 1
 
 
 @pytest.mark.asyncio
@@ -125,6 +112,63 @@ async def test_provider_failure_preserves_old_fact(db_session, model):
     model.complete.side_effect = TimeoutError()
     memory, action = await reconcile_memory(db_session, uid, "L2", "喜欢拿铁咖啡")
     assert action == "created" and memory.id != old.id and old.content == "喜欢咖啡"
+
+
+@pytest.mark.asyncio
+async def test_candidate_scope_and_forged_target(db_session, model):
+    uid, other, agent, foreign_agent = (uuid4() for _ in range(4))
+    allowed = await MemoryService.create_memory(db_session, uid, "L2", "目标事实", agent_id=agent)
+    foreign = []
+    for user, scope, layer in [
+        (other, agent, "L2"),
+        (uid, foreign_agent, "L2"),
+        (uid, None, "L2"),
+        (uid, agent, "L1"),
+    ]:
+        foreign.append(
+            await MemoryService.create_memory(db_session, user, layer, "目标事实", agent_id=scope)
+        )
+    model.complete.return_value = SimpleNamespace(
+        content=json.dumps(
+            {
+                "action": "update",
+                "memory_id": str(foreign[0].id),
+                "content": "越权覆盖",
+            }
+        )
+    )
+    _, action = await reconcile_memory(db_session, uid, "L2", "补充事实", agent_id=agent)
+    assert action == "created"
+    payload = json.loads(model.complete.call_args.kwargs["messages"][1].content)
+    assert [m["id"] for m in payload["existing"]] == [str(allowed.id)]
+    assert all(m.content == "目标事实" for m in foreign)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writes_into_empty_scope(db_session, engine, model):
+    uid = uuid4()
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    started = asyncio.Event()
+
+    async def first():
+        async with factory() as db:
+            result = await reconcile_memory(db, uid, "L2", "英语初学者")
+            started.set()
+            await asyncio.sleep(0.15)
+            await db.commit()
+            return result
+
+    async def second():
+        await started.wait()
+        async with factory() as db:
+            result = await reconcile_memory(db, uid, "L2", "英语初学者")
+            await db.commit()
+            return result
+
+    (a, action_a), (b, action_b) = await asyncio.gather(first(), second())
+    assert a.id == b.id and (action_a, action_b) == ("created", "skipped")
+    assert await db_session.scalar(select(func.count()).select_from(Memory)) == 1
+    model.complete.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -169,36 +213,51 @@ async def test_revisions_bounded(db_session, model):
     assert memory.meta["revisions"][-1]["content"] == "原始事实"
 
 
-
-async def test_tool_and_extraction_call_reconciliation_without_database(monkeypatch):
+@pytest.mark.asyncio
+async def test_tool_and_extraction_share_semantic_policy(db_session, engine, model, monkeypatch):
+    from aio_agent_platform.db.models import Session
     from aio_agent_platform.memory.handlers import handle_memory_write
 
-    uid, agent, session_id = uuid4(), uuid4(), uuid4()
-    memory = Memory(id=uuid4(), content='英语初学者')
-    db = MagicMock(spec=AsyncSession)
-    db.__aenter__.return_value = db
-    db.scalar.return_value = agent
-    db.scalars.return_value = SimpleNamespace(all=lambda: [memory])
-    factory = MagicMock(return_value=db)
-    monkeypatch.setattr('aio_agent_platform.memory.handlers.get_session_factory', lambda: factory)
-    monkeypatch.setattr('aio_agent_platform.memory.handlers._active_agent', AsyncMock(return_value=agent))
-    monkeypatch.setattr('aio_agent_platform.db.connection.get_session_factory', lambda: factory)
-    reconcile = AsyncMock(return_value=(memory, 'skipped'))
-    monkeypatch.setattr('aio_agent_platform.memory.handlers.reconcile_memory', reconcile)
-    monkeypatch.setattr('aio_agent_platform.memory.reconciliation.reconcile_memory', reconcile)
-    result = await handle_memory_write({'layer': 'L2', 'content': '刚入门'}, str(uid), str(session_id))
-    assert 'skipped' in result
-    assert reconcile.call_args.args[:4] == (db, uid, 'L2', '刚入门')
-    assert reconcile.call_args.kwargs['agent_id'] == agent
-    reconcile.reset_mock()
-    provider = SimpleNamespace(complete=AsyncMock(return_value=SimpleNamespace(content=json.dumps({
-        'l2_memories': [{'content': '正在学英语'}], 'l3_summary': '',
-    }))))
-    monkeypatch.setattr('aio_agent_platform.memory.service.create_default_provider_for_user',
-                        AsyncMock(return_value=provider))
-    rows = await MemoryService.extract_memories_from_conversation(uid, session_id, [], agent_id=agent)
-    assert rows == [memory]
-    reconcile.assert_awaited_once()
-    assert reconcile.call_args.kwargs['content'] == '正在学英语'
-    assert reconcile.call_args.kwargs['agent_id'] == agent
-    assert '英语初学者' in provider.complete.call_args.kwargs['messages'][0].content
+    uid, agent = uuid4(), uuid4()
+    session = Session(user_id=uid, agent_id=agent, title="英语学习")
+    db_session.add(session)
+    old = await MemoryService.create_memory(
+        db_session, uid, "L2", "英语初学者，使用扇贝", agent_id=agent
+    )
+    await db_session.commit()
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr("aio_agent_platform.db.connection._async_session_factory", factory)
+    model.complete.return_value = SimpleNamespace(
+        content=json.dumps(
+            {
+                "action": "skip",
+                "memory_id": str(old.id),
+            }
+        )
+    )
+    result = await handle_memory_write(
+        {"layer": "L2", "content": "用户英语刚入门"},
+        str(uid),
+        str(session.id),
+    )
+    assert "skipped" in result
+    extractor = SimpleNamespace(
+        complete=AsyncMock(
+            return_value=SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "l2_memories": [{"content": "正在入门学习英语"}],
+                        "l3_summary": "",
+                    }
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(
+        "aio_agent_platform.memory.service.create_default_provider_for_user",
+        AsyncMock(return_value=extractor),
+    )
+    rows = await MemoryService.extract_memories_from_conversation(uid, session.id, [])
+    assert len(rows) == 1 and rows[0].id == old.id
+    assert "英语初学者，使用扇贝" in extractor.complete.call_args.kwargs["messages"][0].content
+    assert await db_session.scalar(select(func.count()).select_from(Memory)) == 1

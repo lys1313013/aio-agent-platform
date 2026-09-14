@@ -54,13 +54,15 @@ def _guard_test_db(database_url: str) -> None:
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def engine():
+async def engine(request):
     """Create the test database engine and schema once per session.
 
     Skips DB-dependent tests when no database URL is configured or the
     database is unreachable (e.g. CI without a PostgreSQL service).
     """
     database_url = get_test_database_url()
+    if not database_url and request.config.getoption("--run-postgres"):
+        pytest.fail("PostgreSQL integration tests require DATABASE_URL")
     if not database_url:
         pytest.skip("DATABASE_URL not configured")
     engine = create_async_engine(database_url, echo=False, poolclass=NullPool)
@@ -70,6 +72,8 @@ async def engine():
                 pass
     except Exception:
         await engine.dispose()
+        if request.config.getoption("--run-postgres"):
+            pytest.fail("PostgreSQL integration test database is unreachable")
         pytest.skip(f"test database not reachable: {database_url}")
     async with engine.begin() as conn:
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
@@ -112,3 +116,19 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
         yield test_client
 
     app.dependency_overrides.clear()
+
+
+def pytest_addoption(parser):
+    parser.addoption("--run-postgres", action="store_true", default=False,
+                     help="Include explicitly marked PostgreSQL integration tests")
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-postgres"):
+        return
+    selected, deferred = [], []
+    for item in items:
+        (deferred if item.get_closest_marker("postgres") else selected).append(item)
+    items[:] = selected
+    if deferred:
+        config.hook.pytest_deselected(items=deferred)
