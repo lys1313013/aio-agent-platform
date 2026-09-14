@@ -1,5 +1,5 @@
 import { apiFetch, ApiError, request } from './api';
-import type { ChatAttachment, ConfirmationRequest, ConfirmationResponse, FileAttachmentRef, Message } from './types';
+import type { ChatAttachment, ConfirmationRequest, ConfirmationResponse, FileAttachmentRef, Message, StreamingState, ToolCallInfo } from './types';
 
 export interface RoomMember {
   id: string;
@@ -69,11 +69,28 @@ export interface Room extends RoomSummary {
 export interface RoomSend {
   request_id: string;
   message: string;
-  mode: 'default' | 'mentions' | 'all' | 'summary';
+  mode: 'default' | 'mentions' | 'all';
   member_ids: string[];
   reply_to_id?: string;
   attachments?: ChatAttachment[];
   file_attachments?: FileAttachmentRef[];
+}
+
+/** Room snapshots use the same live renderer as per-token conversations.
+ * Snapshots group thinking and tools; confirmation responses remain room-scoped.
+ */
+export function roomMessageStreaming(message: RoomMessage): StreamingState {
+  const thinkingChunks = message.reasoning ?? [];
+  const toolCalls = (message.tool_calls ?? []) as unknown as ToolCallInfo[];
+  return {
+    isStreaming: message.status === 'running', finalText: message.content ?? '',
+    thinking: thinkingChunks.map(chunk => chunk.content).join(''), thinkingChunks, toolCalls,
+    actionOrder: [
+      ...thinkingChunks.map(chunk => ({ type: 'thinking' as const, id: chunk.id })),
+      ...toolCalls.map(tool => ({ type: 'tool' as const, id: tool.id })),
+    ],
+    fileChanges: message.file_changes ?? [], delegations: [], confirmations: [], confirmationsResolved: {},
+  };
 }
 
 export const RUNNING = new Set(['queued', 'running', 'stopping']);

@@ -28,11 +28,6 @@ from aio_agent_platform.workspaces.service import WorkspaceService
 ACTIVE_RUNS = ("queued", "running", "stopping")
 ACTIVE_TASKS = ("queued", "running", "waiting_user")
 LEASE_SECONDS = 120
-SUMMARY_PROMPT = (
-    "请总结本聊天室目前的讨论，按讨论目标、已有共识、分歧及发言来源、待确认事项、"
-    "建议下一步组织。没有充分依据时明确尚未达成共识；说明失败或未完成成员的缺失意见。"
-    "只生成总结，不执行新的外部操作。"
-)
 
 
 def now() -> datetime:
@@ -252,8 +247,6 @@ async def submit_run(db: AsyncSession, room: ChatRoom, user: User, req: RoomSend
             raise HTTPException(404, "引用消息不存在")
         data["quote"] = {"name": quote.name, "content": quote.content[:12000],
                          "truncated": len(quote.content) > 12000, "status": quote.status}
-    if req.mode == "summary":
-        data["message"] = SUMMARY_PROMPT
     run = ChatRoomRun(id=uuid4(), room_id=room.id, request_id=req.request_id,
                       request_hash=digest, input=data, status="queued", heartbeat_at=now())
     db.add(run)

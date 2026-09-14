@@ -55,6 +55,8 @@ def test_invalid_command_combinations():
         RoomSend(request_id=uuid4(), message="hello", mode="all", member_ids=[uuid4()])
     with pytest.raises(ValidationError):
         RoomSend(request_id=uuid4(), message=" ")
+    with pytest.raises(ValidationError):
+        RoomSend(request_id=uuid4(), message="总结讨论", mode="summary")
     agent_id = uuid4()
     with pytest.raises(ValidationError):
         RoomCreate(goal="review", agent_ids=[agent_id, agent_id])
@@ -232,7 +234,7 @@ async def test_single_mention_history_usage_and_direct_route_guard(room_env):
     assert (await env.client.post('/api/chat/stream', json={"session_id": room["id"], "message": "bypass"})).status_code == 404
 
 
-async def test_sequential_context_and_summary_only_one_member(room_env):
+async def test_sequential_context_and_summary_mode_removed(room_env):
     env = room_env
     room = await new_room(env)
     response = await env.client.post(f"/api/rooms/{room['id']}/runs", json={
@@ -248,9 +250,8 @@ async def test_sequential_context_and_summary_only_one_member(room_env):
     response = await env.client.post(f"/api/rooms/{room['id']}/runs", json={
         "request_id": str(uuid4()), "mode": "summary", "member_ids": [room["members"][2]["id"]], "reply_to_id": quote["id"],
     })
-    assert response.status_code == 202
-    await wait_state(env, room["id"], lambda s: s["runs"][0]["status"] == "completed")
-    assert len(env.calls) == 4 and env.calls[-1]["tools"] == []
+    assert response.status_code == 422
+    assert len(env.calls) == 3
 
 
 async def test_concurrent_submissions_are_serialized_and_idempotent(room_env, monkeypatch):

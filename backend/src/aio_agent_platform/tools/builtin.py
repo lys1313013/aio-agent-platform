@@ -235,7 +235,8 @@ MEMORY_WRITE = Tool(
         "Use this to remember user preferences, project decisions, "
         "important facts, or lessons learned. "
         "L1 = always-loaded context (preferences, rules). "
-        "L2 = long-term memory (decisions, facts). "
+        "L2 = durable facts and decisions; do not store current exercises, homework or transient progress here. "
+        "Write one independent fact per call. Existing facts are skipped, merged or updated automatically. "
         "L3 = episodic memory (conversation summaries)."
     ),
     parameters={
@@ -265,7 +266,7 @@ MEMORY_WRITE = Tool(
     },
     requires_sandbox=False,
     permission_level="write",
-    timeout=10,
+    timeout=45,
 )
 
 

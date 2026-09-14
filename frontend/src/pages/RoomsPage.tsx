@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Alert, App, Button, Empty, Form, Input, Modal, Select, Spin, Tag, Tooltip } from 'antd';
-import { CloseOutlined, DeleteOutlined, PaperClipOutlined, PlusOutlined, PushpinOutlined, ReloadOutlined, SendOutlined, SettingOutlined, StopOutlined, TeamOutlined } from '@ant-design/icons';
-import { chatApi, portalApi } from '@/lib/api';
+import { CloseOutlined, DeleteOutlined, PlusOutlined, PushpinOutlined, ReloadOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons';
+import { portalApi } from '@/lib/api';
 import { getAgentIcon } from '@/lib/agent-icons';
-import { mergeRoom, mergeRoomHistory, roomsApi, RUNNING, STATUS } from '@/lib/rooms';
+import { mergeRoom, mergeRoomHistory, roomsApi, roomMessageStreaming, RUNNING, STATUS } from '@/lib/rooms';
 import type { Room, RoomMessage, RoomSend, RoomSummary, RoomTask } from '@/lib/rooms';
 import type { ChatAttachment, FileAttachmentRef, PortalAgent } from '@/lib/types';
-import RoomMentionInput from '@/components/chat/RoomMentionInput';
-import { ALL_MEMBERS, emptyMentionDraft, mentionRecipients, readMentionDraft } from '@/lib/roomMentions';
+import ChatWindow from '@/components/chat/ChatWindow';
+import StreamingMessage from '@/components/chat/StreamingMessage';
+import { ALL_MEMBERS, mentionRecipients, readMentionDraft } from '@/lib/roomMentions';
 import ChatMessage from '@/components/chat/ChatMessage';
 import { ConfirmationCard } from '@/components/confirmation';
 
@@ -71,19 +72,10 @@ function RoomChat({ id, agents, onChanged, onDeleted }: {
   const [connection, setConnection] = useState('connected');
   const [editing, setEditing] = useState(false);
   const [draftState, setDraftState] = useState(() => readMentionDraft(sessionStorage.getItem(`room-draft:${id}`)));
-  const draft = draftState.text;
   const { all, ids: targets } = mentionRecipients(draftState);
   const [quote, setQuote] = useState<RoomMessage | null>(null);
-  const [images, setImages] = useState<ChatAttachment[]>([]);
-  const [files, setFiles] = useState<FileAttachmentRef[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [summaryOpen, setSummaryOpen] = useState(false);
-  const [summaryMember, setSummaryMember] = useState<string>();
   const [olderLoading, setOlderLoading] = useState(false);
-  const uploadRef = useRef<HTMLInputElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const keepBottom = useRef(true);
   const mounted = useRef(true);
   // Reuse the exact id after an uncertain network response, until the request body changes.
   const pendingSend = useRef<{ signature: string; id: string }>();
@@ -114,48 +106,40 @@ function RoomChat({ id, agents, onChanged, onDeleted }: {
   }, [id, accept]);
 
   useEffect(() => { sessionStorage.setItem(`room-draft:${id}`, JSON.stringify(draftState)); }, [id, draftState]);
-  useEffect(() => {
-    if (keepBottom.current && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [room?.revision]);
 
   const activeRun = room?.runs.find(r => RUNNING.has(r.status));
   const busy = Boolean(activeRun);
   const editable = !busy && !submitting && connection !== 'denied';
-  const canSend = editable && !room?.is_archived && !uploading;
+  const canSend = editable && !room?.is_archived;
   const members = room?.members.filter(m => m.is_active) || [];
   const selected = all ? members.filter(m => m.available) : targets.length
     ? targets.map(mid => members.find(m => m.id === mid)).filter((m): m is NonNullable<typeof m> => Boolean(m))
     : members.filter(m => m.id === room?.default_member_id);
 
-  const send = async (summary = false) => {
-    if (!room || !canSend) return;
-    const selectedSummary = summaryMember || room.default_member_id;
-    if (summary && !members.some(m => m.id === selectedSummary && m.available)) {
-      message.warning('请选择可用的总结成员'); return;
-    }
-    if (!summary && (!selected.length || selected.some(m => !m.available))) {
-      message.warning('请调整不可用的接收成员'); return;
+  const send = async (text: string, images: ChatAttachment[], files: FileAttachmentRef[] = []) => {
+    if (!room || !canSend) return false;
+    if (!selected.length || selected.some(m => !m.available)) {
+      message.warning('请调整不可用的接收成员'); return false;
     }
     const data = {
-      message: summary ? '' : draft.trim(),
-      mode: summary ? 'summary' : all ? 'all' : targets.length ? 'mentions' : 'default',
-      member_ids: summary ? [selectedSummary] : all ? [] : targets,
-      reply_to_id: summary ? undefined : quote?.id,
-      attachments: summary ? [] : images,
-      file_attachments: summary ? [] : files,
+      message: text,
+      mode: all ? 'all' : targets.length ? 'mentions' : 'default',
+      member_ids: all ? [] : targets,
+      reply_to_id: quote?.id,
+      attachments: images,
+      file_attachments: files,
     } as Omit<RoomSend, 'request_id'>;
-    if (!summary && !data.message && !images.length && !files.length) return;
+    if (!data.message && !images.length && !files.length) return false;
     const signature = JSON.stringify(data);
     if (pendingSend.current?.signature !== signature) pendingSend.current = { signature, id: crypto.randomUUID() };
     setSubmitting(true);
     try {
       await roomsApi.send(id, { ...data, request_id: pendingSend.current.id });
       pendingSend.current = undefined;
-      if (!summary) { setDraftState(emptyMentionDraft()); setImages([]); setFiles([]); setQuote(null); }
-      setSummaryOpen(false);
-      keepBottom.current = true;
-      await refresh();
-    } catch (error) { message.error(errorText(error)); }
+      setQuote(null);
+      void refresh().catch(error => message.error(errorText(error)));
+      return true;
+    } catch (error) { message.error(errorText(error)); return false; }
     finally { if (mounted.current) setSubmitting(false); }
   };
 
@@ -174,25 +158,6 @@ function RoomChat({ id, agents, onChanged, onDeleted }: {
         : '将使用原问题和当时的公开讨论，重新执行这一位成员。其他成员不会重跑。',
       onOk: async () => { await roomsApi.retry(id, task.id, requestId, hasTools); await refresh(); },
     });
-  };
-
-  const upload = async (file: File) => {
-    if (!canSend || uploading) return;
-    const image = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
-    if (image ? images.length >= 4 : files.length >= 10) { message.warning('附件数量已达上限'); return; }
-    if (file.size > (image ? 10 : 500) * 1024 * 1024) { message.warning(image ? '图片最大 10 MB' : '文件最大 500 MB'); return; }
-    setUploading(true);
-    try {
-      if (image) {
-        const result = await chatApi.uploadAttachment(file, id);
-        if (mounted.current) setImages(previous => [...previous, result]);
-      } else {
-        const result = await chatApi.uploadFile(file, id);
-        const { file_id, filename, mime, size, workspace_path } = result;
-        if (mounted.current) setFiles(previous => [...previous, { file_id, filename, mime, size, workspace_path }]);
-      }
-    } catch (error) { message.error(errorText(error)); }
-    finally { if (mounted.current) setUploading(false); }
   };
 
   if (loading) return <div className="flex flex-1 items-center justify-center"><Spin /></div>;
@@ -225,18 +190,21 @@ function RoomChat({ id, agents, onChanged, onDeleted }: {
       {activeRun && <div className="border-b border-border bg-muted/40 px-4 py-2 text-sm" aria-live="polite">
         {STATUS[activeRun.status]}：{currentTasks.map(t => `${room.members.find(m => m.id === t.member_id)?.name || '成员'}（${STATUS[t.status]}）`).join(' → ')}
       </div>}
-      <div ref={scrollRef} onScroll={() => { const el = scrollRef.current; if (el) keepBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 90; }} className="min-h-0 flex-1 overflow-y-auto" data-ui-exclude>
-        <div className="mx-auto max-w-4xl space-y-5 px-4 py-5">
-          {room.has_more && <Button block loading={olderLoading} onClick={async () => {
-            setOlderLoading(true); keepBottom.current = false;
-            try {
-              const page = await roomsApi.get(id, room.messages[0]?.sequence);
-              setRoom(previous => previous ? mergeRoomHistory(previous, page) : page);
-            } catch (error) { message.error(errorText(error)); }
-            finally { setOlderLoading(false); }
-          }}>加载更早的讨论</Button>}
-          {room.messages.length <= 1 && <div className="rounded-xl border border-dashed border-border p-6 text-center text-muted-foreground">邀请成员后，用 @ 点名开始讨论；也可以让全体依次回答。</div>}
-          {room.messages.map(msg => {
+      <ChatWindow
+        messages={{
+          messages: room.messages, conversationId: room.id, workspaceId: room.workspace_id,
+          beforeMessages: <>
+            {room.has_more && <Button block loading={olderLoading} onClick={async () => {
+              setOlderLoading(true);
+              try {
+                const page = await roomsApi.get(id, room.messages[0]?.sequence);
+                setRoom(previous => previous ? mergeRoomHistory(previous, page) : page);
+              } catch (error) { message.error(errorText(error)); }
+              finally { setOlderLoading(false); }
+            }}>加载更早的讨论</Button>}
+            {room.messages.length <= 1 && <div className="rounded-xl border border-dashed border-border p-6 text-center text-muted-foreground">邀请成员后，用 @ 点名开始讨论；也可以让全体依次回答。</div>}
+          </>,
+          renderMessage: msg => {
             const task = room.tasks.find(t => t.message_id === msg.id);
             const quoted = room.messages.find(m => m.id === msg.reply_to_id);
             return <article key={msg.id} id={`room-message-${msg.id}`} className="scroll-mt-4">
@@ -259,7 +227,9 @@ function RoomChat({ id, agents, onChanged, onDeleted }: {
                   } else document.getElementById(`room-message-${quoted.id}`)?.scrollIntoView({ behavior: 'smooth' });
                 }}>引用：{quoted ? `${quoted.name}：${quoted.content}` : '更早的消息（加载历史可查看）'}</button>}
                 {msg.member_ids?.length ? <div className="mb-2 text-xs text-muted-foreground">接收：{msg.member_ids.map(mid => room.members.find(m => m.id === mid)?.name || '已移除成员').join(' → ')}</div> : null}
-                <ChatMessage message={msg} workspaceId={room.workspace_id} />
+                {msg.role === 'assistant' && msg.status === 'running'
+                  ? <StreamingMessage streaming={roomMessageStreaming(msg)} workspaceId={room.workspace_id} />
+                  : <ChatMessage message={msg} workspaceId={room.workspace_id} />}
                 {task?.error && <Alert className="mt-2" type="warning" title={task.error} />}
                 {task?.confirmation && task.status === 'waiting_user' && !activeRun?.stop_requested && (task.response_submitted
                   ? <Alert type="info" title="答复已提交，等待成员继续执行" />
@@ -272,36 +242,28 @@ function RoomChat({ id, agents, onChanged, onDeleted }: {
                   />)}
               </>}
             </article>;
-          })}
-          {room.tasks.filter(t => t.status === 'failed' && !t.message_id).map(task => <Alert key={task.id} type="error" title={`${room.members.find(m => m.id === task.member_id)?.name || '成员'}：${task.error}`} action={<Button size="small" disabled={!canSend} onClick={() => retry(task)}>重试</Button>} />)}
-          {latestRun && !busy && <div className="text-center text-xs text-muted-foreground">最近运行：{STATUS[latestRun.status]} · Token：{totalTokens ?? '未知'}{latestRun.error ? ` · ${latestRun.error}` : ''}</div>}
-        </div>
-      </div>
-      <div className="border-t border-border bg-card p-3 sm:p-4">
-        <div className="mx-auto max-w-4xl space-y-2">
-          {quote && <div className="flex items-center gap-2 rounded bg-muted px-3 py-2 text-xs"><span className="flex-1 truncate">引用 {quote.name}：{quote.content}</span><Button size="small" type="text" aria-label="取消引用" icon={<CloseOutlined />} onClick={() => setQuote(null)} /></div>}
-          <div className="flex flex-wrap gap-1">
-            {images.map((image, i) => <Tag key={image.key} closable={canSend} onClose={() => setImages(old => old.filter((_, n) => n !== i))}>{image.filename}</Tag>)}
-            {files.map((file, i) => <Tag key={file.file_id} closable={canSend} onClose={() => setFiles(old => old.filter((_, n) => n !== i))}>{file.filename}</Tag>)}
-          </div>
-          <RoomMentionInput value={draftState} onChange={setDraftState} disabled={room.is_archived} busy={busy}
-            candidates={[
+          },
+          afterMessages: <>
+            {room.tasks.filter(t => t.status === 'failed' && !t.message_id).map(task => <Alert key={task.id} type="error" title={`${room.members.find(m => m.id === task.member_id)?.name || '成员'}：${task.error}`} action={<Button size="small" disabled={!canSend} onClick={() => retry(task)}>重试</Button>} />)}
+            {latestRun && !busy && <div className="text-center text-xs text-muted-foreground">最近运行：{STATUS[latestRun.status]} · Token：{totalTokens ?? '未知'}{latestRun.error ? ` · ${latestRun.error}` : ''}</div>}
+          </>,
+        }}
+        input={{
+          onSend: send, onStop: () => { if (activeRun) void mutate(() => roomsApi.stop(id, activeRun.id)); },
+          sessionId: room.id, fixedWorkspace: true, disabled: room.is_archived,
+          isStreaming: busy, sendDisabled: !canSend, stopping: activeRun?.stop_requested,
+          attachmentLimits: { images: 4, files: 10, total: 14 },
+          mentions: {
+            value: draftState, onChange: setDraftState,
+            candidates: [
               { id: ALL_MEMBERS, label: '全体成员', description: '所有可用成员依次回答' },
               ...members.filter(m => m.available).map(m => ({ id: m.id, label: m.name, icon: m.icon })),
-            ]} onSend={() => void send()} />
-          <div className="flex items-center justify-between">
-            <input ref={uploadRef} type="file" className="hidden" onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void upload(file); }} />
-            <div className="flex items-center gap-2"><Tooltip title="添加附件"><Button type="text" aria-label="添加附件" icon={<PaperClipOutlined />} loading={uploading} disabled={!canSend} onClick={() => uploadRef.current?.click()} /></Tooltip><Button disabled={!canSend} onClick={() => { setSummaryMember(room.default_member_id); setSummaryOpen(true); }}>总结讨论</Button></div>
-            {activeRun ? <Button danger icon={<StopOutlined />} disabled={activeRun.stop_requested} onClick={() => void mutate(() => roomsApi.stop(id, activeRun.id))}>{activeRun.stop_requested ? '停止中' : '停止本轮'}</Button>
-              : <Button type="primary" icon={<SendOutlined />} loading={submitting} disabled={!canSend || (!draft.trim() && !images.length && !files.length)} onClick={() => void send()}>发送</Button>}
-          </div>
-        </div>
-      </div>
+            ],
+          },
+          context: quote && <div className="flex items-center gap-2 rounded bg-muted px-3 py-2 text-xs"><span className="flex-1 truncate">引用 {quote.name}：{quote.content}</span><Button size="small" type="text" aria-label="取消引用" icon={<CloseOutlined />} onClick={() => setQuote(null)} /></div>,
+        }}
+      />
       {editing && <RoomEditor room={room} agents={agents} onCancel={() => setEditing(false)} onSaved={next => { accept(next); setEditing(false); onChanged(); }} />}
-      <Modal open={summaryOpen} title="选择总结成员" okText="开始总结" cancelText="取消" confirmLoading={submitting} onCancel={() => setSummaryOpen(false)} onOk={() => void send(true)}>
-        <p className="mb-3 text-sm text-muted-foreground">整理共识、分歧、待确认事项和下一步，只由所选成员回答。</p>
-        <Select className="w-full" value={summaryMember} onChange={setSummaryMember} options={members.filter(m => m.available).map(m => ({ value: m.id, label: m.name }))} />
-      </Modal>
     </section>
   );
 }

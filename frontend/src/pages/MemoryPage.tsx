@@ -15,7 +15,6 @@ import {
   Typography,
 } from 'antd';
 import {
-  AppstoreOutlined,
   BulbOutlined,
   DatabaseOutlined,
   DeleteOutlined,
@@ -284,8 +283,11 @@ export default function MemoryPage() {
       key: layer,
       label: (
         <span className="flex items-center gap-2">
-          <AppstoreOutlined />
+          {LAYER_CONFIG[layer].icon}
           {LAYER_CONFIG[layer].label}
+          <span className="rounded-md bg-muted px-1.5 text-xs tabular-nums text-muted-foreground">
+            {counts[layer]}
+          </span>
         </span>
       ),
     })),
@@ -312,63 +314,47 @@ export default function MemoryPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="w-full px-6 py-8">
-        {/* Header */}
-        <div className="mb-6 flex items-start justify-between">
+      <div className="mx-auto w-full max-w-[1440px] px-6 py-6 lg:px-8">
+        {/* Page context and actions */}
+        <div className="mb-7 flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
           <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
+            <h1 className="flex items-center gap-2 text-2xl font-bold">
               <BulbOutlined className="text-primary" />
               记忆管理
             </h1>
-            <Text type="secondary">查看和管理 Agent 在不同层级的持久化记忆。</Text>
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              查看和管理 Agent 在不同层级的持久化记忆。
+            </p>
           </div>
-          {!isDailyTab && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
-              添加记忆
-            </Button>
-          )}
+          <div className="flex w-full flex-wrap items-end gap-3 sm:w-auto">
+            <div className="min-w-0 flex-1 sm:flex-none">
+              <label htmlFor="memory-scope" className="mb-1.5 block text-xs text-muted-foreground">
+                记忆范围
+              </label>
+              <Select
+                id="memory-scope"
+                aria-label="记忆范围"
+                value={scopeAgent}
+                onChange={(value) => { setScopeAgent(value); setSelectedIds(new Set()); }}
+                options={scopeOptions}
+                className="w-full sm:w-60"
+                showSearch
+                optionFilterProp="label"
+              />
+            </div>
+            {!isDailyTab && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+                添加记忆
+              </Button>
+            )}
+          </div>
         </div>
 
-        <div className="mb-6 flex flex-wrap items-center gap-3">
-          <Text>记忆范围</Text>
-          <Select aria-label="记忆范围" value={scopeAgent} onChange={(value) => { setScopeAgent(value); setSelectedIds(new Set()); }}
-            options={scopeOptions} className="min-w-64" showSearch optionFilterProp="label" />
-          <Text type="secondary">共享记忆供您的所有智能体使用；专属记忆仅供您与该智能体使用。</Text>
-        </div>
-
-        {/* Layer stat cards */}
-        <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
-          {LAYERS.map((layer) => {
-            const cfg = LAYER_CONFIG[layer];
-            const active = activeLayer === layer;
-            return (
-              <button
-                key={layer}
-                type="button"
-                onClick={() => handleTabChange(layer)}
-                className={`flex items-center gap-3 rounded-xl border p-4 text-left transition-all ${
-                  active
-                    ? 'border-primary/60 bg-primary/5 shadow-sm'
-                    : 'border-border bg-card hover:border-primary/40'
-                }`}
-              >
-                <span
-                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${cfg.bg}`}
-                >
-                  {cfg.icon}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-foreground">{cfg.label}</span>
-                    <Tag color={cfg.color} className="!mr-0">
-                      {layer}
-                    </Tag>
-                  </span>
-                  <span className="block text-2xl font-bold leading-tight">{counts[layer]}</span>
-                </span>
-              </button>
-            );
-          })}
+        <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+          <BulbOutlined />
+          <span>{scopeAgent
+            ? '当前为专属记忆，仅供您与该智能体使用。'
+            : '当前为用户共享记忆，供您的所有智能体使用。'}</span>
         </div>
 
         {/* Layer tabs */}
@@ -376,27 +362,26 @@ export default function MemoryPage() {
           activeKey={activeLayer}
           onChange={handleTabChange}
           items={tabItems}
-          className="mb-4"
+          className="mb-3"
         />
 
-        {/* Layer description */}
-        <div className="mb-4 rounded-lg bg-primary/5 border border-primary/20 px-4 py-3">
-          <Text>{config.description}</Text>
-        </div>
-
         {isDailyTab ? (
-          <DailyMemoryTimeline key={scopeAgent} agentId={scopeAgent || undefined} />
+          <>
+            <p className="mb-5 text-sm leading-relaxed text-muted-foreground">{config.description}</p>
+            <DailyMemoryTimeline key={scopeAgent} agentId={scopeAgent || undefined} />
+          </>
         ) : (
           <>
         {/* Toolbar: search + batch actions */}
-        <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm leading-relaxed text-muted-foreground">{config.description}</p>
           <Input
             prefix={<SearchOutlined />}
             placeholder={`搜索${config.label}...`}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             allowClear
-            className="max-w-sm"
+            className="w-full sm:w-72"
           />
           {selectedCount > 0 && (
             <>
@@ -443,7 +428,7 @@ export default function MemoryPage() {
             </div>
           ) : (
             <>
-              <div className="mb-2 flex items-center gap-3">
+              <div className="mb-3 flex items-center gap-3">
                 <Checkbox
                   checked={allSelected}
                   indeterminate={someSelected}
@@ -517,6 +502,7 @@ export default function MemoryPage() {
                               <Button
                                 size="small"
                                 type="text"
+                                aria-label="编辑记忆"
                                 icon={<EditOutlined />}
                                 onClick={() => openEditModal(memory)}
                               />
@@ -527,7 +513,7 @@ export default function MemoryPage() {
                                 cancelText="取消"
                                 okButtonProps={{ danger: true }}
                               >
-                                <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                                <Button size="small" type="text" danger aria-label="删除记忆" icon={<DeleteOutlined />} />
                               </Popconfirm>
                             </div>
                           </div>

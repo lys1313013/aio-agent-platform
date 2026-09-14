@@ -60,7 +60,7 @@ class FileRef(Command):
 class RoomSend(Command):
     request_id: UUID
     message: str = Field(default="", max_length=50000)
-    mode: Literal["default", "mentions", "all", "summary"] = "default"
+    mode: Literal["default", "mentions", "all"] = "default"
     member_ids: list[UUID] = Field(default_factory=list, max_length=20)
     reply_to_id: UUID | None = None
     attachments: list[ImageRef] = Field(default_factory=list, max_length=4)
@@ -68,16 +68,12 @@ class RoomSend(Command):
 
     @model_validator(mode="after")
     def validate_targets(self):
-        if self.mode != "summary" and not (
-            self.message or self.attachments or self.file_attachments
-        ):
+        if not (self.message or self.attachments or self.file_attachments):
             raise ValueError("请输入消息或上传附件")
         if self.mode == "mentions" and not self.member_ids:
             raise ValueError("请选择被点名的成员")
         if self.mode in {"default", "all"} and self.member_ids:
             raise ValueError("全体回答、默认回答和点名不能混用")
-        if self.mode == "summary" and len(self.member_ids) > 1:
-            raise ValueError("总结只能指定一位成员")
         return self
 
 

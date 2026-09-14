@@ -7,12 +7,11 @@ import { useMessageQueue } from '@/hooks/useMessageQueue';
 import { useChatStream } from '@/hooks/useChatStream';
 import { handleUiActionEvent } from '@/hooks/useUiActionEvents';
 import { buildPageContext } from '@/lib/uiActions/registry';
-import MessageList from '@/components/chat/MessageList';
-import ChatInput from '@/components/chat/ChatInput';
+import ChatWindow from '@/components/chat/ChatWindow';
 import AgentConfigSidebar from '@/components/AgentConfigSidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
 import WebpagePreviewPanel from '@/components/chat/WebpagePreviewPanel';
-import { Alert, App, Typography, Spin, Tag, Button, Skeleton, Tooltip } from 'antd';
+import { Alert, App, Typography, Tag, Button, Skeleton, Tooltip } from 'antd';
 import { PlusOutlined, LinkOutlined, DeleteOutlined } from '@ant-design/icons';
 import { agentsApi } from '@/lib/api';
 import type { Agent, ChatAttachment, FileAttachmentRef, SessionStatus } from '@/lib/types';
@@ -331,67 +330,47 @@ export default function AgentChatPage() {
         )}
 
         {/* Chat area */}
-        <div className="flex flex-1 flex-col overflow-hidden">
-          {(messagesLoading || agentLoading) && currentMessages.length === 0 ? (
-            <div className="flex flex-1 items-center justify-center">
-              <Spin size="large" />
-            </div>
-          ) : (
-            <MessageList
-              messages={currentMessages}
-              streaming={streaming}
-              agent={agent}
-              onNewChat={handleNewChat}
-              onEditResend={handleEditResend}
-            />
-          )}
+        <ChatWindow
+          loading={messagesLoading || agentLoading}
+          messages={{ messages: currentMessages, streaming, conversationId: activeSessionId, agent, onNewChat: handleNewChat, onEditResend: handleEditResend }}
+          status={<>
+            {error && (
+              <div className="mx-auto max-w-3xl w-full px-4 pb-2">
+                <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} />
+              </div>
+            )}
 
-          {error && (
-            <div className="mx-auto max-w-3xl w-full px-4 pb-2">
-              <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} />
-            </div>
-          )}
-
-          {sessionStatus?.is_running && !streaming.isStreaming && (
-            <div className="mx-auto max-w-3xl w-full px-4 pb-2">
-              <Alert
-                message={
-                  <span className="flex items-center gap-2">
-                    智能体正在处理
-                    {sessionStatus.tool && <Tag className="text-xs">{sessionStatus.tool}</Tag>}
-                  </span>
-                }
-                description={sessionStatus.label ? `任务：${sessionStatus.label}` : '来自渠道会话，点击重新连接查看实时进度'}
-                type="info"
-                showIcon
-                action={
-                  <Button
-                    size="small"
-                    icon={<LinkOutlined />}
-                    loading={checkingStatus}
-                    onClick={handleReconnect}
-                  >
-                    重新连接
-                  </Button>
-                }
-              />
-            </div>
-          )}
-
-          <ChatInput
-            onSend={handleSend}
-            onStop={handleStop}
-            isStreaming={streaming.isStreaming}
-            sessionId={activeSessionId}
-            onEnsureSession={handleEnsureSession}
-            starterPrompts={agent?.starter_prompts ?? undefined}
-            onStarterPromptClick={handleStarterPrompt}
-            queue={queue}
-            onQueue={enqueue}
-            onQueueSendNow={sendQueuedNow}
-            onQueueRemove={removeQueued}
-          />
-        </div>
+            {sessionStatus?.is_running && !streaming.isStreaming && (
+              <div className="mx-auto max-w-3xl w-full px-4 pb-2">
+                <Alert
+                  message={
+                    <span className="flex items-center gap-2">
+                      智能体正在处理
+                      {sessionStatus.tool && <Tag className="text-xs">{sessionStatus.tool}</Tag>}
+                    </span>
+                  }
+                  description={sessionStatus.label ? `任务：${sessionStatus.label}` : '来自渠道会话，点击重新连接查看实时进度'}
+                  type="info"
+                  showIcon
+                  action={
+                    <Button
+                      size="small"
+                      icon={<LinkOutlined />}
+                      loading={checkingStatus}
+                      onClick={handleReconnect}
+                    >
+                      重新连接
+                    </Button>
+                  }
+                />
+              </div>
+            )}
+          </>}
+          input={{
+            onSend: handleSend, onStop: handleStop, isStreaming: streaming.isStreaming, sessionId: activeSessionId, onEnsureSession: handleEnsureSession, starterPrompts: agent?.starter_prompts ?? undefined, onStarterPromptClick: handleStarterPrompt,
+            queue, onQueue: enqueue, onQueueSendNow: sendQueuedNow, onQueueRemove: removeQueued,
+          }}
+        />
 
         {/* Sandbox file panel */}
         <SandboxFilePanel workspaceId={activeSession?.workspace_id ?? null} />

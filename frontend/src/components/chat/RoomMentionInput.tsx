@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react';
+import { type ClipboardEventHandler, useId, useLayoutEffect, useRef, useState } from 'react';
 import { TeamOutlined } from '@ant-design/icons';
 import { getAgentIcon } from '@/lib/agent-icons';
 import { ALL_MEMBERS, editMentionDraft, insertMention, mentionQuery } from '@/lib/roomMentions';
@@ -11,9 +11,11 @@ interface Props {
   onSend: () => void;
   disabled?: boolean;
   busy?: boolean;
+  embedded?: boolean;
+  onPaste?: ClipboardEventHandler<HTMLTextAreaElement>;
 }
 
-export default function RoomMentionInput({ value, onChange, candidates, onSend, disabled, busy }: Props) {
+export default function RoomMentionInput({ value, onChange, candidates, onSend, disabled, busy, embedded, onPaste }: Props) {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const mirror = useRef<HTMLDivElement>(null);
   const [caret, setCaret] = useState(0);
@@ -31,7 +33,7 @@ export default function RoomMentionInput({ value, onChange, candidates, onSend, 
     if (!el) return;
     const resize = () => {
       el.style.height = 'auto';
-      el.style.height = `${Math.min(192, Math.max(80, el.scrollHeight))}px`;
+      el.style.height = `${Math.min(192, Math.max(embedded ? 36 : 80, el.scrollHeight))}px`;
       if (mirror.current) {
         mirror.current.style.width = `${el.clientWidth}px`;
         mirror.current.style.transform = `translateY(-${el.scrollTop}px)`;
@@ -41,7 +43,7 @@ export default function RoomMentionInput({ value, onChange, candidates, onSend, 
     const observer = new ResizeObserver(resize);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [value.text]);
+  }, [value.text, embedded]);
 
   const pick = (candidate: MentionCandidate) => {
     if (!query) return;
@@ -64,7 +66,7 @@ export default function RoomMentionInput({ value, onChange, candidates, onSend, 
   }
   highlightedText.push(value.text.slice(position));
 
-  return <div className="relative">
+  return <div className="relative w-full">
     {open && <div id={listId} role="listbox" aria-label="选择要点名的成员" className="absolute bottom-full left-0 z-30 mb-2 max-h-56 w-56 max-w-full overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg">
       {matches.map((candidate, i) => <button
         key={candidate.id} id={`${listId}-${i}`} type="button" role="option" aria-selected={highlighted === i}
@@ -77,16 +79,17 @@ export default function RoomMentionInput({ value, onChange, candidates, onSend, 
         <span className="min-w-0 truncate text-sm">{candidate.label}</span>
       </button>)}
     </div>}
-    <div className={`relative overflow-hidden rounded-lg border border-border bg-background focus-within:border-primary focus-within:ring-1 focus-within:ring-primary/20 ${disabled ? 'opacity-60' : ''}`}>
+    <div className={`relative overflow-hidden ${embedded ? '' : 'rounded-lg border border-border bg-background focus-within:border-primary focus-within:ring-1 focus-within:ring-primary/20'} ${disabled ? 'opacity-60' : ''}`}>
       <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
         <div ref={mirror} className="whitespace-pre-wrap break-words px-3 py-2 text-sm leading-6 text-foreground">{highlightedText}{'\u200b'}</div>
       </div>
       <textarea
         ref={textarea} aria-label="聊天室消息" aria-autocomplete="list" aria-controls={open ? listId : undefined}
         aria-activedescendant={open ? `${listId}-${highlighted}` : undefined}
-        value={value.text} disabled={disabled} maxLength={50000} rows={2}
+        value={value.text} disabled={disabled} maxLength={50000} rows={embedded ? 1 : 2}
         className="relative block w-full resize-none bg-transparent px-3 py-2 text-sm leading-6 text-transparent caret-foreground outline-none placeholder:text-muted-foreground/60"
-        placeholder={busy ? '可继续编辑草稿，停止或等待本轮结束后发送' : '输入问题，@ 点名成员或全体成员；Ctrl / ⌘ + Enter 发送'}
+        placeholder={busy ? '可继续编辑草稿，停止或等待本轮结束后发送' : '输入消息，@ 点名成员；Enter 发送，Shift + Enter 换行'}
+        onPaste={onPaste}
         onChange={event => {
           onChange(editMentionDraft(value, event.target.value));
           setCaret(event.target.selectionStart);
@@ -97,13 +100,16 @@ export default function RoomMentionInput({ value, onChange, candidates, onSend, 
         onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
         onScroll={event => { if (mirror.current) mirror.current.style.transform = `translateY(-${event.currentTarget.scrollTop}px)`; }}
         onKeyDown={event => {
-          if (event.nativeEvent.isComposing) return;
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
           if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); onSend(); return; }
-          if (!open) return;
+          if (!open) {
+            if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSend(); }
+            return;
+          }
           if (event.key === 'Escape') { event.preventDefault(); setDismissed(true); }
           else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
             event.preventDefault(); setActiveIndex((highlighted + (event.key === 'ArrowDown' ? 1 : -1) + matches.length) % matches.length);
-          } else if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); pick(matches[highlighted]); }
+          } else if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') { event.preventDefault(); pick(matches[highlighted]); }
         }}
       />
     </div>

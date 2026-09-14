@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from aio_agent_platform.core.context import current_agent_id
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
 from aio_agent_platform.db.models import Session
+from aio_agent_platform.memory.reconciliation import reconcile_memory
 from aio_agent_platform.memory.service import MemoryService
 
 _LAYER_LABELS = {"L1": "常驻上下文", "L2": "长期记忆", "L3": "情景记忆"}
@@ -89,16 +90,16 @@ async def handle_memory_write(arguments: dict, user_id: str, session_id: str, **
         current_user_id.set(user_id)
         await _set_rls_context(db, user_id)
         agent_id = await _active_agent(db, uid, session_id) if scope == "agent" else None
-        memory, action = await MemoryService.create_or_update_memory(
+        memory, action = await reconcile_memory(
             db, uid, layer, content, meta=meta, agent_id=agent_id
         )
         await db.commit()
 
     layer_label = _LAYER_LABELS.get(layer, layer)
-    if action == "updated":
+    if action in {"updated", "merged", "skipped"}:
         return (
-            f"Memory merged into an existing {layer} ({layer_label}) entry "
-            f"(similar content already present), id: {memory.id}"
+            f"Memory {action}: existing {layer} ({layer_label}) entry reused "
+            f"(same fact already present), id: {memory.id}"
         )
     return f"Memory saved to {layer} ({layer_label}), id: {memory.id}"
 

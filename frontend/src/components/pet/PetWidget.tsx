@@ -204,28 +204,42 @@ function PetWidgetInner() {
     petsApi.myPets().then(setMyPets).catch(() => {});
   }, []);
 
-  // 渠道（飞书等）触发的在跑任务：SSE 实时推送（连接即快照 + 增量事件），断开 3s 后重连
+  // 渠道任务通过短请求刷新；后台暂停，避免多页面长连接耗尽同源连接。
   useEffect(() => {
     if (!enabled || !activePet) return;
     let stop = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let close: (() => void) | null = null;
+    const disconnect = () => {
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
+      close?.();
+      close = null;
+    };
     const connect = () => {
-      if (stop) return;
+      if (stop || document.hidden) return;
+      disconnect();
       close = petsApi.watchActiveTasks((ev) => {
-        if (stop) return;
+        if (stop || document.hidden) return;
         if (ev.type === 'error' || ev.type === 'closed') {
+          disconnect();
           retryTimer = setTimeout(connect, 3000);
           return;
         }
         usePetStore.getState().applyRemoteTaskEvent(ev);
       });
     };
+    // 返回前台立即获取快照，补齐后台期间的任务状态。
+    const onVisibilityChange = () => {
+      if (document.hidden) disconnect();
+      else connect();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
     connect();
     return () => {
       stop = true;
-      if (retryTimer) clearTimeout(retryTimer);
-      close?.();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      disconnect();
     };
   }, [enabled, activePet]);
 

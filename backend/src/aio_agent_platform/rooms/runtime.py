@@ -135,6 +135,7 @@ class Output:
         self.confirmation = None
         self.status = "running"
         self.done = False
+        self._reasoning_index = None
 
     def queue_event(self, event: dict):
         if event.get("type") == "confirmation_required":
@@ -160,9 +161,24 @@ class Output:
         if event.startswith("text_delta:"):
             self.content += event[len("text_delta:"):]
             return False
+        if event.startswith("reasoning_delta:"):
+            content = event[len("reasoning_delta:"):]
+            if content:
+                chunks = self.payload["reasoning"]
+                if self._reasoning_index is None:
+                    self._reasoning_index = len(chunks)
+                    chunks.append({"id": str(self._reasoning_index), "content": ""})
+                chunks[self._reasoning_index]["content"] += content
+            # Use the same save interval as text; never write once per token.
+            return False
         if event.startswith("reasoning:"):
-            self.payload["reasoning"].append({"id": str(len(self.payload["reasoning"])),
-                                               "content": event[len("reasoning:"):]})
+            content = event[len("reasoning:"):]
+            chunks = self.payload["reasoning"]
+            if self._reasoning_index is not None:
+                chunks[self._reasoning_index]["content"] = content
+                self._reasoning_index = None
+            elif content:
+                chunks.append({"id": str(len(chunks)), "content": content})
         elif event.startswith("tool_call:"):
             _, tc_id, name, arguments = event.split(":", 3)
             self.payload["tool_calls"].append({"id": tc_id, "name": name, "arguments": json.loads(arguments)})
@@ -177,6 +193,8 @@ class Output:
             self.payload["file_changes"] = _merge_file_changes(
                 self.payload["file_changes"], json.loads(event[len("file_changes:"):]),
             )
+        else:
+            return False
         return True
 
 
@@ -359,8 +377,6 @@ async def _execute_task(app, room_id, run_id, task_id):
             blacklist = set(FRONTEND_TOOL_NAMES) | {"delegate_task"}
             await refresh_mcp_tools_for_agent(app.state.tool_executor, agent)
             tools_list, tools_schema = filter_tools_by_agent(app.state.tool_executor, agent, extra_blacklist=blacklist)
-            if run.input["mode"] == "summary":
-                tools_list, tools_schema = [], []
             prompt = build_system_prompt(tools=tools_list, agent_prompt=agent.system_prompt,
                                          relevant_skills=agent.skills or None)
             prompt += (

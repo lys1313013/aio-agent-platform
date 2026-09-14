@@ -6,18 +6,17 @@ import { useMessageQueue } from '@/hooks/useMessageQueue';
 import { useChatStream } from '@/hooks/useChatStream';
 import { handleUiActionEvent } from '@/hooks/useUiActionEvents';
 import { buildPageContext } from '@/lib/uiActions/registry';
-import MessageList from '@/components/chat/MessageList';
-import ChatInput from '@/components/chat/ChatInput';
+import type { ChatAttachment, FileAttachmentRef } from '@/lib/types';
+import ChatWindow from '@/components/chat/ChatWindow';
 import ChatHistorySidebar from '@/components/chat/ChatHistorySidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
 import WebpagePreviewPanel from '@/components/chat/WebpagePreviewPanel';
-import { Alert, App, Button, Spin, Tooltip } from 'antd';
+import { Alert, App, Button, Tooltip } from 'antd';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 
 export default function ChatPage() {
   const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession, deleteSession } = useChatStore();
   const { message, modal } = App.useApp();
-  const scrollRef = useRef<HTMLDivElement>(null);
   const [creatingSession, setCreatingSession] = useState(false);
   // onDone 需要 flushNext，但 useChatStream 初始化早于 useMessageQueue —— 用 ref 打破循环依赖
   const flushNextRef = useRef<() => void>(() => {});
@@ -51,7 +50,7 @@ export default function ChatPage() {
 
   // Codex-style message queue: while streaming, sent messages are queued and
   // flushed one by one as each turn completes.
-  const handleSendRef = useRef<(content: string) => Promise<void> | void>();
+  const handleSendRef = useRef<(content: string, attachments?: ChatAttachment[], files?: FileAttachmentRef[]) => Promise<void> | void>();
   const interruptStream = useCallback(() => {
     interrupt();
     usePetStore.getState().reportEvent('interrupt', {
@@ -60,21 +59,13 @@ export default function ChatPage() {
   }, [interrupt]);
   const { queue, enqueue, remove: removeQueued, clear: clearQueue, flushNext, sendNow: sendQueuedNow } =
     useMessageQueue(
-      (content) => { void handleSendRef.current?.(content); },
+      (content, attachments, files) => { void handleSendRef.current?.(content, attachments, files); },
       interruptStream,
     );
   flushNextRef.current = flushNext;
 
-  // Auto-scroll on new messages / streaming updates
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [messages, streaming]);
-
   const handleSend = useCallback(
-    async (content: string) => {
+    async (content: string, attachments: ChatAttachment[] = [], fileAttachments: FileAttachmentRef[] = []) => {
       let sessionId = activeSessionId;
 
       // Create a new session if none is active
@@ -96,7 +87,7 @@ export default function ChatPage() {
       addMessage(sessionId, {
         id: `msg-user-${Date.now()}`,
         role: 'user',
-        content,
+        content, attachments, file_attachments: fileAttachments,
         created_at: new Date().toISOString(),
       });
 
@@ -105,7 +96,7 @@ export default function ChatPage() {
 
       // Start SSE stream
       const controller = chatApi.stream(
-        { session_id: sessionId, message: content, page_context: buildPageContext() },
+        { session_id: sessionId, message: content, attachments, file_attachments: fileAttachments, page_context: buildPageContext() },
         handleEvent,
       );
 
@@ -199,36 +190,21 @@ export default function ChatPage() {
         <ChatHistorySidebar />
 
         {/* Chat area */}
-        <div ref={scrollRef} className="flex flex-1 flex-col overflow-hidden">
-          {messagesLoading && currentMessages.length === 0 ? (
-            <div className="flex flex-1 items-center justify-center">
-              <Spin size="large" />
-            </div>
-          ) : (
-            <MessageList
-              messages={currentMessages}
-              streaming={streaming}
-              onNewChat={handleNewChat}
-              onEditResend={handleEditResend}
-            />
-          )}
-
-          {error && (
-            <div className="mx-auto max-w-3xl w-full px-4 pb-2">
-              <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} />
-            </div>
-          )}
-
-          <ChatInput
-            onSend={handleSend}
-            onStop={handleStop}
-            isStreaming={streaming.isStreaming}
-            queue={queue}
-            onQueue={enqueue}
-            onQueueSendNow={sendQueuedNow}
-            onQueueRemove={removeQueued}
-          />
-        </div>
+        <ChatWindow
+          loading={messagesLoading}
+          messages={{ messages: currentMessages, streaming, conversationId: activeSessionId, onNewChat: handleNewChat, onEditResend: handleEditResend }}
+          status={<>
+            {error && (
+              <div className="mx-auto max-w-3xl w-full px-4 pb-2">
+                <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} />
+              </div>
+            )}
+          </>}
+          input={{
+            onSend: handleSend, onStop: handleStop, isStreaming: streaming.isStreaming, sessionId: activeSessionId, onEnsureSession: async () => activeSessionId || await createSession('新对话'),
+            queue, onQueue: enqueue, onQueueSendNow: sendQueuedNow, onQueueRemove: removeQueued,
+          }}
+        />
 
         {/* Sandbox file panel */}
         <SandboxFilePanel workspaceId={activeSession?.workspace_id ?? null} />

@@ -102,7 +102,7 @@ class AgentSettings(BaseSettings):
         default=0.65,
         ge=0.0,
         le=1.0,
-        description="记忆写入去重阈值: 与同用户同层级已有记忆的 pg_trgm 相似度达到该值则更新而非新增",
+        description="L3/旧文本写入路径的去重阈值；L1/L2 自动写入使用语义判定，不按此阈值直接覆盖",
     )
     # Multi-agent delegation settings
     max_delegation_depth: int = Field(

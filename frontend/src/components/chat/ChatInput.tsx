@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo, type FormEvent, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo, type ReactNode, type FormEvent, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
 import { ArrowUpOutlined, StopOutlined, PaperClipOutlined, CloseOutlined, LoadingOutlined, FileTextOutlined, FolderOutlined, ThunderboltOutlined, EditOutlined } from '@ant-design/icons';
 import { Input, Button, App, Image, Tooltip, Select } from 'antd';
 import { chatApi } from '@/lib/api';
@@ -7,6 +7,8 @@ import { useCommandStore } from '@/stores/commandStore';
 import { MAX_QUEUED_MESSAGES, type QueuedMessage } from '@/hooks/useMessageQueue';
 import type { ChatAttachment, CommandMeta, FileAttachmentRef } from '@/lib/types';
 import CommandMenu from './CommandMenu';
+import RoomMentionInput from './RoomMentionInput';
+import { editMentionDraft, type MentionCandidate, type MentionDraft } from '@/lib/roomMentions';
 
 const { TextArea } = Input;
 
@@ -37,8 +39,8 @@ interface StarterPrompt {
   icon: string;
 }
 
-interface Props {
-  onSend: (text: string, attachments: ChatAttachment[], fileAttachments?: FileAttachmentRef[]) => void;
+export interface ChatInputProps {
+  onSend: (text: string, attachments: ChatAttachment[], fileAttachments?: FileAttachmentRef[]) => void | boolean | Promise<void | boolean>;
   onStop?: () => void;
   disabled?: boolean;
   isStreaming?: boolean;
@@ -58,6 +60,13 @@ interface Props {
   simple?: boolean;
   /** 门户模式：隐藏斜杠命令、工作区选择器与工作区文件上传，保留图片附件与 starter 提示 */
   portal?: boolean;
+  /** A room owns its workspace; never switch the global chat workspace here. */
+  fixedWorkspace?: boolean;
+  mentions?: { value: MentionDraft; onChange: (draft: MentionDraft) => void; candidates: MentionCandidate[] };
+  context?: ReactNode;
+  sendDisabled?: boolean;
+  stopping?: boolean;
+  attachmentLimits?: { images: number; files: number; total: number };
 }
 
 function formatSize(bytes: number): string {
@@ -66,8 +75,14 @@ function formatSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessionId, onEnsureSession, starterPrompts, onStarterPromptClick, queue, onQueue, onQueueSendNow, onQueueRemove, simple, portal }: Props) {
-  const [input, setInput] = useState('');
+export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessionId, onEnsureSession, starterPrompts, onStarterPromptClick, queue, onQueue, onQueueSendNow, onQueueRemove, simple, portal, fixedWorkspace, mentions, context, sendDisabled, stopping, attachmentLimits }: ChatInputProps) {
+  const [localInput, setLocalInput] = useState('');
+  const input = mentions ? mentions.value.text : localInput;
+  const setInput = (value: string) => mentions ? mentions.onChange(editMentionDraft(mentions.value, value)) : setLocalInput(value);
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  const limits = attachmentLimits ?? { images: MAX_ATTACHMENTS, files: MAX_ATTACHMENTS, total: MAX_ATTACHMENTS };
+  const commandsEnabled = !simple && !portal && !mentions;
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -82,10 +97,10 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
   const loadCommands = useCommandStore((s) => s.load);
   const searchCommands = useCommandStore((s) => s.search);
   useEffect(() => {
-    if (!portal) loadCommands();
-  }, [loadCommands, portal]);
+    if (commandsEnabled) loadCommands();
+  }, [loadCommands, commandsEnabled]);
 
-  const isCommandInput = !simple && !portal && input.startsWith('/');
+  const isCommandInput = commandsEnabled && input.startsWith('/');
   const commandMenuOpen = isCommandInput && !commandDismissed;
   const commandItems = useMemo(
     () => (commandMenuOpen ? searchCommands(input.slice(1)) : []),
@@ -106,8 +121,8 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
 
   // Load workspaces on mount
   useEffect(() => {
-    loadWorkspaces();
-  }, [loadWorkspaces]);
+    if (!simple && !portal && !fixedWorkspace) loadWorkspaces();
+  }, [loadWorkspaces, simple, portal, fixedWorkspace]);
 
   const readAsDataURL = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -121,6 +136,18 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
   const totalPending = () =>
     pending.filter((p) => p.status !== 'error').length +
     pendingFiles.filter((p) => p.status !== 'error').length;
+
+  const counts = useRef({ images: 0, files: 0 });
+  counts.current = { images: pending.filter(p => p.status !== 'error').length, files: pendingFiles.filter(p => p.status !== 'error').length };
+  const reserveAttachment = (kind: 'images' | 'files') => {
+    const count = counts.current;
+    if (count.images + count.files >= limits.total || count[kind] >= limits[kind]) {
+      message.warning(kind === 'images' ? `最多 ${limits.images} 张图片，共 ${limits.total} 个附件` : `最多 ${limits.files} 个文件，共 ${limits.total} 个附件`);
+      return false;
+    }
+    count[kind] += 1;
+    return true;
+  };
 
   // ---- Image upload handling ----
 
@@ -138,17 +165,14 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
         continue;
       }
 
-      if (totalPending() >= MAX_ATTACHMENTS) {
-        message.warning(`最多 ${MAX_ATTACHMENTS} 个附件`);
-        break;
-      }
+      if (!reserveAttachment('images')) break;
 
       const localId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const thumb = await readAsDataURL(file);
-
-      setPending((prev) => [...prev, { localId, status: 'uploading', thumb }]);
+      setPending((prev) => [...prev, { localId, status: 'uploading' }]);
 
       try {
+        const thumb = await readAsDataURL(file);
+        setPending(prev => prev.map(p => p.localId === localId ? { ...p, thumb } : p));
         const attachment = await chatApi.uploadAttachment(file, sessionId);
         setPending((prev) => prev.map((p) => (p.localId === localId ? { ...p, status: 'done', attachment } : p)));
       } catch (err: any) {
@@ -157,7 +181,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
         message.error(`${file.name}: ${errMsg}`);
       }
     }
-  }, [sessionId, message]);
+  }, [sessionId, message, limits.images, limits.total]);
 
   // ---- File upload handling ----
 
@@ -179,10 +203,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
         continue;
       }
 
-      if (totalPending() >= MAX_ATTACHMENTS) {
-        message.warning(`最多 ${MAX_ATTACHMENTS} 个附件`);
-        break;
-      }
+      if (!reserveAttachment('files')) break;
 
       const localId = `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -202,9 +223,10 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
         message.error(`${file.name}: ${errMsg}`);
       }
     }
-  }, [sessionId, onEnsureSession, message]);
+  }, [sessionId, onEnsureSession, message, limits.files, limits.total]);
 
   const handleAttachmentFiles = (files: FileList | File[]) => {
+    if (disabled || sendingRef.current || sendDisabled) return;
     const selectedFiles = Array.from(files);
     const images = selectedFiles.filter((file) => ALLOWED_IMAGE_TYPES.includes(file.type));
     const otherFiles = selectedFiles.filter((file) => !ALLOWED_IMAGE_TYPES.includes(file.type));
@@ -252,14 +274,16 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
     requestAnimationFrame(() => textareaRef.current?.focus({ cursor: 'end' }));
   };
 
-  const handleSubmit = (e?: FormEvent) => {
+  const handleSubmit = async (e?: FormEvent) => {
     e?.preventDefault();
+    if (disabled || sendDisabled || sendingRef.current || pending.some(p => p.status === 'uploading') || pendingFiles.some(p => p.status === 'uploading')) return;
     const text = input.trim();
     const attachments = pending.filter((p) => p.status === 'done' && p.attachment).map((p) => p.attachment!);
     const fileAttachments = pendingFiles.filter((p) => p.status === 'done' && p.fileRef).map((p) => p.fileRef!);
     if (!text && attachments.length === 0 && fileAttachments.length === 0) return;
 
-    const isCommand = !portal && text.startsWith('/');
+    const isCommand = commandsEnabled && text.startsWith('/');
+    if (isStreaming && !onQueue && !isCommand) return;
 
     // Commands bypass the queue so control commands (e.g. /stop) apply
     // immediately. Interrupt any in-flight stream first.
@@ -281,13 +305,24 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
       return;
     }
 
-    onSend(text, attachments, fileAttachments.length > 0 ? fileAttachments : undefined);
-    setInput('');
-    setPending([]);
-    setPendingFiles([]);
+    sendingRef.current = true;
+    setSending(true);
+    try {
+      const accepted = await onSend(text, attachments, fileAttachments.length > 0 ? fileAttachments : undefined);
+      if (accepted === false) return;
+      setInput('');
+      setPending([]);
+      setPendingFiles([]);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '发送失败，请重试');
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (commandMenuOpen && commandItems.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -367,7 +402,8 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
     }
   };
 
-  const canSend = input.trim() || pending.some((p) => p.status === 'done') || pendingFiles.some((p) => p.status === 'done');
+  const hasUploading = pending.some(p => p.status === 'uploading') || pendingFiles.some(p => p.status === 'uploading');
+  const canSend = !sendDisabled && !sending && !hasUploading && Boolean(input.trim() || pending.some(p => p.status === 'done') || pendingFiles.some(p => p.status === 'done'));
 
   const renderSendActions = (compact: boolean) => {
     const buttonSize = compact ? 32 : 36;
@@ -376,22 +412,25 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
     if (isStreaming) {
       return (
         <>
-          <Tooltip title="加入队列 (Enter)">
+          {onQueue && <Tooltip title="加入队列 (Enter)">
             <Button
               type="primary"
               htmlType="submit"
+              aria-label="加入队列"
               icon={<ArrowUpOutlined />}
               disabled={disabled || !canSend}
               className={buttonClass}
               style={{ height: buttonSize, width: buttonSize }}
             />
-          </Tooltip>
-          <Tooltip title="停止生成">
+          </Tooltip>}
+          <Tooltip title={stopping ? '停止中' : '停止生成'}>
             <Button
               type="primary"
               danger
               icon={<StopOutlined />}
               onClick={onStop}
+              disabled={stopping || !onStop}
+              aria-label={stopping ? '停止中' : '停止生成'}
               className={buttonClass}
               style={{ height: buttonSize, width: buttonSize }}
             />
@@ -404,6 +443,8 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
       <Tooltip title="发送消息">
         <Button
           type="primary"
+          aria-label="发送消息"
+          loading={sending}
           htmlType="submit"
           icon={<ArrowUpOutlined />}
           disabled={disabled || !canSend}
@@ -421,6 +462,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
       onDragLeave={simple ? undefined : handleDragLeave}
       onDrop={simple ? undefined : handleDrop}
     >
+      {context && <div className="mx-auto mb-2 max-w-3xl">{context}</div>}
       {/* Starter prompts */}
       {!simple && starterPrompts && starterPrompts.length > 0 && (
         <div className="mx-auto max-w-3xl mb-3 flex flex-wrap gap-2">
@@ -618,7 +660,11 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
             onClose={() => setCommandDismissed(true)}
           />
         )}
-        <TextArea
+        {mentions ? <RoomMentionInput
+          value={mentions.value} onChange={mentions.onChange} candidates={mentions.candidates}
+          onSend={() => void handleSubmit()} onPaste={handlePaste}
+          disabled={disabled || sending} busy={isStreaming} embedded
+        /> : <TextArea
           ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -632,10 +678,11 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
                 : '输入消息，Enter 发送'
           }
           autoSize={{ minRows: 1, maxRows: simple ? 4 : 6 }}
-          disabled={disabled}
+          disabled={disabled || sending}
+          aria-label="对话消息"
           variant={simple ? 'outlined' : 'borderless'}
           className={simple ? '!rounded-xl !text-sm' : '!px-2 !py-1.5 !text-sm !shadow-none'}
-        />
+        />}
 
         {simple ? (
           renderSendActions(true)
@@ -647,13 +694,13 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
                   type="text"
                   icon={<PaperClipOutlined />}
                   onClick={() => attachmentInputRef.current?.click()}
-                  disabled={disabled || totalPending() >= MAX_ATTACHMENTS}
+                  disabled={disabled || sending || sendDisabled || totalPending() >= limits.total}
                   className="flex-shrink-0 !rounded-xl text-muted-foreground"
                   style={{ height: 34, width: 34 }}
                   aria-label="添加附件"
                 />
               </Tooltip>
-              {!portal && (
+              {!portal && !fixedWorkspace && (
               <Tooltip title="附件和生成的文件会保存在所选工作区">
                 <div className="flex min-w-0 items-center gap-0.5 text-muted-foreground">
                   <FolderOutlined className="ml-1 flex-shrink-0 text-xs" />

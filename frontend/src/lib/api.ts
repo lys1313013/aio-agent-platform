@@ -1,4 +1,5 @@
 import { tokenStorage } from './auth';
+import { pollTaskSnapshots } from './pollTaskSnapshots';
 import type {
   TokenPair,
   Agent,
@@ -2488,67 +2489,12 @@ export const petsApi = {
     });
     return () => controller.abort();
   },
-  /**
-   * Watch channel task lifecycle via SSE (GET /api/pets/tasks/events).
-   * Fires `onEvent` per event; emits `{ type: 'error' }` on failure and
-   * `{ type: 'closed' }` when the server ends the stream. Returns a close fn.
-   */
+  /** Refresh the pet task snapshot without reserving an HTTP streaming connection. */
   watchActiveTasks(onEvent: (event: Record<string, unknown>) => void): () => void {
-    const controller = new AbortController();
-
-    (async () => {
-      // Ensure access token is fresh before opening the stream
-      if (isTokenExpiringSoon(tokenStorage.getAccess())) {
-        const refreshed = await refreshAccessToken();
-        if (!refreshed && tokenStorage.getRefresh()) {
-          onEvent({ type: 'error', message: 'Session expired' });
-          forceLogout();
-          return;
-        }
-      }
-
-      const token = tokenStorage.getAccess() || '';
-      const resp = await fetch(`${API_BASE}/pets/tasks/events`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: controller.signal,
-      });
-
-      if (!resp.ok || !resp.body) {
-        onEvent({ type: 'error', message: resp.statusText });
-        return;
-      }
-
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        // SSE events are separated by double newlines
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
-        for (const part of parts) {
-          const line = part.trim();
-          if (line.startsWith('data: ')) {
-            try {
-              onEvent(JSON.parse(line.slice(6)));
-            } catch {
-              /* ignore malformed JSON */
-            }
-          }
-        }
-      }
-
-      onEvent({ type: 'closed' });
-    })().catch((err) => {
-      if (err.name !== 'AbortError') {
-        onEvent({ type: 'error', message: err.message || '连接断开' });
-      }
-    });
-
-    return () => controller.abort();
+    return pollTaskSnapshots(
+      (signal) => request<unknown[]>('/pets/active-tasks', { signal }),
+      onEvent,
+    );
   },
 };
 

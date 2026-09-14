@@ -206,9 +206,9 @@ class MemoryService:
         ``(memory, "updated")`` is returned; otherwise a new row is inserted
         and ``(memory, "created")`` is returned.
 
-        This stops repeated conversation extractions from piling up
-        near-identical facts in L1/L2. Explicit user-driven creation should
-        keep using :meth:`create_memory` to preserve "create a new row" semantics.
+        Legacy text-based policy, now used for L3 summaries. Automatic L1/L2
+        writes use reconciliation.reconcile_memory to avoid destructive lexical
+        matches. Explicit creation keeps using create_memory.
         """
         threshold = (
             dedupe_threshold
@@ -474,11 +474,31 @@ class MemoryService:
         Errors are logged but never propagated.
         """
         try:
+            from aio_agent_platform.db.connection import current_user_id, get_session_factory
+            from aio_agent_platform.memory.reconciliation import reconcile_memory
+
+            factory = get_session_factory()
+            async with factory() as db:
+                current_user_id.set(str(user_id))
+                await db.execute(select(func.set_config("app.current_user_id", str(user_id), True)))
+                if agent_id is None:
+                    from aio_agent_platform.db.models import Session
+
+                    agent_id = await db.scalar(select(Session.agent_id).where(
+                        Session.id == session_id, Session.user_id == user_id,
+                    ))
+                existing = await db.scalars(select(Memory).where(
+                    Memory.user_id == user_id,
+                    memory_scope(Memory, agent_id),
+                    Memory.layer.in_(["L1", "L2"]),
+                ).order_by(Memory.updated_at.desc()).limit(40))
+                existing_contents = [m.content for m in existing.all()]
+
             # 1. Render extraction prompt
             from aio_agent_platform.core.prompt import _env
 
             template = _env.get_template("memory_writer.j2")
-            prompt_text = template.render(messages=messages)
+            prompt_text = template.render(messages=messages, existing_memories=existing_contents)
 
             # 2. Call LLM (non-streaming; temperature 不传，避免网关拒绝)
             from aio_agent_platform.llm import LLMMessage
@@ -501,10 +521,7 @@ class MemoryService:
 
             extracted = json.loads(raw_content)
 
-            # 4. Write to DB
-            from aio_agent_platform.db.connection import current_user_id, get_session_factory
-
-            factory = get_session_factory()
+            # 4. Reconcile against current DB state, not the extraction snapshot.
             async with factory() as db:
                 # Set RLS context for background task (set_config supports parameterized queries)
                 current_user_id.set(str(user_id))
@@ -512,19 +529,13 @@ class MemoryService:
                     select(func.set_config("app.current_user_id", str(user_id), True))
                 )
 
-                if agent_id is None:
-                    from aio_agent_platform.db.models import Session
-
-                    agent_id = await db.scalar(select(Session.agent_id).where(
-                        Session.id == session_id, Session.user_id == user_id,
-                    ))
                 created: list[Memory] = []
 
-                for item in extracted.get("l2_memories", []):
+                for item in extracted.get("l2_memories", [])[:5]:
                     content = item.get("content", "").strip()
                     if not content:
                         continue
-                    mem, action = await MemoryService.create_or_update_memory(
+                    mem, action = await reconcile_memory(
                         db,
                         user_id,
                         "L2",
@@ -535,8 +546,9 @@ class MemoryService:
                             "source_session": str(session_id),
                         },
                     )
+                    await db.commit()  # Release the scope lock before the next model call.
                     created.append(mem)
-                    if action == "updated":
+                    if action in {"updated", "merged", "skipped"}:
                         logger.info(
                             "memory_extraction_deduped",
                             layer="L2",
@@ -545,7 +557,7 @@ class MemoryService:
 
                 summary = extracted.get("l3_summary", "").strip()
                 if summary:
-                    mem, action = await MemoryService.create_or_update_memory(
+                    mem, action = await reconcile_memory(
                         db,
                         user_id,
                         "L3",
@@ -554,7 +566,7 @@ class MemoryService:
                         meta={"source_session": str(session_id)},
                     )
                     created.append(mem)
-                    if action == "updated":
+                    if action in {"updated", "merged", "skipped"}:
                         logger.info(
                             "memory_extraction_deduped",
                             layer="L3",

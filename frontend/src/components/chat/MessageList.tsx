@@ -7,9 +7,14 @@ import ChatMessage from './ChatMessage';
 import StreamingMessage from './StreamingMessage';
 import { useChatStore } from '@/stores/chatStore';
 
-interface Props {
-  messages: Message[];
-  streaming: StreamingState;
+export interface MessageListProps<T extends Message = Message> {
+  messages: T[];
+  streaming?: StreamingState;
+  conversationId?: string | null;
+  workspaceId?: string | null;
+  renderMessage?: (message: T) => ReactNode;
+  beforeMessages?: ReactNode;
+  afterMessages?: ReactNode;
   /** Agent 或门户脱敏的 PortalAgent —— 仅用 name / description / welcome_message */
   agent?: { name: string; description?: string | null; welcome_message?: string | null } | null;
   onNewChat?: () => void;
@@ -25,22 +30,26 @@ interface Props {
   compact?: boolean;
 }
 
-export default function MessageList({ messages, streaming, agent, onNewChat, onEditResend, emptyTitle, emptySubtitle, emptyIcon, scrollToBottomOnMount = true, compact }: Props) {
+export default function MessageList<T extends Message>({ messages, streaming, agent, onNewChat, onEditResend, emptyTitle, emptySubtitle, emptyIcon, scrollToBottomOnMount = true, compact, conversationId, workspaceId: explicitWorkspaceId, renderMessage, beforeMessages, afterMessages }: MessageListProps<T>) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followBottom = useRef(scrollToBottomOnMount);
   const firstMessageId = messages[0]?.id;
+  const scrollKey = conversationId ?? firstMessageId;
   const lastUserMessageId = [...messages].reverse().find((message) => message.role === 'user')?.id;
-  const hasContent = messages.length > 0 || streaming.isStreaming;
-  const workspaceId = useChatStore((state) => (
+  const hasContent = messages.length > 0 || streaming?.isStreaming;
+  const activeWorkspaceId = useChatStore((state) => (
     state.sessions.find((session) => session.id === state.activeSessionId)?.workspace_id
     ?? state.selectedWorkspaceId
   ));
 
+  const workspaceId = explicitWorkspaceId !== undefined ? explicitWorkspaceId : activeWorkspaceId;
+  const previousLayout = useRef({ firstId: firstMessageId, height: 0, conversationId });
+
   // Reset when opening a conversation; sending also resumes following.
   useLayoutEffect(() => {
     followBottom.current = scrollToBottomOnMount;
-  }, [firstMessageId, scrollToBottomOnMount]);
+  }, [scrollKey, scrollToBottomOnMount]);
 
   useLayoutEffect(() => {
     if (lastUserMessageId) followBottom.current = true;
@@ -48,8 +57,15 @@ export default function MessageList({ messages, streaming, agent, onNewChat, onE
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (el && followBottom.current) el.scrollTop = el.scrollHeight;
-  }, [messages, streaming]);
+    if (!el) return;
+    const previous = previousLayout.current;
+    const prepended = previous.conversationId === conversationId && previous.firstId !== firstMessageId
+      && messages.some(message => message.id === previous.firstId);
+    if (prepended) {
+      el.scrollTop += el.scrollHeight - previous.height;
+    } else if (followBottom.current) el.scrollTop = el.scrollHeight;
+    previousLayout.current = { firstId: firstMessageId, height: el.scrollHeight, conversationId };
+  }, [messages, streaming, conversationId, firstMessageId]);
 
   // Images, tool cards and input resizing can change layout after rendering.
   useLayoutEffect(() => {
@@ -64,7 +80,7 @@ export default function MessageList({ messages, streaming, agent, onNewChat, onE
     return () => observer.disconnect();
   }, [hasContent]);
 
-  if (messages.length === 0 && !streaming.isStreaming) {
+  if (messages.length === 0 && !streaming?.isStreaming) {
     const title = emptyTitle ?? (agent ? `欢迎使用 ${agent.name}` : '欢迎使用智能体平台');
     const subtitle = emptySubtitle ?? (agent?.description || '发送消息开始对话');
 
@@ -118,7 +134,8 @@ export default function MessageList({ messages, streaming, agent, onNewChat, onE
       data-ui-exclude
     >
       <div ref={contentRef} className={compact ? 'px-3 py-4 space-y-4' : 'max-w-4xl mx-auto px-4 py-6 space-y-6'}>
-        {messages.map((msg) => (
+        {beforeMessages}
+        {messages.map((msg) => renderMessage ? <div key={msg.id}>{renderMessage(msg)}</div> : (
           <ChatMessage
             key={msg.id}
             message={msg}
@@ -127,7 +144,8 @@ export default function MessageList({ messages, streaming, agent, onNewChat, onE
             compact={compact}
           />
         ))}
-        {streaming.isStreaming && (
+        {afterMessages}
+        {streaming?.isStreaming && (
           <StreamingMessage streaming={streaming} workspaceId={workspaceId} compact={compact} />
         )}
       </div>

@@ -4,10 +4,9 @@ import { useChatStore } from '@/stores/chatStore';
 import { chatApi, portalApi } from '@/lib/api';
 import { useMessageQueue } from '@/hooks/useMessageQueue';
 import { useChatStream } from '@/hooks/useChatStream';
-import MessageList from '@/components/chat/MessageList';
-import ChatInput from '@/components/chat/ChatInput';
+import ChatWindow from '@/components/chat/ChatWindow';
 import SessionSidebar from '@/components/chat/SessionSidebar';
-import { Alert, App, Typography, Spin, Button, Skeleton, Tooltip } from 'antd';
+import { Alert, App, Typography, Button, Skeleton, Tooltip } from 'antd';
 import { PlusOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import type { PortalAgent, ChatAttachment } from '@/lib/types';
 import { getAgentIcon } from '@/lib/agent-icons';
@@ -207,40 +206,21 @@ export default function PortalChatPage() {
       <div className="flex flex-1 overflow-hidden relative">
         {agentId && <SessionSidebar agentId={agentId} portal />}
 
-        <div className="flex flex-1 flex-col overflow-hidden min-w-0">
-          {(messagesLoading || agentLoading) && currentMessages.length === 0 ? (
-            <div className="flex flex-1 items-center justify-center">
-              <Spin size="large" />
-            </div>
-          ) : (
-            <MessageList
-              messages={currentMessages}
-              streaming={streaming}
-              agent={agent}
-              onEditResend={handleEditResend}
-            />
-          )}
-
-          {error && (
-            <div className="mx-auto max-w-3xl w-full px-4 pb-2">
-              <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} />
-            </div>
-          )}
-
-          <ChatInput
-            portal
-            onSend={handleSend}
-            onStop={interrupt}
-            isStreaming={streaming.isStreaming}
-            sessionId={activeSessionId}
-            starterPrompts={agent?.starter_prompts ?? undefined}
-            onStarterPromptClick={handleStarterPrompt}
-            queue={queue}
-            onQueue={enqueue}
-            onQueueSendNow={sendQueuedNow}
-            onQueueRemove={removeQueued}
-          />
-        </div>
+        <ChatWindow
+          loading={messagesLoading || agentLoading}
+          messages={{ messages: currentMessages, streaming, conversationId: activeSessionId, agent, onEditResend: handleEditResend }}
+          status={<>
+            {error && (
+              <div className="mx-auto max-w-3xl w-full px-4 pb-2">
+                <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} />
+              </div>
+            )}
+          </>}
+          input={{
+            portal: true, onSend: handleSend, onStop: interrupt, isStreaming: streaming.isStreaming, sessionId: activeSessionId, starterPrompts: agent?.starter_prompts ?? undefined, onStarterPromptClick: handleStarterPrompt,
+            queue, onQueue: enqueue, onQueueSendNow: sendQueuedNow, onQueueRemove: removeQueued,
+          }}
+        />
       </div>
     </div>
   );
