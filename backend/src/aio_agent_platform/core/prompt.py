@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -24,6 +25,17 @@ _env = Environment(
 
 # Max L1 memories to include when under budget pressure
 _MAX_L1_MEMORIES = 10
+
+# User-facing time is interpreted as Beijing time across the platform (cron jobs,
+# daily memories, and natural-language dates).  Keep the model's clock in the
+# same timezone so questions such as "现在几点" and "今天" are unambiguous.
+_MODEL_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _format_current_datetime() -> str:
+    """Return a precise, timezone-aware timestamp for the system prompt."""
+    current = datetime.now(_MODEL_TIMEZONE)
+    return f"{current.isoformat(sep=' ', timespec='seconds')} ({_MODEL_TIMEZONE.key})"
 
 
 def build_system_prompt(
@@ -98,7 +110,7 @@ def build_system_prompt(
         if workspace_files and len(workspace_files) > 0:
             parts.append(_build_files_section(workspace_files))
 
-        parts.append(f"\nCurrent time: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}")
+        parts.append(f"\nCurrent time (default user timezone): {_format_current_datetime()}")
 
         # Inject delegation guidance: pre-configured child agents, or dynamic spawn
         has_delegate_tool = _has_delegate_tool(tools)
@@ -126,7 +138,7 @@ def build_system_prompt(
         relevant_skills=relevant_skills,
         daily_memories=daily_memories,
         child_agents=child_agents or [],
-        current_datetime=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+        current_datetime=_format_current_datetime(),
         user_name=user_name or "User",
         user_portrait=user_portrait or "",
     )
