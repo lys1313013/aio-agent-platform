@@ -31,7 +31,7 @@ from aio_agent_platform.core.context import (
 )
 from aio_agent_platform.core.prompt import build_system_prompt
 from aio_agent_platform.db import Message, Session
-from aio_agent_platform.db.connection import current_user_id, get_session_factory
+from aio_agent_platform.db.connection import get_session_factory
 from aio_agent_platform.db.models import (
     Agent,
     GraphKnowledgeBase,
@@ -651,42 +651,6 @@ def fire_memory_extraction(
     task.add_done_callback(background_tasks.discard)
 
 
-async def persist_assistant_message(
-    session_id: UUID,
-    user_id: UUID,
-    content: str,
-    tool_calls: list[dict] | None,
-    reasoning: list[dict] | None = None,
-) -> None:
-    """Save an assistant message on its own DB session (rescue path)."""
-    if not content and not tool_calls:
-        return
-    try:
-        current_user_id.set(str(user_id))
-        factory = get_session_factory()
-        async with factory() as db:
-            db.add(
-                Message(
-                    session_id=session_id,
-                    user_id=user_id,
-                    role="assistant",
-                    content=content,
-                    tool_calls=tool_calls if tool_calls else None,
-                    reasoning=reasoning if reasoning else None,
-                )
-            )
-            await db.commit()
-        logger.info(
-            "stream_partial_message_saved",
-            session_id=str(session_id),
-            tool_calls_count=len(tool_calls) if tool_calls else 0,
-        )
-    except Exception:
-        logger.exception(
-            "stream_partial_message_save_failed", session_id=str(session_id)
-        )
-
-
 async def update_context_summary(
     session_id: UUID,
     history: list[LLMMessage],
@@ -762,7 +726,6 @@ _resolve_workspace = resolve_workspace
 _get_memory_top_k = get_memory_top_k
 _resolve_provider_type = resolve_provider_type
 _fire_memory_extraction = fire_memory_extraction
-_persist_assistant_message = persist_assistant_message
 _update_context_summary = update_context_summary
 _load_conversation_history = load_conversation_history
 _file_refs_to_dicts = file_refs_to_dicts

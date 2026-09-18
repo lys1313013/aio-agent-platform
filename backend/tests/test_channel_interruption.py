@@ -27,6 +27,7 @@ from aio_agent_platform.channels.pipeline import (
     _ResolvedContext,
     _StreamingReply,
 )
+from aio_agent_platform.core.chat_history import ChatTurnRecorder
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -354,7 +355,7 @@ async def test_finalize_interrupted_persists_partial_and_marks_card(
 ) -> None:
     fake_db = _FakeDB()
     monkeypatch.setattr(
-        "aio_agent_platform.channels.pipeline.get_session_factory",
+        "aio_agent_platform.db.connection.get_session_factory",
         lambda: (lambda: _FakeDBCtx(fake_db)),
     )
     logged: list[dict] = []
@@ -374,9 +375,12 @@ async def test_finalize_interrupted_persists_partial_and_marks_card(
     event_logger = _BufferedEventLogger(user_id=user_id, session_id=session_id)
     ctx = _ResolvedContext(user_id=user_id, session_id=session_id)
     tool_calls = [{"id": "t1", "name": "web_search", "arguments": {}}]
+    turn = ChatTurnRecorder(session_id, user_id)
+    turn.content = "半截输出"
+    turn.tool_calls = tool_calls
 
     await pipe._finalize_interrupted(
-        stream_reply, event_logger, ctx, "半截输出", tool_calls
+        stream_reply, event_logger, ctx, turn
     )
 
     # 1. 部分 assistant 消息落库，尾部带中断标记

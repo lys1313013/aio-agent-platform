@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ReloadOutlined } from '@ant-design/icons';
-import { App, Button, Drawer, Empty, Select, Segmented, Table, Tag, Typography } from 'antd';
-import { cronJobsApi } from '@/lib/api';
+import { LinkOutlined, ReloadOutlined } from '@ant-design/icons';
+import { App, Button, Drawer, Empty, Select, Segmented, Space, Table, Tag, Typography } from 'antd';
+import { cronJobsApi, sessionsApi } from '@/lib/api';
 import type { CronJob, CronJobRun } from '@/lib/types';
 import { useAuthStore } from '@/stores/authStore';
-import { Navigate } from 'react-router-dom';
+import { useChatStore } from '@/stores/chatStore';
+import { Navigate, useNavigate } from 'react-router-dom';
 
 const { Text, Paragraph } = Typography;
 
@@ -29,6 +30,7 @@ const runStatusTag = (status: string) => {
 
 export default function CronJobRunsPage() {
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const role = useAuthStore((s) => s.role);
   const isAdmin = role === 'admin' || role === 'superadmin';
 
@@ -40,12 +42,10 @@ export default function CronJobRunsPage() {
   const [jobId, setJobId] = useState<string | undefined>(undefined);
   const [status, setStatus] = useState<string>('all');
   const [detail, setDetail] = useState<CronJobRun | null>(null);
-
-  if (!isAdmin) {
-    return <Navigate to="/" replace />;
-  }
+  const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
 
   const fetchRuns = useCallback(async () => {
+    if (!isAdmin) return;
     setLoading(true);
     try {
       const result = await cronJobsApi.runsAll({
@@ -61,18 +61,55 @@ export default function CronJobRunsPage() {
     } finally {
       setLoading(false);
     }
-  }, [jobId, status, page]);
+  }, [isAdmin, jobId, status, page, message]);
 
   useEffect(() => {
     fetchRuns();
   }, [fetchRuns]);
 
   useEffect(() => {
+    if (!isAdmin) return;
     cronJobsApi
       .list({ limit: 200 })
       .then((res) => setJobs(res.items))
       .catch(() => {});
-  }, []);
+  }, [isAdmin]);
+
+  const openSession = async (sessionId: string) => {
+    if (openingSessionId) return;
+    setOpeningSessionId(sessionId);
+    try {
+      const session = await sessionsApi.get(sessionId);
+      useChatStore.setState((state) => ({
+        sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)],
+        messages: { ...state.messages, [session.id]: session.messages },
+        activeSessionId: session.id,
+        messagesLoading: false,
+      }));
+      navigate(session.agent_id ? `/agents/${session.agent_id}/chat/${session.id}` : '/chat');
+    } catch (err) {
+      message.error(`打开会话失败：${err instanceof Error ? err.message : '请稍后重试'}`);
+    } finally {
+      setOpeningSessionId(null);
+    }
+  };
+
+  const renderSessionLink = (sessionId: string) => (
+    <Button
+      size="small"
+      type="link"
+      icon={<LinkOutlined />}
+      loading={openingSessionId === sessionId}
+      disabled={!!openingSessionId && openingSessionId !== sessionId}
+      onClick={() => void openSession(sessionId)}
+    >
+      查看会话
+    </Button>
+  );
+
+  if (!isAdmin) {
+    return <Navigate to="/" replace />;
+  }
 
   const changeJob = (v: string | undefined) => {
     setJobId(v);
@@ -136,11 +173,14 @@ export default function CronJobRunsPage() {
     {
       title: '操作',
       key: 'action',
-      width: 80,
+      width: 180,
       render: (_: unknown, record: CronJobRun) => (
-        <Button size="small" type="link" onClick={() => setDetail(record)}>
-          详情
-        </Button>
+        <Space size={0}>
+          <Button size="small" type="link" onClick={() => setDetail(record)}>
+            详情
+          </Button>
+          {record.session_id && renderSessionLink(record.session_id)}
+        </Space>
       ),
     },
   ];
@@ -234,6 +274,7 @@ export default function CronJobRunsPage() {
               <div>
                 <Text type="secondary">会话 ID</Text>
                 <div className="break-all font-mono text-xs">{detail.session_id || '-'}</div>
+                {detail.session_id && renderSessionLink(detail.session_id)}
               </div>
             </div>
 

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import time
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
@@ -44,7 +43,6 @@ from aio_agent_platform.channels.file_send import (
     ChannelSendContext,
     current_channel_send_ctx,
 )
-from aio_agent_platform.core.agent import AgentStep
 from aio_agent_platform.core.auto_title import generate_session_title
 from aio_agent_platform.core.chat import (
     background_tasks,
@@ -60,6 +58,7 @@ from aio_agent_platform.core.chat import (
     resolve_workspace,
     update_context_summary,
 )
+from aio_agent_platform.core.chat_history import ChatTurnRecorder
 from aio_agent_platform.core.context import prepare_context
 from aio_agent_platform.core.task_event_log import log_event
 from aio_agent_platform.core.task_registry import task_finished, task_started, task_tool
@@ -1106,9 +1105,7 @@ class ChannelInboundPipeline:
         if self.channel.enable_streaming:
             await stream_reply.start()
 
-        final_output = ""
-        tool_calls_list: list[dict] = []
-        tool_results_map: dict[str, dict] = {}
+        turn = ChatTurnRecorder(ctx.session_id, ctx.user_id)
         event_logger = _BufferedEventLogger(ctx.user_id, ctx.session_id)
 
         # 渠道上下文注入：让 send_file_to_user 工具知道发给哪个会话。
@@ -1123,69 +1120,16 @@ class ChannelInboundPipeline:
                 conversation_history=processed_history,
                 tools=tools_schema,
             ):
-                if isinstance(step, AgentStep) and step.done:
-                    if not final_output:
-                        final_output = step.final_output or ""
-                elif isinstance(step, str):
-                    if step.startswith("reasoning_delta:"):
-                        # 推理过程实时广播（Web 端「重新连接」回放用）
-                        event_logger.submit({
-                            "type": "thinking",
-                            "content": step[len("reasoning_delta:"):],
-                        })
-                    elif step.startswith("text_delta:"):
-                        delta = step[len("text_delta:"):]
-                        final_output += delta
-                        await stream_reply.push(final_output)
-                        event_logger.submit({
-                            "type": "text_delta",
-                            "content": delta,
-                        })
-                    elif step.startswith("tool_call:"):
-                        parts = step.split(":", 3)
-                        try:
-                            tc_args = json.loads(parts[3]) if len(parts) > 3 else {}
-                        except json.JSONDecodeError:
-                            tc_args = {}
-                        tc_id = parts[1] if len(parts) > 1 else ""
-                        tool_name = parts[2] if len(parts) > 2 else ""
-                        tool_calls_list.append({
-                            "id": tc_id,
-                            "name": tool_name,
-                            "arguments": tc_args,
-                        })
-                        event_logger.submit({
-                            "type": "tool_call",
-                            "id": tc_id,
-                            "name": tool_name,
-                            "arguments": tc_args,
-                        })
-                        if tool_name:
-                            await task_tool(ctx.user_id, ctx.session_id, tool_name)
-                    elif step.startswith("tool_result:"):
-                        parts = step.split(":", 4)
-                        tc_id = parts[1] if len(parts) > 1 else ""
-                        tc_name = parts[2] if len(parts) > 2 else ""
-                        try:
-                            preview = json.loads(parts[4]) if len(parts) > 4 else ""
-                        except json.JSONDecodeError:
-                            preview = parts[4] if len(parts) > 4 else ""
-                        tool_results_map[tc_id] = {
-                            "status": parts[3] if len(parts) > 3 else "",
-                            "preview": preview,
-                        }
-                        event_logger.submit({
-                            "type": "tool_result",
-                            "tool_call_id": tc_id,
-                            "name": tc_name,
-                            "status": parts[3] if len(parts) > 3 else "",
-                            "preview": preview,
-                        })
-                        for tc in tool_calls_list:
-                            if tc["id"] in tool_results_map:
-                                tc["result"] = tool_results_map[tc["id"]]
+                payload = await turn.process(step, db)
+                if payload is not None:
+                    event_logger.submit(payload)
+                    if payload["type"] == "text_delta":
+                        await stream_reply.push(turn.content)
+                    elif payload["type"] == "tool_call" and payload["name"]:
+                        await task_tool(ctx.user_id, ctx.session_id, payload["name"])
 
-            await stream_reply.finish(final_output)
+            await turn.save(db, force=True)
+            await stream_reply.finish(turn.content)
         except asyncio.CancelledError:
             # /stop 或撤回即停触发的取消。CancelledError 是 BaseException，
             # 不会被下面的 except Exception 吞掉；在这里做中断收尾后继续传播。
@@ -1196,14 +1140,22 @@ class ChannelInboundPipeline:
             )
             if title_task is not None:
                 title_task.cancel()
+            # Release any interrupted DB transaction before updating the same
+            # checkpoint row from the rescue session.
+            await db.rollback()
             await asyncio.shield(
-                self._finalize_interrupted(
-                    stream_reply, event_logger, ctx, final_output, tool_calls_list
-                )
+                self._finalize_interrupted(stream_reply, event_logger, ctx, turn)
             )
             raise
         except Exception as e:
             logger.exception("agent_loop_failed", channel_id=str(self.channel.id))
+            if title_task is not None:
+                title_task.cancel()
+            try:
+                await db.rollback()
+                await turn.rescue()
+            except Exception:
+                logger.exception("agent_loop_failed_persist_failed", session_id=str(ctx.session_id))
             try:
                 await stream_reply.finish(f"❌ 执行出错：{e}")
             except Exception:
@@ -1220,17 +1172,7 @@ class ChannelInboundPipeline:
                 except Exception:
                     pass
 
-        # Persist the assistant reply (with tool call details for rendering).
-        assistant_msg = Message(
-            session_id=ctx.session_id,
-            user_id=ctx.user_id,
-            role="assistant",
-            content=final_output,
-            tool_calls=tool_calls_list if tool_calls_list else None,
-        )
-        db.add(assistant_msg)
-        await db.flush()
-        await db.commit()
+        final_output = turn.content
 
         # 应用自动生成的标题（与 Agent 循环并发启动的任务）
         if title_task is not None and session is not None:
@@ -1243,9 +1185,11 @@ class ChannelInboundPipeline:
         event_logger.submit({"type": "text", "content": final_output})
         event_logger.submit({
             "type": "done",
-            "message_id": str(assistant_msg.id),
+            "message_id": str(turn.message_id),
             "content": final_output,
-            "tool_calls": tool_calls_list,
+            "tool_calls": turn.tool_calls,
+            "reasoning": turn.reasoning,
+            "file_changes": turn.file_changes,
         })
         await event_logger.drain()
 
@@ -1271,8 +1215,7 @@ class ChannelInboundPipeline:
         stream_reply: _StreamingReply,
         event_logger: _BufferedEventLogger,
         ctx: _ResolvedContext,
-        final_output: str,
-        tool_calls_list: list[dict],
+        turn: ChatTurnRecorder,
     ) -> None:
         """中断收尾：部分结果写入消息历史、回放流收尾、卡片标记「已中断」。
 
@@ -1280,23 +1223,14 @@ class ChannelInboundPipeline:
         被取消的请求上下文关闭，持久化使用新 session。
         """
         assert ctx.user_id is not None and ctx.session_id is not None
-        interrupted_text = f"{final_output}\n\n⏹ 已中断" if final_output else "⏹ 已中断"
+        interrupted_text = f"{turn.content}\n\n⏹ 已中断" if turn.content else "⏹ 已中断"
+        turn.content = interrupted_text
 
         # 1. 部分 assistant 消息落库（新 session，原 session 已随取消关闭）。
         message_id: str | None = None
         try:
-            factory = get_session_factory()
-            async with factory() as db:
-                assistant_msg = Message(
-                    session_id=ctx.session_id,
-                    user_id=ctx.user_id,
-                    role="assistant",
-                    content=interrupted_text,
-                    tool_calls=tool_calls_list if tool_calls_list else None,
-                )
-                db.add(assistant_msg)
-                await db.commit()
-                message_id = str(assistant_msg.id)
+            await turn.rescue()
+            message_id = str(turn.message_id)
         except Exception:
             logger.exception(
                 "agent_loop_cancelled_persist_failed", session_id=str(ctx.session_id)
@@ -1309,7 +1243,9 @@ class ChannelInboundPipeline:
                 "type": "done",
                 "message_id": message_id,
                 "content": interrupted_text,
-                "tool_calls": tool_calls_list,
+                "tool_calls": turn.tool_calls,
+                "reasoning": turn.reasoning,
+                "file_changes": turn.file_changes,
                 "interrupted": True,
             })
             await event_logger.drain()

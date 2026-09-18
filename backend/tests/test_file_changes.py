@@ -1,6 +1,6 @@
 """Focused tests for automatic workspace file-change tracking."""
 
-from aio_agent_platform.interface.routes.chat import _merge_file_changes
+from aio_agent_platform.core.chat_history import _merge_file_changes
 from aio_agent_platform.tools.executor import ToolExecutor
 
 

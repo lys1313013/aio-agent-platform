@@ -42,12 +42,12 @@ from aio_agent_platform.core.chat import (
     _inject_file_refs_into_message,
     _load_agent,
     _load_conversation_history,
-    _persist_assistant_message,
     _resolve_provider_type,
     _resolve_workspace,
     _update_context_summary,
     refresh_mcp_tools_for_agent,
 )
+from aio_agent_platform.core.chat_history import ChatTurnRecorder
 from aio_agent_platform.core.config import settings
 from aio_agent_platform.core.context import (
     current_agent_id,
@@ -118,33 +118,6 @@ class ChatResponse(BaseModel):
     session_title: str | None = None
     file_changes: list[dict] = Field(default_factory=list)
     reasoning: list[dict] = Field(default_factory=list)
-
-
-def _append_reasoning_chunk(chunks: list[dict], content: str) -> None:
-    """Keep each ReAct reasoning step independently renderable after reload."""
-    if content:
-        chunks.append({"id": f"thinking-{len(chunks)}", "content": content})
-
-
-def _merge_file_changes(current: list[dict], incoming: list[dict]) -> list[dict]:
-    """Collapse repeated changes to the same path within one assistant turn."""
-    merged = {item["path"]: item for item in current}
-    for item in incoming:
-        path = item.get("path")
-        if not path:
-            continue
-        previous = merged.get(path)
-        if previous is None:
-            merged[path] = item
-        elif previous["action"] == "created" and item["action"] == "deleted":
-            merged.pop(path)
-        elif previous["action"] == "created":
-            merged[path] = {**item, "action": "created"}
-        elif previous["action"] == "deleted" and item["action"] == "created":
-            merged[path] = {**item, "action": "modified"}
-        else:
-            merged[path] = item
-    return list(merged.values())
 
 
 def _format_page_context_section(page_context: dict) -> str:
@@ -654,134 +627,37 @@ async def chat(
     if not prior_msg_count and (agent.enable_auto_title if agent else True):
         title_task = asyncio.create_task(generate_session_title(req.message, user.tenant_id))
 
-    # Run agent loop with overflow retry
-    final_output = ""
-    tool_calls_list: list[dict] = []
-    tool_results_map: dict[str, dict] = {}
-    file_changes_list: list[dict] = []
-    reasoning_chunks: list[dict] = []
-    incremental_msg_id: UUID | None = None
-
-    async def _save_tool_calls_incremental() -> None:
-        """Incrementally persist tool calls after each result."""
-        nonlocal incremental_msg_id
-        if incremental_msg_id is None:
-            inc_msg = Message(
-                session_id=session.id,
-                user_id=user.id,
-                role="assistant",
-                content="",
-                tool_calls=list(tool_calls_list),
-                reasoning=list(reasoning_chunks) or None,
-            )
-            db.add(inc_msg)
-            await db.flush()
-            incremental_msg_id = inc_msg.id
-        else:
-            await db.execute(
-                sql_update(Message)
-                .where(Message.id == incremental_msg_id)
-                .values(
-                    tool_calls=list(tool_calls_list),
-                    reasoning=list(reasoning_chunks) or None,
-                )
-            )
-        await db.commit()
-
-    async def _handle_event(event) -> None:
-        """Parse agent events and track tool calls/results."""
-        nonlocal final_output
-        if isinstance(event, AgentStep) and event.done:
-            final_output = event.final_output
-        elif isinstance(event, str):
-            if event.startswith("reasoning:"):
-                _append_reasoning_chunk(
-                    reasoning_chunks,
-                    event[len("reasoning:"):],
-                )
-            elif event.startswith("tool_call:"):
-                parts = event.split(":", 3)
-                tc_id = parts[1] if len(parts) > 1 else ""
-                tc_name = parts[2] if len(parts) > 2 else ""
-                try:
-                    tc_args = json.loads(parts[3]) if len(parts) > 3 else {}
-                except json.JSONDecodeError:
-                    tc_args = {}
-                tool_calls_list.append({
-                    "id": tc_id,
-                    "name": tc_name,
-                    "arguments": tc_args,
-                })
-            elif event.startswith("tool_result:"):
-                parts = event.split(":", 4)
-                tc_id = parts[1] if len(parts) > 1 else ""
-                status = parts[3] if len(parts) > 3 else ""
-                try:
-                    preview = json.loads(parts[4]) if len(parts) > 4 else ""
-                except json.JSONDecodeError:
-                    preview = parts[4] if len(parts) > 4 else ""
-                tool_results_map[tc_id] = {"status": status, "preview": preview}
-                # Merge results into tool_calls and persist incrementally
-                for tc in tool_calls_list:
-                    if tc["id"] in tool_results_map:
-                        tc["result"] = tool_results_map[tc["id"]]
-                await _save_tool_calls_incremental()
-            elif event.startswith("file_changes:"):
-                incoming = json.loads(event[len("file_changes:"):])
-                file_changes_list[:] = _merge_file_changes(file_changes_list, incoming)
+    # Shared event collection and persistence; REST only owns retry/response handling.
+    turn = ChatTurnRecorder(session.id, user.id)
+    tool_calls_list = turn.tool_calls
+    file_changes_list = turn.file_changes
+    reasoning_chunks = turn.reasoning
 
     try:
-        async for event in agent_loop.run(
+        await turn.consume(agent_loop.run(
             user_input=user_content,
             user_id=user.id,
             session_id=session.id,
             conversation_history=processed_history,
             tools=tools_schema,
-        ):
-            await _handle_event(event)
+        ), db)
     except Exception as e:
         if is_context_overflow_error(e):
             logger.warning(f"Context overflow in REST chat, emergency compress: {e}")
             emergency_history = emergency_compress(prepared_messages, level=1)
             emergency_hist = [m for m in emergency_history if m.role != "system" and not (m.role == "user" and (m.content == user_message_for_llm or m.content == user_content))]
-            async for event in agent_loop.run(
+            await turn.consume(agent_loop.run(
                 user_input=user_content,
                 user_id=user.id,
                 session_id=session.id,
                 conversation_history=emergency_hist,
                 tools=tools_schema,
-            ):
-                await _handle_event(event)
+            ), db)
         else:
             raise
 
-    # Save assistant message — update incremental row or create new
-    if incremental_msg_id is not None:
-        await db.execute(
-            sql_update(Message)
-            .where(Message.id == incremental_msg_id)
-            .values(
-                content=final_output,
-                tool_calls=tool_calls_list if tool_calls_list else None,
-                file_changes=file_changes_list or None,
-                reasoning=reasoning_chunks or None,
-            )
-        )
-        await db.flush()
-        msg_id = incremental_msg_id
-    else:
-        assistant_msg = Message(
-            session_id=session.id,
-            user_id=user.id,
-            role="assistant",
-            content=final_output,
-            tool_calls=tool_calls_list if tool_calls_list else None,
-            file_changes=file_changes_list or None,
-            reasoning=reasoning_chunks or None,
-        )
-        db.add(assistant_msg)
-        await db.flush()
-        msg_id = assistant_msg.id
+    final_output = turn.content
+    msg_id = await turn.save(db, commit=False, force=True)
 
     # Fire-and-forget memory extraction
     _fire_memory_extraction(
@@ -1224,13 +1100,12 @@ async def chat_stream(
                     history_count=len(processed_history),
                 )
 
+                turn = ChatTurnRecorder(session_id, user.id)
                 final_output = ""
-                tool_calls_list: list[dict] = []
-                saved_flag = {"done": False}  # guards against double-save on rescue
-                incremental_msg_id: UUID | None = None  # track message for incremental updates
-                tool_results_map: dict[str, dict] = {}  # tool_call_id -> result info
-                file_changes_list: list[dict] = []
-                reasoning_chunks: list[dict] = []
+                tool_calls_list = turn.tool_calls
+                saved_flag = {"done": False}
+                file_changes_list = turn.file_changes
+                reasoning_chunks = turn.reasoning
                 # Track delegation details for persistence
                 delegations_map: dict[str, dict] = {}  # tool_call_id -> delegation data
                 # Track confirmation cards (AskUserQuestion) in arrival order for persistence
@@ -1326,14 +1201,12 @@ async def chat_stream(
                             }
 
                 def _merge_tool_metadata() -> None:
-                    """Fold results/delegation/confirmation data into tool_calls_list.
+                    """Fold transport-specific delegation/confirmation data into tool calls.
 
                     Idempotent — safe to call from the normal completion path and
                     again from an interruption handler.
                     """
                     for tc in tool_calls_list:
-                        if tc["id"] in tool_results_map:
-                            tc["result"] = tool_results_map[tc["id"]]
                         if tc["name"] == "delegate_task" and tc["id"] in delegations_map:
                             tc["delegation"] = delegations_map[tc["id"]]
                     ask_tcs = [tc for tc in tool_calls_list if tc["name"] == "AskUserQuestion"]
@@ -1344,16 +1217,8 @@ async def chat_stream(
                     """Persist whatever tool calls accumulated before an interruption."""
                     if saved_flag["done"]:
                         return
-                    if incremental_msg_id is not None:
-                        return  # already incrementally persisted in the loop
                     _merge_tool_metadata()
-                    await _persist_assistant_message(
-                        session_id,
-                        user.id,
-                        final_output,
-                        tool_calls_list,
-                        reasoning_chunks,
-                    )
+                    await turn.rescue()
 
                 async for event in agent_loop.run(
                     user_input=user_content,
@@ -1373,154 +1238,20 @@ async def chat_stream(
                         _track_delegation_event(del_event)
                         yield _sse_event(del_event)
 
-                    if isinstance(event, str):
-                        if event.startswith("confirmation_flow:"):
-                            # AskUserQuestion 内部信号：确认请求已推入 event_queue，
-                            # 上面的 drain 已经将其发送给前端。
-                            # 不转发此事件，agent_loop 会 resume 等待用户响应。
-                            logger.info(
-                                "stream_confirmation_flow",
-                                session_id=str(session_id),
-                                detail=event,
-                            )
-                            continue
-                        elif event.startswith("ui_action:"):
-                            # ui_* 前端工具内部信号：ui_action_required 已在上面
-                            # 的 drain 中发送给前端。waiting 不转发；heartbeat
-                            # 转发为 keepalive，防止长等待期间连接被掐断。
-                            if event.endswith(":heartbeat"):
-                                yield _sse_event({"type": "ui_action_heartbeat"})
-                            continue
+                    _merge_tool_metadata()
+                    payload = await turn.process(event, gen_db)
+                    final_output = turn.content
+                    if payload is not None:
+                        yield _sse_event(payload)
+                    elif isinstance(event, str):
+                        # Interactive-only control events remain the transport's responsibility.
+                        if event.startswith("ui_action:") and event.endswith(":heartbeat"):
+                            yield _sse_event({"type": "ui_action_heartbeat"})
                         elif event.startswith("delegation_heartbeat:"):
-                            # Heartbeat signal during delegation: drain
-                            # event_queue (handled at top of loop). Forward
-                            # a keepalive so frontend knows delegation is alive.
-                            yield _sse_event({
-                                "type": "delegation_heartbeat",
-                            })
-                        elif event.startswith("reasoning_delta:"):
-                            yield _sse_event({
-                                "type": "thinking",
-                                "content": event[len("reasoning_delta:"):],
-                            })
-                        elif event.startswith("reasoning:"):
-                            # Persist the complete block; deltas were sent live.
-                            content = event[len("reasoning:"):]
-                            _append_reasoning_chunk(reasoning_chunks, content)
-                            logger.debug(
-                                "stream_reasoning",
-                                session_id=str(session_id),
-                                length=len(content),
-                            )
-                        elif event.startswith("text_delta:"):
-                            # Final answer text streaming
-                            delta = event[len("text_delta:"):]
-                            final_output += delta
-                            yield _sse_event({
-                                "type": "text_delta",
-                                "content": delta,
-                            })
-                        elif event.startswith("tool_call:"):
-                            # Format: tool_call:id:name:args_json
-                            parts = event.split(":", 3)
-                            tc_id = parts[1] if len(parts) > 1 else ""
-                            tc_name = parts[2] if len(parts) > 2 else ""
-                            try:
-                                tc_args = json.loads(parts[3]) if len(parts) > 3 else {}
-                            except json.JSONDecodeError:
-                                tc_args = {}
-                            logger.info(
-                                "stream_tool_call",
-                                session_id=str(session_id),
-                                tool_call_id=tc_id,
-                                tool_name=tc_name,
-                                args_preview=str(tc_args)[:200],
-                            )
-                            tool_calls_list.append({
-                                "id": tc_id,
-                                "name": tc_name,
-                                "arguments": tc_args,
-                            })
-                            yield _sse_event({
-                                "type": "tool_call",
-                                "id": tc_id,
-                                "name": tc_name,
-                                "arguments": tc_args,
-                            })
-                        elif event.startswith("tool_result:"):
-                            # Format: tool_result:id:name:status:output_json
-                            parts = event.split(":", 4)
-                            tc_id = parts[1] if len(parts) > 1 else ""
-                            tc_name = parts[2] if len(parts) > 2 else ""
-                            status = parts[3] if len(parts) > 3 else ""
-                            try:
-                                preview = json.loads(parts[4]) if len(parts) > 4 else ""
-                            except json.JSONDecodeError:
-                                preview = parts[4] if len(parts) > 4 else ""
-                            logger.info(
-                                "stream_tool_result",
-                                session_id=str(session_id),
-                                tool_call_id=tc_id,
-                                tool_name=tc_name,
-                                status=status,
-                                preview_length=len(str(preview)),
-                            )
-                            tool_results_map[tc_id] = {
-                                "status": status,
-                                "preview": preview,
-                            }
-                            yield _sse_event({
-                                "type": "tool_result",
-                                "tool_call_id": tc_id,
-                                "name": tc_name,
-                                "status": status,
-                                "preview": preview,
-                            })
-                            # Incrementally persist tool calls so they survive process crashes
-                            _merge_tool_metadata()
-                            if incremental_msg_id is None:
-                                inc_msg = Message(
-                                    session_id=session_id,
-                                    user_id=user.id,
-                                    role="assistant",
-                                    content="",
-                                    tool_calls=list(tool_calls_list),
-                                    reasoning=list(reasoning_chunks) or None,
-                                )
-                                gen_db.add(inc_msg)
-                                await gen_db.flush()
-                                incremental_msg_id = inc_msg.id
-                            else:
-                                await gen_db.execute(
-                                    sql_update(Message)
-                                    .where(Message.id == incremental_msg_id)
-                                    .values(
-                                        tool_calls=list(tool_calls_list),
-                                        reasoning=list(reasoning_chunks) or None,
-                                    )
-                                )
-                            await gen_db.commit()
-                        elif event.startswith("file_changes:"):
-                            try:
-                                incoming = json.loads(event[len("file_changes:"):])
-                            except json.JSONDecodeError:
-                                logger.warning("stream_file_changes_invalid", event=event[:500])
-                                continue
-                            file_changes_list[:] = _merge_file_changes(file_changes_list, incoming)
-                            yield _sse_event({"type": "file_changes", "file_changes": incoming})
-                            if incremental_msg_id is not None:
-                                await gen_db.execute(
-                                    sql_update(Message)
-                                    .where(Message.id == incremental_msg_id)
-                                    .values(file_changes=file_changes_list or None)
-                                )
-                                await gen_db.commit()
+                            yield _sse_event({"type": "delegation_heartbeat"})
                     elif isinstance(event, AgentStep):
                         iteration_count += 1
                         if event.done:
-                            # If no text_delta events were sent, use final_output
-                            if not final_output:
-                                final_output = event.final_output
                             elapsed = (time.monotonic() - t_start) * 1000
                             logger.info(
                                 "stream_agent_done",
@@ -1556,32 +1287,7 @@ async def chat_stream(
                     content_length=len(final_output),
                     tool_calls_count=len(tool_calls_list),
                 )
-                if incremental_msg_id is not None:
-                    await gen_db.execute(
-                        sql_update(Message)
-                        .where(Message.id == incremental_msg_id)
-                        .values(
-                            content=final_output,
-                            tool_calls=tool_calls_list if tool_calls_list else None,
-                            file_changes=file_changes_list or None,
-                            reasoning=reasoning_chunks or None,
-                        )
-                    )
-                    await gen_db.commit()
-                    msg_id = str(incremental_msg_id)
-                else:
-                    assistant_msg = Message(
-                        session_id=session_id,
-                        user_id=user.id,
-                        role="assistant",
-                        content=final_output,
-                        tool_calls=tool_calls_list if tool_calls_list else None,
-                        file_changes=file_changes_list or None,
-                        reasoning=reasoning_chunks or None,
-                    )
-                    gen_db.add(assistant_msg)
-                    await gen_db.commit()
-                    msg_id = str(assistant_msg.id)
+                msg_id = str(await turn.save(gen_db, force=True))
                 saved_flag["done"] = True
 
                 # Fire-and-forget memory extraction
@@ -1869,10 +1575,8 @@ async def chat_websocket(
                     if m.role != "system" and not (m.role == "user" and m.content == user_message)
                 ]
 
-                # Run agent loop, streaming events via WebSocket
-                final_output = ""
-                tool_calls_list: list[dict] = []
-                reasoning_chunks: list[dict] = []
+                # Only delivery differs from SSE and background execution.
+                turn = ChatTurnRecorder(session_id, user_id)
                 event_count = 0
 
                 try:
@@ -1884,55 +1588,18 @@ async def chat_websocket(
                         tools=tools_schema,
                     ):
                         event_count += 1
-                        if isinstance(event, str):
-                            if event.startswith("reasoning:"):
-                                content = event[len("reasoning:") :]
-                                _append_reasoning_chunk(reasoning_chunks, content)
-                            elif event.startswith("reasoning_delta:"):
-                                content = event[len("reasoning_delta:"):]
-                                await websocket.send_json(
-                                    {
-                                        "type": "thinking",
-                                        "content": content,
-                                    }
-                                )
-                            elif event.startswith("tool_result:"):
-                                parts = event.split(":", 3)
-                                await websocket.send_json(
-                                    {
-                                        "type": "tool_result",
-                                        "tool_call_id": parts[1] if len(parts) > 1 else "",
-                                        "status": parts[2] if len(parts) > 2 else "",
-                                        "preview": parts[3] if len(parts) > 3 else "",
-                                    }
-                                )
-                        elif isinstance(event, AgentStep):
-                            if event.tool_calls:
-                                for tc in event.tool_calls:
-                                    tool_calls_list.append(
-                                        {
-                                            "id": tc.id,
-                                            "name": tc.name,
-                                            "arguments": tc.arguments,
-                                        }
-                                    )
-                                    await websocket.send_json(
-                                        {
-                                            "type": "tool_call",
-                                            "id": tc.id,
-                                            "name": tc.name,
-                                            "arguments": tc.arguments,
-                                        }
-                                    )
-                            if event.done:
-                                final_output = event.final_output
-                                logger.info(f"Agent loop 完成，输出长度: {len(final_output)}")
+                        payload = await turn.process(event, db)
+                        if payload is not None:
+                            await websocket.send_json(payload)
 
                     logger.info(f"Agent loop 结束，共处理 {event_count} 个事件")
                 except Exception as e:
                     logger.error(f"Agent loop 执行出错: {e}", exc_info=True)
+                    await turn.save(db)
                     await websocket.send_json({"type": "error", "message": f"处理消息时出错: {e!s}"})
                     continue
+
+                final_output = turn.content
 
                 # Send final text output
                 await websocket.send_json(
@@ -1943,17 +1610,7 @@ async def chat_websocket(
                 )
                 logger.info("已发送最终文本")
 
-                # Save assistant message
-                assistant_msg = Message(
-                    session_id=session_id,
-                    user_id=user_id,
-                    role="assistant",
-                    content=final_output,
-                    tool_calls=tool_calls_list if tool_calls_list else None,
-                    reasoning=reasoning_chunks or None,
-                )
-                db.add(assistant_msg)
-                await db.commit()
+                await turn.save(db, force=True)
                 logger.info("助手消息已保存")
 
                 # Fire-and-forget memory extraction

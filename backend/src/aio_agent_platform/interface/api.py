@@ -380,7 +380,8 @@ async def lifespan(app: FastAPI):
             load_agent,
             refresh_mcp_tools_for_agent,
         )
-        from aio_agent_platform.db.models import CronJobRun, User
+        from aio_agent_platform.core.chat_history import ChatTurnRecorder
+        from aio_agent_platform.db.models import CronJobRun, Message, User
         from aio_agent_platform.db.models import Session as ChatSession
 
         started_at = datetime.now(UTC)
@@ -484,6 +485,14 @@ async def lifespan(app: FastAPI):
         )
         db.add(new_session)
         await db.flush()
+        run = await db.get(CronJobRun, run_id)
+        if run:
+            run.session_id = new_session.id
+        db.add(Message(
+            session_id=new_session.id, user_id=job.user_id,
+            role="user", content=job.message,
+        ))
+        await db.commit()
 
         # Prepare context and run
         from aio_agent_platform.core.context import prepare_context
@@ -496,7 +505,7 @@ async def lifespan(app: FastAPI):
         )
         conversation_history = [
             m for m in prepared_messages
-            if m.role != "system"
+            if m.role != "system" and not (m.role == "user" and m.content == job.message)
         ]
 
         import structlog
@@ -518,17 +527,17 @@ async def lifespan(app: FastAPI):
             notify_token = current_cron_notify_ctx.set(notify_ctx)
 
         try:
-            async for event in loop.run(
-                user_input=job.message,
-                user_id=job.user_id,
-                session_id=new_session.id,
-                conversation_history=conversation_history,
-                tools=tools_schema,
-            ):
-                if isinstance(event, str):
-                    continue
-                elif getattr(event, 'done', False):
-                    final_output = getattr(event, 'final_output', '') or ''
+            turn = ChatTurnRecorder(new_session.id, job.user_id)
+            final_output = await turn.consume(
+                loop.run(
+                    user_input=job.message,
+                    user_id=job.user_id,
+                    session_id=new_session.id,
+                    conversation_history=conversation_history,
+                    tools=tools_schema,
+                ),
+                db,
+            )
         except Exception as exc:
             error_msg = str(exc) or "agent loop failed"
             log.exception(
@@ -538,17 +547,6 @@ async def lifespan(app: FastAPI):
         finally:
             if notify_token is not None:
                 current_cron_notify_ctx.reset(notify_token)
-
-        # Save assistant message + finalize run log record
-        if final_output:
-            from aio_agent_platform.db.models import Message
-            msg = Message(
-                session_id=new_session.id,
-                user_id=job.user_id,
-                role="assistant",
-                content=final_output,
-            )
-            db.add(msg)
 
         await _finalize(
             "success" if final_output else "failed",

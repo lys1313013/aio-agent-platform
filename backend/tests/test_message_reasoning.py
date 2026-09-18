@@ -1,6 +1,6 @@
 """Regression coverage for persisted assistant reasoning."""
 
-from aio_agent_platform.interface.routes.chat import _append_reasoning_chunk
+from aio_agent_platform.core.chat_history import _append_reasoning_chunk
 
 
 def test_reasoning_chunks_keep_iteration_order() -> None:
