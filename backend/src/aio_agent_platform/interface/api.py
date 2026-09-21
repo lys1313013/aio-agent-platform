@@ -110,16 +110,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         import structlog
         structlog.get_logger().warning(
-            "object_storage_init_failed (sandbox will run without file sync)",
+            "object_storage_init_failed (new sandbox workspaces unavailable; existing files retained)",
             error=str(e),
         )
 
     # 3. Sandbox manager (stateless — workspace files via MinIO)
     sandbox_mgr = SandboxManager(workspace_storage=workspace_storage)
 
-    # 4. Start periodic sync (background task)
-    if workspace_storage:
-        await sandbox_mgr.start_periodic_sync()
+    # 4. Recover sandboxes and start idle cleanup, even without object storage.
+    await sandbox_mgr.start_periodic_sync()
     _mark("object_storage+sandbox")
 
     # 5. Tool registry + executor

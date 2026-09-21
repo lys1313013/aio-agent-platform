@@ -71,3 +71,14 @@ async def test_storage_failure_does_not_report_success_or_update_manifest(failed
     assert objects[key] == b"abc"
     assert "workspaces/w/meta.json" not in objects
     storage.delete.assert_not_called()
+
+
+async def test_tar_failure_never_uploads_or_deletes_stored_files():
+    workspace, storage, manager, objects, key = sync_fixture(b'original', b'changed')
+    manager.execute.return_value = SimpleNamespace(exit_code=2, stderr='tar failed')
+    stats = await workspace.extract_and_sync(manager, object(), 'w', 'default')
+    assert stats.errors == ['tar create failed: tar failed']
+    assert '; echo $?' not in manager.execute.call_args.args[1]
+    storage.put.assert_not_called()
+    storage.delete.assert_not_called()
+    assert objects[key] == b'original'

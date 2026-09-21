@@ -37,6 +37,8 @@ services:
       SANDBOX_CPU_LIMIT: ${SANDBOX_CPU_LIMIT:-1.0}
       SANDBOX_MEMORY_LIMIT: ${SANDBOX_MEMORY_LIMIT:-512m}
       SANDBOX_SESSION_TTL: ${SANDBOX_SESSION_TTL:-3600}
+      SANDBOX_NAMESPACE: ${SANDBOX_NAMESPACE:-${COMPOSE_PROJECT_NAME:-aio-agent-platform}}
+      SANDBOX_LOCK_DIR: /var/lib/aio-sandbox-locks
       SANDBOX_COMMAND_TIMEOUT: ${SANDBOX_COMMAND_TIMEOUT:-60}
       SANDBOX_WORKSPACE_QUOTA_MB: ${SANDBOX_WORKSPACE_QUOTA_MB:-500}
       SANDBOX_NETWORK_DISABLED: ${SANDBOX_NETWORK_DISABLED:-true}
@@ -56,6 +58,7 @@ services:
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://localhost:3000}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - sandbox-locks:/var/lib/aio-sandbox-locks
     depends_on:
       redis:
         condition: service_healthy
@@ -97,6 +100,9 @@ services:
       retries: 5
     networks:
       - app-network
+
+volumes:
+  sandbox-locks:
 
 networks:
   app-network:

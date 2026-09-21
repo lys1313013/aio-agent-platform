@@ -138,12 +138,14 @@ class SandboxSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SANDBOX_")
 
     image: str = Field(default="aio-agent-platform/sandbox:latest")
+    namespace: str = Field(default="aio-agent-platform", min_length=1)
+    lock_dir: str = Field(default="/tmp/aio-sandbox-locks", min_length=1)
     cpu_limit: float = Field(default=1.0, ge=0.1, le=32)
     memory_limit: str = Field(default="512m")
     tmpfs_size: str = Field(default="512m")
     network_disabled: bool = Field(default=True, description="Disable outbound network from sandbox")
     command_timeout: int = Field(default=60, ge=5, le=600)
-    session_ttl: int = Field(default=3600, ge=60, le=86400)
+    session_ttl: int = Field(default=3600, ge=60, le=86400, description="Idle timeout in seconds")
     workspace_quota_mb: int = Field(default=500, ge=10, le=10240)
     max_concurrent: int = Field(default=10, ge=1, le=100)
 

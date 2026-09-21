@@ -239,7 +239,7 @@ class WorkspaceStorage:
             # 1. Create tar.gz inside container from the workspace directory
             result = await sandbox_mgr.execute(
                 sandbox,
-                f"tar czf /tmp/_workspace_sync.tar.gz -C {source_dir} . 2>/dev/null; echo $?",
+                f"tar czf /tmp/_workspace_sync.tar.gz -C {shlex.quote(source_dir)} . 2>/dev/null",
             )
             # tar exit code 1 means "files changed during read" — still OK
             # exit code 2 means actual error

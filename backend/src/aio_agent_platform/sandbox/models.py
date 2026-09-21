@@ -6,10 +6,16 @@ via WorkspaceStorage on container creation and destruction.
 """
 
 import asyncio
-from dataclasses import dataclass
-from datetime import datetime
+import fcntl
+import hashlib
+import json
+import os
+import shlex
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import docker
 import structlog
@@ -45,10 +51,13 @@ class Sandbox:
     workspace_slug: str
     created_at: datetime
 
+    last_used_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    workspaces: dict[str, str] = field(default_factory=dict)
+
     def is_expired(self) -> bool:
         """Check if sandbox has exceeded TTL."""
         ttl_seconds = settings.sandbox.session_ttl
-        return (datetime.utcnow() - self.created_at).total_seconds() > ttl_seconds
+        return (datetime.now(UTC) - self.last_used_at).total_seconds() > ttl_seconds
 
 
 class SandboxManager:
@@ -69,6 +78,162 @@ class SandboxManager:
         self._active: dict[str, Sandbox] = {}
         self._workspace_storage = workspace_storage
         self._sync_task: asyncio.Task | None = None
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._owners: dict[str, asyncio.Task] = {}
+        self._namespace = settings.sandbox.namespace
+        self._lock_dir = Path(settings.sandbox.lock_dir)
+        self._lock_dir.mkdir(parents=True, exist_ok=True)
+
+    def _name(self, user_id: str) -> str:
+        digest = hashlib.sha256(f"{self._namespace}:{user_id}".encode()).hexdigest()[:32]
+        return f"aio-sandbox-{digest}"
+
+    def _lock_path(self, user_id: str) -> Path:
+        return self._lock_dir / f"{self._name(user_id)}.lock"
+
+    @asynccontextmanager
+    async def _user_lock(self, user_id: str, *, wait: bool = True):
+        # Storage sync calls execute() recursively in the SAME task. Child tasks
+        # must acquire their own lock, even if they inherited context variables.
+        task = asyncio.current_task()
+        if self._owners.get(user_id) is task:
+            yield True
+            return
+        lock = self._locks.setdefault(user_id, asyncio.Lock())
+        if not wait and lock.locked():
+            yield False
+            return
+        async with lock:
+            # flock also serializes local backend workers/managers and releases
+            # automatically on process death. Never unlink these lock files.
+            with self._lock_path(user_id).open("a+b") as handle:
+                acquired = False
+                try:
+                    while not acquired:
+                        try:
+                            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            acquired = True
+                        except BlockingIOError:
+                            if not wait:
+                                yield False
+                                return
+                            await asyncio.sleep(0.05)
+                    self._owners[user_id] = task
+                    yield True
+                finally:
+                    if acquired:
+                        self._owners.pop(user_id, None)
+                        fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def _touch(self, sandbox: Sandbox) -> None:
+        sandbox.last_used_at = datetime.now(UTC)
+        os.utime(self._lock_path(sandbox.user_id), None)
+
+    def _expired(self, sandbox: Sandbox) -> bool:
+        # Other workers update this timestamp under the same file lock.
+        last_used = datetime.fromtimestamp(self._lock_path(sandbox.user_id).stat().st_mtime, UTC)
+        sandbox.last_used_at = max(sandbox.last_used_at, last_used)
+        return sandbox.is_expired()
+
+    @staticmethod
+    async def _finish_task(task):
+        # A shutdown may cancel the caller more than once. The Docker thread
+        # still owns the operation until it finishes.
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        return task.result()
+
+    @staticmethod
+    async def _docker_call(fn, *args, **kwargs):
+        # Cancelling to_thread does not stop its Docker operation. Keep the lock
+        # until the actual operation finishes, including during shutdown.
+        task = asyncio.create_task(asyncio.to_thread(fn, *args, **kwargs))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                await SandboxManager._finish_task(task)
+            except Exception:
+                pass
+            raise
+
+    async def _container(self, container_id: str):
+        try:
+            return await self._docker_call(self._client.containers.get, container_id)
+        except NotFound:
+            return None
+
+    def _fingerprint(self) -> str:
+        config = {
+            key: getattr(settings.sandbox, key)
+            for key in (
+                "image",
+                "cpu_limit",
+                "memory_limit",
+                "tmpfs_size",
+                "network_disabled",
+                "workspace_quota_mb",
+            )
+        }
+        return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+
+    def _from_container(self, container) -> Sandbox:
+        labels = container.labels
+        return Sandbox(
+            container_id=container.id,
+            user_id=labels["aio.user_id"],
+            session_id=labels.get("aio.session_id", ""),
+            workspace_id=labels["aio.workspace_id"],
+            workspace_slug=labels["aio.workspace_slug"],
+            created_at=datetime.fromisoformat(container.attrs["Created"].replace("Z", "+00:00")),
+        )
+
+    async def _discover(self, user_id: str):
+        containers = await self._docker_call(
+            self._client.containers.list,
+            all=True,
+            filters={
+                "label": [
+                    f"aio.namespace={self._namespace}",
+                    f"aio.user_id={user_id}",
+                    "aio.ephemeral=true",
+                ]
+            },
+        )
+        running = []
+        for container in containers:
+            if container.status in {"created", "exited", "dead"}:
+                # No force: a concurrent start must not be killed.
+                try:
+                    await self._docker_call(container.remove)
+                except NotFound:
+                    pass
+            else:
+                running.append(container)
+        if len(running) > 1:
+            raise RuntimeError(
+                "Multiple running sandboxes for user; preserve files and resolve duplicates first"
+            )
+        if running:
+            container = running[0]
+            if (
+                container.status != "running"
+                or container.labels.get("aio.config") != self._fingerprint()
+            ):
+                raise RuntimeError(
+                    "Existing sandbox is not ready or its configuration changed; preserved for recovery"
+                )
+            if not container.labels.get("aio.workspace_slug"):
+                raise RuntimeError(
+                    "Existing sandbox lacks workspace metadata; preserved for recovery"
+                )
+            sandbox = self._from_container(container)
+            await self._read_workspaces(sandbox)
+            return sandbox
+        return None
 
     def _key(self, user_id: str) -> str:
         return f"user:{user_id}"
@@ -88,19 +253,39 @@ class SandboxManager:
             workspace_slug: Directory name in sandbox (e.g., "default").
                            Files are stored in /workspace/{workspace_slug}/.
         """
-        key = self._key(user_id)
+        async with self._user_lock(user_id):
+            key = self._key(user_id)
+            sandbox = self._active.get(key)
+            if sandbox:
+                container = await self._container(sandbox.container_id)
+                if container and container.status == "running":
+                    await self._ensure_workspace(sandbox, workspace_id, workspace_slug)
+                    self._touch(sandbox)
+                    return sandbox
+                self._active.pop(key, None)
 
-        # Reuse existing sandbox (user-level)
-        if key in self._active:
-            sandbox = self._active[key]
-            if not sandbox.is_expired():
-                return sandbox
-            await self.destroy(sandbox, sync=True)
-
-        # Create new sandbox
-        sandbox = await self._create(user_id, session_id, workspace_id, workspace_slug)
-        self._active[key] = sandbox
-        return sandbox
+            sandbox = await self._discover(user_id)
+            if sandbox is None:
+                # Legacy containers have no namespace/slug. Do not create another
+                # alongside one that may contain unsynchronized user files.
+                legacy = await self._docker_call(
+                    self._client.containers.list,
+                    filters={"label": [f"aio.user_id={user_id}", "aio.ephemeral=true"]},
+                )
+                if any(
+                    not c.labels.get("aio.namespace")
+                    and c.labels.get("com.docker.compose.project") == self._namespace
+                    for c in legacy
+                ):
+                    raise RuntimeError(
+                        "Running legacy sandbox found; synchronize its files before upgrading"
+                    )
+                sandbox = await self._create(user_id, session_id, workspace_id, workspace_slug)
+            else:
+                await self._ensure_workspace(sandbox, workspace_id, workspace_slug)
+            self._active[key] = sandbox
+            self._touch(sandbox)
+            return sandbox
 
     def get_active_for_user(self, user_id: str) -> Sandbox | None:
         """Find a live (non-expired) sandbox for the given user."""
@@ -117,63 +302,116 @@ class SandboxManager:
         timeout: int | None = None,
     ) -> ExecResult:
         """Execute a command in the sandbox container."""
-        timeout = timeout or settings.sandbox.command_timeout
-        container = self._client.containers.get(sandbox.container_id)
+        internal = self._owners.get(sandbox.user_id) is asyncio.current_task()
+        async with self._user_lock(sandbox.user_id):
+            try:
+                container = await self._container(sandbox.container_id)
+                if container is None or container.status != "running":
+                    raise RuntimeError(
+                        "Sandbox is no longer running; obtain a new sandbox before executing"
+                    )
+                exec_result = await self._docker_call(
+                    container.exec_run,
+                    ["bash", "-c", command],
+                    workdir="/workspace",
+                    user="sandbox",
+                    stdout=True,
+                    stderr=True,
+                    demux=True,
+                )
+                stdout_b, stderr_b = exec_result.output
+                return ExecResult(
+                    stdout=(stdout_b or b"").decode("utf-8", errors="replace"),
+                    stderr=(stderr_b or b"").decode("utf-8", errors="replace"),
+                    exit_code=exec_result.exit_code,
+                )
+            finally:
+                if not internal:
+                    self._touch(sandbox)
 
-        # Run in thread pool since docker SDK is sync
-        loop = asyncio.get_event_loop()
-        exec_result = await loop.run_in_executor(
-            None,
-            lambda: container.exec_run(
-                ["bash", "-c", command],
-                workdir="/workspace",
-                user="sandbox",
-                stdout=True,
-                stderr=True,
-                demux=True,
-            ),
+    async def _read_workspaces(self, sandbox: Sandbox) -> None:
+        # Storage IDs must never come from files writable by sandbox commands.
+        path = self._lock_path(sandbox.user_id).with_suffix(".json")
+        if not path.exists():
+            raise RuntimeError("Sandbox initialization is incomplete; preserved for recovery")
+        state = json.loads(path.read_text())
+        if state.get("container_id") != sandbox.container_id:
+            raise RuntimeError("Sandbox initialization is incomplete; preserved for recovery")
+        workspaces = state.get("workspaces")
+        if (
+            not isinstance(workspaces, dict)
+            or not workspaces
+            or not all(
+                isinstance(key, str) and isinstance(value, str) and value
+                for key, value in workspaces.items()
+            )
+        ):
+            raise RuntimeError("Invalid sandbox workspace metadata; preserved for recovery")
+        sandbox.workspaces = workspaces
+
+    async def _ensure_workspace(
+        self, sandbox: Sandbox, workspace_id: str, workspace_slug: str
+    ) -> None:
+        await self._read_workspaces(sandbox)
+        if workspace_id in sandbox.workspaces:
+            if sandbox.workspaces[workspace_id] != workspace_slug:
+                raise RuntimeError("Workspace slug changed; synchronize the existing sandbox first")
+            return
+        if workspace_slug in sandbox.workspaces.values():
+            raise RuntimeError("Workspace slug already belongs to a different workspace")
+        await self._inject_workspace(sandbox, workspace_id, workspace_slug)
+
+    async def _inject_workspace(
+        self, sandbox: Sandbox, workspace_id: str, workspace_slug: str
+    ) -> None:
+        if self._workspace_storage is None:
+            raise RuntimeError("Object storage unavailable; cannot safely initialize workspace")
+        if not workspace_slug or workspace_slug in {".", ".."} or "/" in workspace_slug:
+            raise ValueError("Invalid workspace slug")
+        result = await self.execute(
+            sandbox, f"mkdir -p {shlex.quote('/workspace/' + workspace_slug)}"
         )
-        stdout_b, stderr_b = exec_result.output
-        return ExecResult(
-            stdout=(stdout_b or b"").decode("utf-8", errors="replace"),
-            stderr=(stderr_b or b"").decode("utf-8", errors="replace"),
-            exit_code=exec_result.exit_code,
+        if result.exit_code:
+            raise RuntimeError("Could not initialize sandbox workspace directory")
+        stats = await self._workspace_storage.inject_files(
+            self, sandbox, workspace_id, workspace_slug
         )
+        if stats.errors:
+            raise RuntimeError("Sandbox initialization failed: " + "; ".join(stats.errors))
+        workspaces = {**sandbox.workspaces, workspace_id: workspace_slug}
+        path = self._lock_path(sandbox.user_id).with_suffix(".json")
+        pending = path.with_suffix(".new")
+        pending.write_text(
+            json.dumps({"container_id": sandbox.container_id, "workspaces": workspaces})
+        )
+        pending.replace(path)
+        sandbox.workspaces = workspaces
+
+    async def _sync(self, sandbox: Sandbox) -> None:
+        if self._workspace_storage is None:
+            raise RuntimeError("Object storage unavailable; retaining sandbox files")
+        await self._read_workspaces(sandbox)
+        for workspace_id, workspace_slug in sandbox.workspaces.items():
+            stats = await self._workspace_storage.extract_and_sync(
+                self, sandbox, workspace_id, workspace_slug
+            )
+            if stats.errors:
+                raise RuntimeError("Sandbox file sync failed: " + "; ".join(stats.errors))
 
     async def destroy(self, sandbox: Sandbox, sync: bool = True) -> None:
-        """
-        Destroy a sandbox container.
-
-        If sync=True (default), extracts workspace files to MinIO before destruction.
-        """
-        # Extract files before destroying container
-        if sync and self._workspace_storage:
-            try:
-                await self._workspace_storage.extract_and_sync(
-                    self, sandbox, sandbox.workspace_id, sandbox.workspace_slug
-                )
-            except Exception as e:
-                logger.warning(
-                    "sandbox_destroy_sync_failed",
-                    session_id=sandbox.session_id,
-                    workspace_id=sandbox.workspace_id,
-                    error=str(e),
-                )
-
-        key = self._key(sandbox.user_id)
-        self._active.pop(key, None)
-
-        try:
-            container = self._client.containers.get(sandbox.container_id)
-            container.stop(timeout=5)
-            container.remove(force=True)
-            logger.info(
-                "sandbox_destroyed",
-                container_id=sandbox.container_id[:12],
-                session_id=sandbox.session_id,
-            )
-        except NotFound:
-            pass  # Already gone
+        """Remove only after successful sync; keep failed sandboxes recoverable."""
+        async with self._user_lock(sandbox.user_id):
+            container = await self._container(sandbox.container_id)
+            if container:
+                if container.status == "running":
+                    if sync:
+                        await self._sync(sandbox)
+                    await self._docker_call(container.stop, timeout=5)
+                await self._docker_call(container.remove)
+            key = self._key(sandbox.user_id)
+            if self._active.get(key) is sandbox:
+                self._active.pop(key, None)
+            logger.info("sandbox_destroyed", container_id=sandbox.container_id[:12])
 
     async def destroy_all_for_user(self, user_id: str) -> None:
         """Destroy all active sandboxes for a user."""
@@ -182,16 +420,22 @@ class SandboxManager:
                 await self.destroy(sandbox)
 
     async def cleanup_expired(self) -> int:
-        """Destroy all expired sandboxes. Returns count destroyed."""
+        """Reclaim idle containers, skipping users with an operation in progress."""
         destroyed = 0
-        for _key, sandbox in list(self._active.items()):
-            if sandbox.is_expired():
-                await self.destroy(sandbox)
-                destroyed += 1
+        for sandbox in list(self._active.values()):
+            try:
+                async with self._user_lock(sandbox.user_id, wait=False) as acquired:
+                    if acquired and self._expired(sandbox):
+                        await self.destroy(sandbox)
+                        destroyed += 1
+            except Exception as exc:
+                logger.warning(
+                    "sandbox_cleanup_failed", container_id=sandbox.container_id, error=str(exc)
+                )
         return destroyed
 
     async def shutdown(self) -> None:
-        """Destroy all active sandboxes and stop periodic sync (platform shutdown)."""
+        """Sync and leave containers available for another worker or a restart."""
         if self._sync_task:
             self._sync_task.cancel()
             try:
@@ -199,48 +443,77 @@ class SandboxManager:
             except asyncio.CancelledError:
                 pass
             self._sync_task = None
-
         for sandbox in list(self._active.values()):
-            await self.destroy(sandbox)
-
-    # ---- Periodic Sync ----
+            try:
+                async with self._user_lock(sandbox.user_id):
+                    container = await self._container(sandbox.container_id)
+                    if container and container.status == "running":
+                        await self._sync(sandbox)
+            except Exception as exc:
+                logger.warning(
+                    "sandbox_shutdown_sync_failed",
+                    container_id=sandbox.container_id,
+                    error=str(exc),
+                )
+        self._active.clear()
+        await self._docker_call(self._client.close)
 
     async def start_periodic_sync(self, interval_seconds: int | None = None) -> None:
-        """Start background periodic sync task."""
+        """Recover this deployment's containers and start sync/idle cleanup."""
         if self._sync_task is not None:
-            return  # Already running
+            return
+        await self._recover()
         interval = interval_seconds or settings.storage.sync_interval_seconds
         self._sync_task = asyncio.create_task(self._periodic_sync_loop(interval))
-        logger.info("sandbox_periodic_sync_started", interval_seconds=interval)
+
+    async def _recover(self) -> None:
+        containers = await self._docker_call(
+            self._client.containers.list,
+            all=True,
+            filters={"label": [f"aio.namespace={self._namespace}", "aio.ephemeral=true"]},
+        )
+        for user_id in {c.labels.get("aio.user_id") for c in containers} - {None, ""}:
+            try:
+                async with self._user_lock(user_id, wait=False) as acquired:
+                    if not acquired:
+                        continue
+                    sandbox = await self._discover(user_id)
+                    current = self._active.get(self._key(user_id))
+                    if sandbox and (
+                        current is None or current.container_id != sandbox.container_id
+                    ):
+                        self._active[self._key(user_id)] = sandbox
+                        # Discovery and periodic sync are not user activity.
+                        sandbox.last_used_at = datetime.fromtimestamp(
+                            self._lock_path(user_id).stat().st_mtime, UTC
+                        )
+            except Exception as exc:
+                logger.warning("sandbox_recovery_failed", user_id=user_id, error=str(exc))
 
     async def _periodic_sync_loop(self, interval: int) -> None:
-        """Background loop: sync all active sandboxes every `interval` seconds."""
         while True:
             await asyncio.sleep(interval)
-            for key, sandbox in list(self._active.items()):
-                if self._workspace_storage:
-                    try:
-                        stats = await self._workspace_storage.extract_and_sync(
-                            self, sandbox, sandbox.workspace_id, sandbox.workspace_slug
-                        )
-                        if stats.files_synced > 0:
-                            logger.info(
-                                "sandbox_periodic_sync",
-                                session_id=sandbox.session_id,
-                                files=stats.files_synced,
-                            )
-                    except Exception as e:
-                        logger.warning(
-                            "sandbox_periodic_sync_failed",
-                            key=key,
-                            error=str(e),
-                        )
+            try:
+                # Also recover a container whose creator died before registration.
+                await self._recover()
+                await self.cleanup_expired()
+                for sandbox in list(self._active.values()):
+                    async with self._user_lock(sandbox.user_id, wait=False) as acquired:
+                        if acquired:
+                            try:
+                                await self._sync(sandbox)
+                            except Exception as exc:
+                                logger.warning("sandbox_periodic_sync_failed", error=str(exc))
+            except Exception as exc:
+                logger.warning("sandbox_maintenance_failed", error=str(exc))
 
     # ---- Internal ----
 
-    async def _create(self, user_id: str, session_id: str, workspace_id: str, workspace_slug: str) -> Sandbox:
+    async def _create(
+        self, user_id: str, session_id: str, workspace_id: str, workspace_slug: str
+    ) -> Sandbox:
         """Create a new sandbox container with tmpfs /workspace (no Docker volumes)."""
-        container_name = f"aio-sandbox-{uuid4().hex[:8]}"
+        container_name = self._name(user_id)
 
         # Both /tmp and /workspace are tmpfs — fully ephemeral
         # uid=1000,gid=1000 matches the sandbox user created in the Dockerfile
@@ -249,17 +522,16 @@ class SandboxManager:
             "/workspace": f"size={settings.sandbox.workspace_quota_mb}m,uid=1000,gid=1000",
         }
 
-        loop = asyncio.get_event_loop()
-        container: docker.models.containers.Container = await loop.run_in_executor(
-            None,
-            lambda: self._client.containers.run(
+        # Split create/start so a failed start can still remove its container.
+        create_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._client.containers.create,
                 settings.sandbox.image,
                 "sleep infinity",
-                detach=True,
                 name=container_name,
                 user="sandbox",
                 read_only=True,
-                mounts=[],  # No volume mounts — stateless
+                mounts=[],
                 tmpfs=tmpfs,
                 mem_limit=settings.sandbox.memory_limit,
                 cpu_quota=int(settings.sandbox.cpu_limit * 100_000),
@@ -267,13 +539,26 @@ class SandboxManager:
                 security_opt=["no-new-privileges"],
                 cap_drop=["ALL"],
                 labels={
+                    "aio.namespace": self._namespace,
+                    "aio.config": self._fingerprint(),
                     "aio.user_id": user_id,
                     "aio.session_id": session_id,
                     "aio.workspace_id": workspace_id,
+                    "aio.workspace_slug": workspace_slug,
                     "aio.ephemeral": "true",
                 },
-            ),
+            )
         )
+        try:
+            container = await asyncio.shield(create_task)
+        except asyncio.CancelledError:
+            # The thread may still be creating the container. Wait for its ID.
+            try:
+                container = await self._finish_task(create_task)
+                await self._docker_call(container.remove, force=True)
+            except Exception as exc:
+                logger.warning("sandbox_cancel_cleanup_failed", error=str(exc))
+            raise
 
         sandbox = Sandbox(
             container_id=container.id,
@@ -281,37 +566,15 @@ class SandboxManager:
             session_id=session_id,
             workspace_id=workspace_id,
             workspace_slug=workspace_slug,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
 
-        logger.info(
-            "sandbox_created",
-            container_id=container.id[:12],
-            session_id=session_id,
-            workspace_id=workspace_id,
-            workspace_slug=workspace_slug,
-        )
-
-        # Inject workspace files from MinIO into /workspace/{workspace_slug}/
-        if self._workspace_storage:
-            try:
-                stats = await self._workspace_storage.inject_files(
-                    self, sandbox, workspace_id, workspace_slug
-                )
-                if stats.files_synced > 0:
-                    logger.info(
-                        "sandbox_files_injected",
-                        workspace_id=workspace_id,
-                        workspace_slug=workspace_slug,
-                        files=stats.files_synced,
-                        bytes=stats.bytes_transferred,
-                    )
-            except Exception as e:
-                # Non-fatal: start with empty workspace
-                logger.warning(
-                    "sandbox_inject_files_failed",
-                    workspace_id=workspace_id,
-                    error=str(e),
-                )
-
+        try:
+            await self._docker_call(container.start)
+            await self._inject_workspace(sandbox, workspace_id, workspace_slug)
+        except BaseException:
+            # Never sync a partially initialized workspace back over stored files.
+            await self._docker_call(container.remove, force=True)
+            raise
+        logger.info("sandbox_created", container_id=container.id[:12], user_id=user_id)
         return sandbox
