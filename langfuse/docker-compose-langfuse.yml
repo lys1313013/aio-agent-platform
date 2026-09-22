@@ -1,0 +1,88 @@
+name: langfuse
+
+x-langfuse-environment: &langfuse-environment
+  DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+  NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:13000}
+  SALT: ${SALT:?Set SALT in .env}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
+  TELEMETRY_ENABLED: "false"
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_USER: langfuse
+  CLICKHOUSE_DB: langfuse
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  REDIS_HOST: ${REDIS_HOST:?Set REDIS_HOST in .env}
+  REDIS_PORT: ${REDIS_PORT:-6379}
+  REDIS_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+  REDIS_TLS_ENABLED: "false"
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${MINIO_BUCKET:-langfuse}
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: ${MINIO_REGION:-us-east-1}
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY in .env}
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY in .env}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: ${MINIO_ENDPOINT:?Set MINIO_ENDPOINT in .env}
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${MINIO_BUCKET:-langfuse}
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: ${MINIO_REGION:-us-east-1}
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY in .env}
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY in .env}
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${MINIO_PUBLIC_URL:?Set MINIO_PUBLIC_URL in .env}
+  LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: ${MINIO_ENDPOINT:?Set MINIO_ENDPOINT in .env}
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+
+x-langfuse-depends-on: &langfuse-depends-on
+  clickhouse:
+    condition: service_healthy
+
+services:
+  langfuse-web:
+    image: docker.langfuse.com/langfuse/langfuse:4
+    restart: unless-stopped
+    depends_on: *langfuse-depends-on
+    ports:
+      - "${LANGFUSE_BIND_HOST:-0.0.0.0}:${LANGFUSE_PORT:-13000}:3000"
+    environment:
+      <<: *langfuse-environment
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?Set NEXTAUTH_SECRET in .env}
+      AUTH_DISABLE_SIGNUP: "true"
+      AUTH_DISABLE_USERNAME_PASSWORD: "false"
+      LANGFUSE_INIT_ORG_ID: aio-org
+      LANGFUSE_INIT_ORG_NAME: AIO
+      LANGFUSE_INIT_PROJECT_ID: aio-agent-platform
+      LANGFUSE_INIT_PROJECT_NAME: aio-agent-platform
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@example.com}
+      LANGFUSE_INIT_USER_NAME: Admin
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?Set LANGFUSE_INIT_USER_PASSWORD in .env}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?Set LANGFUSE_INIT_PROJECT_PUBLIC_KEY in .env}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?Set LANGFUSE_INIT_PROJECT_SECRET_KEY in .env}
+
+  langfuse-worker:
+    image: docker.langfuse.com/langfuse/langfuse-worker:4
+    restart: unless-stopped
+    depends_on: *langfuse-depends-on
+    environment: *langfuse-environment
+
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: langfuse
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  clickhouse_data:
+  clickhouse_logs:
