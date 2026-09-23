@@ -31,6 +31,7 @@ import {
   RightOutlined,
 } from '@ant-design/icons';
 import {
+  Alert,
   Button,
   Select,
   Checkbox,
@@ -509,7 +510,7 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
                 {[
                   { key: 'children' as SectionKey, label: '子智能体', value: agent.children_count ?? 0, icon: <ApartmentOutlined /> },
                   { key: 'skills' as SectionKey, label: '技能', value: agent.skill_ids?.length ?? 0, icon: <ThunderboltOutlined /> },
-                  { key: 'tools' as SectionKey, label: '工具', value: (agent.enabled_tools || []).filter((tool) => allTools.some((item) => item.category !== 'mcp' && item.name === tool)).length, icon: <ToolOutlined /> },
+                  { key: 'tools' as SectionKey, label: '工具', value: (agent.enabled_tools || []).filter((tool) => allTools.some((item) => item.category !== 'mcp' && item.name === tool)).length || '全部', icon: <ToolOutlined /> },
                   { key: 'mcp' as SectionKey, label: 'MCP', value: agent.mcp_server_ids?.length ?? 0, icon: <ApiOutlined /> },
                   { key: 'knowledge' as SectionKey, label: '知识库', value: agent.knowledge_base_ids?.length ?? 0, icon: <DatabaseOutlined /> },
                   { key: 'graph-knowledge' as SectionKey, label: '知识图谱', value: agent.graph_knowledge_base_ids?.length ?? 0, icon: <ApartmentOutlined /> },
@@ -1083,6 +1084,15 @@ export default function AgentConfigSidebar({ agentId, onAgentUpdated }: AgentCon
               <Text type="secondary" className="text-xs block mb-2">
                 选择智能体可调用的工具，系统工具会自动注入。
               </Text>
+
+              {enabledTools.length === 0 && (
+                <Alert
+                  type="info"
+                  showIcon
+                  className="!mb-3 !text-xs"
+                  message="未勾选任何工具表示不限制白名单：该智能体可调用全部内置工具（含创建技能、修改技能）。勾选后仅能调用所选工具。"
+                />
+              )}
 
               {/* Selected tools display */}
               {enabledTools.length > 0 && (

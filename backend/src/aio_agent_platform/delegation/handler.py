@@ -438,13 +438,9 @@ async def _build_child_system_prompt(
         db, user_id, task, top_k=settings.agent.memory_top_k, agent_id=child_agent.id
     )
 
-    # Get skills — use child's bound skills or search by task relevance
-    if child_agent.skills:
-        matched_skills = child_agent.skills
-    else:
-        matched_skills = await SkillService.get_skills_for_prompt(
-            db, user_id, task, top_k=3
-        )
+    matched_skills = await SkillService.get_skills_for_prompt(
+        db, user_id, task, top_k=3, bound_skills=child_agent.skills
+    )
 
     # Build child agent info section
     child_info = f"\n## Your Role\nYou are **{child_agent.name}**, a specialized sub-agent."

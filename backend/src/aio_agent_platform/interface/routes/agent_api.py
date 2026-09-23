@@ -34,6 +34,7 @@ from aio_agent_platform.db.connection import get_db
 from aio_agent_platform.db.models import Agent, AgentVersion, KnowledgeBase, LLMModel, User
 from aio_agent_platform.llm import LLMMessage, create_provider
 from aio_agent_platform.memory.service import MemoryService
+from aio_agent_platform.skills.service import SkillService
 from aio_agent_platform.tools.executor import ToolExecutor
 from aio_agent_platform.tools.mcp.selection import is_mcp_tool_allowed
 
@@ -154,6 +155,7 @@ async def _build_agent_loop_for_version(
     tenant_id: UUID,
     workspace_id: UUID | None = None,
     workspace_slug: str | None = None,
+    allowed_tools: set[str] | None = None,
 ) -> AgentLoop:
     """Create an AgentLoop using the version's config snapshot."""
     model_to_use = None
@@ -206,6 +208,7 @@ async def _build_agent_loop_for_version(
         trust_level=settings.agent.trust_level,
         workspace_id=workspace_id,
         workspace_slug=workspace_slug,
+        allowed_tools=allowed_tools,
     )
 
 
@@ -539,7 +542,7 @@ async def _execute_agent_inner(
         persistent_memories=memory_data.get("l1_memories", []),
         relevant_memories=memory_data.get("l2_memories", []) + memory_data.get("l3_memories", []),
         daily_memories=memory_data.get("daily_memories", []),
-        relevant_skills=agent.skills if agent.skills else None,
+        relevant_skills=await SkillService.get_skills_for_prompt(db, user.id, req.user_input, bound_skills=agent.skills),
         agent_prompt=config_snapshot.get("system_prompt") or agent.system_prompt,
         child_agents=agent.children if agent.children else None,
         user_portrait=user_portrait,
@@ -557,6 +560,7 @@ async def _execute_agent_inner(
         tenant_id=user.tenant_id,
         workspace_id=workspace_id,
         workspace_slug=workspace_slug,
+        allowed_tools={s["function"]["name"] for s in tools_schema},
     )
 
     # Prepare context
@@ -768,7 +772,7 @@ async def sse_chat(
                 persistent_memories=memory_data.get("l1_memories", []),
                 relevant_memories=memory_data.get("l2_memories", []) + memory_data.get("l3_memories", []),
                 daily_memories=memory_data.get("daily_memories", []),
-                relevant_skills=agent.skills if agent.skills else None,
+                relevant_skills=await SkillService.get_skills_for_prompt(db_session, user.id, req.message, bound_skills=agent.skills),
                 agent_prompt=config_snapshot.get("system_prompt") or agent.system_prompt,
                 child_agents=agent.children if agent.children else None,
                 user_portrait=user_portrait,
@@ -786,6 +790,7 @@ async def sse_chat(
                 tenant_id=user.tenant_id,
                 workspace_id=workspace_id,
                 workspace_slug=workspace_slug,
+                allowed_tools={s["function"]["name"] for s in tools_schema},
             )
 
             # Prepare context

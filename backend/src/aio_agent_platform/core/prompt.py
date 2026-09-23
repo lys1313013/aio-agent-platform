@@ -70,7 +70,7 @@ def build_system_prompt(
     """
     if agent_prompt:
         # Use agent's custom prompt as base, then append memories/skills context
-        parts = [agent_prompt, _env.get_template("artifact_delivery.j2").render()]
+        parts = [agent_prompt, _env.get_template("artifact_delivery.j2").render(), _env.get_template("skill_authoring.j2").render()]
 
         if user_portrait:
             parts.append("\n## 用户画像 (User Portrait)")
@@ -96,8 +96,9 @@ def build_system_prompt(
             relevant_skills = _trim_skills(relevant_skills)
             parts.append("\n## Relevant Experience")
             for skill in relevant_skills:
-                parts.append(f"### {skill.name}")
+                parts.append(f"### {skill.name} (ID: {getattr(skill, 'id', 'unknown')}, version: {getattr(skill, 'version', 'unknown')})")
                 parts.append(skill.description or "")
+                parts.append(f"Verification: {(getattr(skill, 'verification', None) or {}).get('status', 'unverified')}")
                 if hasattr(skill, "files") and skill.files:
                     file_summary = []
                     for f in skill.files:

@@ -19,6 +19,7 @@ import tarfile
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import structlog
 
@@ -512,7 +513,9 @@ class WorkspaceStorage:
         else:
             target = f"/workspace/{rel}"
         parent = posixpath.dirname(target)
-        await sandbox_mgr.execute(sandbox, f"mkdir -p {shlex.quote(parent)}")
+        result = await sandbox_mgr.execute(sandbox, f"mkdir -p {shlex.quote(parent)}")
+        if result.exit_code != 0:
+            return False
 
         b64_data = base64.b64encode(content).decode("ascii")
         if len(b64_data) <= _CHUNK_SIZE:
@@ -520,19 +523,24 @@ class WorkspaceStorage:
             result = await sandbox_mgr.execute(sandbox, cmd)
             return result.exit_code == 0
 
-        tmp_file = "/tmp/_workspace_upload.b64"
-        await sandbox_mgr.execute(sandbox, f"rm -f {tmp_file}")
-        offset = 0
-        while offset < len(b64_data):
-            chunk = b64_data[offset:offset + _CHUNK_SIZE]
-            redirect = ">" if offset == 0 else ">>"
-            await sandbox_mgr.execute(sandbox, f"printf '%s' {shlex.quote(chunk)} {redirect} {tmp_file}")
-            offset += _CHUNK_SIZE
-        result = await sandbox_mgr.execute(
-            sandbox,
-            f"base64 -d {tmp_file} > {shlex.quote(target)} && rm -f {tmp_file}",
-        )
-        return result.exit_code == 0
+        tmp_file = f"/tmp/_workspace_upload_{uuid4().hex}.b64"
+        try:
+            offset = 0
+            while offset < len(b64_data):
+                chunk = b64_data[offset:offset + _CHUNK_SIZE]
+                redirect = ">" if offset == 0 else ">>"
+                result = await sandbox_mgr.execute(
+                    sandbox, f"printf '%s' {shlex.quote(chunk)} {redirect} {tmp_file}",
+                )
+                if result.exit_code != 0:
+                    return False
+                offset += _CHUNK_SIZE
+            result = await sandbox_mgr.execute(
+                sandbox, f"base64 -d < {tmp_file} > {shlex.quote(target)}",
+            )
+            return result.exit_code == 0
+        finally:
+            await sandbox_mgr.execute(sandbox, f"rm -f {tmp_file}")
 
     @staticmethod
     async def delete_file_live(

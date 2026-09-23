@@ -167,7 +167,7 @@ export async function apiFetch(
     let message = resp.statusText;
     try {
       const body = await resp.json();
-      message = body.detail || message;
+      message = typeof body.detail === 'string' ? body.detail : body.detail?.message || message;
     } catch {
       /* ignore parse error */
     }
@@ -1625,6 +1625,7 @@ export const skillsApi = {
     tags?: string[];
     category?: string;
     trigger_condition?: string;
+    files?: Array<{ path: string; content_base64: string; description?: string }>;
   }) {
     return request<Skill>('/skills', {
       method: 'POST',
@@ -1635,6 +1636,9 @@ export const skillsApi = {
   update(
     id: string,
     data: {
+      expected_version: number;
+      files?: Array<{ path: string; content_base64: string; description?: string }>;
+      remove_files?: string[];
       name?: string;
       description?: string;
       content?: string;
@@ -1667,12 +1671,12 @@ export const skillsApi = {
   },
 
   getVersion(id: string, version: number) {
-    return request<{ skill_id: string; version: number; content: string; created_at: string }>(
+    return request<{ skill_id: string; version: number; content: string; created_at: string; snapshot?: Partial<Skill> }>(
       `/skills/${id}/versions/${version}`,
     );
   },
 
-  download(id: string) {
+  download(id: string, version?: number) {
     return (async () => {
       // Ensure token is fresh
       if (isTokenExpiringSoon(tokenStorage.getAccess())) {
@@ -1680,7 +1684,7 @@ export const skillsApi = {
         if (!refreshed && tokenStorage.getRefresh()) forceLogout();
       }
       const token = tokenStorage.getAccess();
-      const resp = await fetch(`${API_BASE}/skills/${id}/download`, {
+      const resp = await fetch(`${API_BASE}/skills/${id}${version === undefined ? '' : `/versions/${version}`}/download`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!resp.ok) throw new ApiError(resp.status, 'Download failed');
@@ -1738,7 +1742,8 @@ export const skillsApi = {
   uploadFiles(
     skillId: string,
     files: File[],
-    fileType: 'script' | 'reference' | 'asset' = 'script',
+    fileType: 'script' | 'reference' | 'asset',
+    expectedVersion: number,
     descriptions?: Array<{ description: string; language?: string }>,
   ) {
     return (async () => {
@@ -1750,6 +1755,7 @@ export const skillsApi = {
       const form = new FormData();
       files.forEach((f) => form.append('files', f));
       form.append('file_type', fileType);
+      form.append('expected_version', String(expectedVersion));
       form.append('descriptions', JSON.stringify(descriptions || []));
       const resp = await fetch(`${API_BASE}/skills/${skillId}/files`, {
         method: 'POST',
@@ -1758,14 +1764,14 @@ export const skillsApi = {
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ detail: 'Upload failed' }));
-        throw new ApiError(resp.status, err.detail || 'Upload failed');
+        throw new ApiError(resp.status, typeof err.detail === 'object' ? err.detail.message : err.detail || 'Upload failed');
       }
       return resp.json() as Promise<{ skill_id: string; files: SkillFile[]; message: string }>;
     })();
   },
 
-  deleteFile(skillId: string, filePath: string) {
-    return request<void>(`/skills/${skillId}/files/${filePath}`, { method: 'DELETE' });
+  deleteFile(skillId: string, filePath: string, expectedVersion: number) {
+    return request<void>(`/skills/${skillId}/files/${filePath}?expected_version=${expectedVersion}`, { method: 'DELETE' });
   },
 
   downloadFile(skillId: string, filePath: string) {

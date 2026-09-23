@@ -272,7 +272,20 @@ export interface SkillFile {
   size: number;
 }
 
+export interface SkillSource {
+  type?: string;
+  agent_id?: string | null;
+  session_id?: string;
+  at?: string;
+  summary?: string;
+  files_added?: string[];
+  files_removed?: string[];
+  files_modified?: string[];
+}
+
 export interface Skill {
+  provenance?: { created?: SkillSource; modified?: SkillSource };
+  verification?: { status?: string; note?: string };
   id: string;
   name: string;
   description: string | null;
@@ -292,6 +305,7 @@ export interface Skill {
 }
 
 export interface SkillVersion {
+  snapshot?: Partial<Skill>;
   id: string;
   skill_id: string;
   version: number;
@@ -306,6 +320,9 @@ export interface SkillListResponse {
 }
 
 export interface SkillSearchResult {
+  provenance?: Skill['provenance'];
+  verification?: Skill['verification'];
+  is_public?: boolean;
   id: string;
   name: string;
   description: string | null;

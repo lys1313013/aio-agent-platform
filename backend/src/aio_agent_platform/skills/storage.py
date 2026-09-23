@@ -11,13 +11,22 @@ Skill package structure:
 from __future__ import annotations
 
 import io
+import json
 import re
 import zipfile
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 
 from aio_agent_platform.core.config import settings
+from aio_agent_platform.skills.contracts import (
+    MAX_CONTENT_SIZE,
+    MAX_FILES,
+    MAX_TOTAL_SIZE,
+    SkillError,
+    normalize_files,
+    validate_path,
+)
 from aio_agent_platform.storage.client import ObjectStorage
 
 logger = structlog.get_logger()
@@ -100,58 +109,18 @@ class SkillStorage:
         Returns:
             Raw zip bytes.
         """
-        # Build YAML frontmatter
-        tags = metadata.get("tags", [])
-        tags_yaml = "\n".join(f"  - {t}" for t in tags) if tags else "[]"
-
-        # Build files section for frontmatter (grouped by type)
-        files_yaml = ""
-        if files:
-            file_lines = ["files:"]
-            for f in files:
-                fname = f["filename"]
-                ftype = f.get("type", "script")
-                # Determine directory
-                dir_name = {"script": "scripts", "reference": "references", "asset": "assets"}.get(ftype, "scripts")
-                path = f"{dir_name}/{fname}"
-                desc = f.get("description", "")
-                lang = f.get("language") or SkillStorage._detect_language(fname) if ftype == "script" else ""
-                file_lines.append(f"  - path: {path}")
-                file_lines.append(f"    type: {ftype}")
-                if desc:
-                    file_lines.append(f"    description: {desc}")
-                if lang:
-                    file_lines.append(f"    language: {lang}")
-            files_yaml = "\n" + "\n".join(file_lines)
-
-        frontmatter = (
-            f"name: {name}\n"
-            f"description: {metadata.get('description', '')}\n"
-            f"tags:\n{tags_yaml}\n"
-            f"category: {metadata.get('category', 'general')}\n"
-            f"trigger_condition: {metadata.get('trigger_condition', '')}"
-            f"{files_yaml}"
-        )
-
+        entries = normalize_files(files)
+        # JSON-quoted YAML scalars avoid metadata injecting additional frontmatter keys.
+        fields = {"name": name, "description": metadata.get("description", ""),
+                  "tags": metadata.get("tags", []), "category": metadata.get("category", "general"),
+                  "trigger_condition": metadata.get("trigger_condition", "")}
+        frontmatter = "\n".join(f"{key}: {json.dumps(value, ensure_ascii=False)}" for key, value in fields.items())
         skill_md = f"---\n{frontmatter}\n---\n\n{content}\n"
-
-        # Create zip in memory
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("SKILL.md", skill_md)
-
-            if files:
-                for f in files:
-                    fname = f["filename"]
-                    # Sanitize: only basename, no path traversal
-                    fname = fname.replace("\\", "/").split("/")[-1]
-                    ftype = f.get("type", "script")
-                    dir_name = {"script": "scripts", "reference": "references", "asset": "assets"}.get(ftype, "scripts")
-                    file_content = f.get("content", b"")
-                    if isinstance(file_content, str):
-                        file_content = file_content.encode("utf-8")
-                    zf.writestr(f"{dir_name}/{fname}", file_content)
-
+            for f in entries:
+                zf.writestr(f["path"], f["content"])
         return buf.getvalue()
 
     # ---- Upload / Download / Delete ----
@@ -164,7 +133,7 @@ class SkillStorage:
         zip_bytes: bytes,
     ) -> str:
         """Upload a skill zip to MinIO. Returns the object_key."""
-        object_key = self._object_key(user_id, skill_id, version)
+        object_key = self._object_key(user_id, skill_id, version).removesuffix(".zip") + f"-{uuid4().hex}.zip"
         self._storage.put(object_key, zip_bytes, content_type="application/zip")
         logger.info("skill_zip_uploaded", object_key=object_key, size=len(zip_bytes))
         return object_key
@@ -210,10 +179,14 @@ class SkillStorage:
         result = {}
         buf = io.BytesIO(zip_bytes)
         with zipfile.ZipFile(buf, "r") as zf:
-            for name in zf.namelist():
-                if name == "SKILL.md" or name.endswith("/"):
-                    continue
-                result[name] = zf.read(name)
+            infos = [i for i in zf.infolist() if not i.is_dir() and i.filename != "SKILL.md"]
+            if len(infos) > MAX_FILES or sum(i.file_size for i in infos) > MAX_TOTAL_SIZE:
+                raise SkillError("file_limit", "技能包附件超过限制")
+            for info in infos:
+                name = validate_path(info.filename)
+                if name in result or (info.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise SkillError("invalid_path", "技能包包含重复路径或符号链接")
+                result[name] = zf.read(info)
         return result
 
     @staticmethod
@@ -283,6 +256,11 @@ class SkillStorage:
 
         buf = io.BytesIO(zip_bytes)
         with zipfile.ZipFile(buf, "r") as zf:
+            infos = zf.infolist()
+            if len(infos) > MAX_FILES + 100 or sum(i.file_size for i in infos) > MAX_TOTAL_SIZE + MAX_CONTENT_SIZE + 16384:
+                raise SkillError("file_limit", "技能包解压内容超过限制")
+            if any((i.external_attr >> 16) & 0o170000 == 0o120000 for i in infos):
+                raise SkillError("invalid_path", "技能包不能包含符号链接")
             names = [n for n in zf.namelist() if not n.endswith("/")]
 
         # Detect single root directory (e.g. "skill-name/SKILL.md")
@@ -316,6 +294,7 @@ class SkillStorage:
                 if rel_path.startswith("./"):
                     rel_path = rel_path[2:]
 
+                validate_path(rel_path, package=False)
                 data = zf.read(name)
 
                 if rel_path == "SKILL.md" or (rel_path.endswith(".md") and "/" not in rel_path):
@@ -352,10 +331,17 @@ class SkillStorage:
                     key, _, val = line.partition(":")
                     key = key.strip()
                     val = val.strip()
+                    try:
+                        parsed_value = json.loads(val)
+                    except (ValueError, TypeError):
+                        parsed_value = val
                     if key == "tags":
-                        in_tags = True
+                        if isinstance(parsed_value, list):
+                            metadata[key] = parsed_value
+                        else:
+                            in_tags = True
                     elif key not in ("scripts", "files"):
-                        metadata[key] = val
+                        metadata[key] = parsed_value
             # Flush remaining tags
             if in_tags:
                 metadata["tags"] = tags

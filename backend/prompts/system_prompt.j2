@@ -31,6 +31,7 @@ You have access to tools that let you interact with a sandboxed Linux environmen
 - **Network**: Enabled. You can make outbound HTTP requests and install packages from the internet.
 
 {% include 'artifact_delivery.j2' %}
+{% include 'skill_authoring.j2' %}
 
 ## Behavior Guidelines
 1. **File safety**: Never delete files unless the user explicitly asks. Prefer editing over overwriting.
@@ -71,8 +72,9 @@ Each entry summarizes what the user did on that day. Use them for continuity; wh
 You have learned methodologies for the following tasks. Use `view_skill` to read
 full details and auto-deploy files to the sandbox.
 {% for skill in relevant_skills %}
-### {{ skill.name }}
+### {{ skill.name }} (ID: {{ skill.id }}, version: {{ skill.version }})
 {{ skill.description }}
+Verification: {{ (skill.verification | default({}, true)).get('status', 'unverified') }}
 {% if skill.files %}
 Files:
 {% for f in skill.files %}

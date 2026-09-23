@@ -3,16 +3,30 @@
 from __future__ import annotations
 
 import base64
-import os
+import hashlib
+import json
+import shlex
+from datetime import UTC, datetime
 from uuid import UUID
 
 import rjieba
 import structlog
-from sqlalchemy import func, literal, or_, select
+from sqlalchemy import delete, event, func, literal, or_, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.db.models import Skill, SkillVersion
-from aio_agent_platform.skills.storage import SCRIPT_EXTENSIONS, SkillStorage
+from aio_agent_platform.skills.contracts import (
+    SkillError,
+    digest,
+    file_metadata,
+    normalize_files,
+    normalize_name,
+    validate_content,
+    validate_path,
+    validate_references,
+)
+from aio_agent_platform.skills.storage import SkillStorage
 
 logger = structlog.get_logger()
 
@@ -56,27 +70,7 @@ class SkillService:
         Each input dict: {filename, content, type, description, language}
         Output dict: {path, type, description, language, size}
         """
-        result = []
-        for f in files:
-            fname = f["filename"]
-            ftype = f.get("type", "script")
-            dir_name = TYPE_TO_DIR.get(ftype, "scripts")
-            content = f.get("content", b"")
-            if isinstance(content, str):
-                size = len(content.encode("utf-8"))
-            else:
-                size = len(content)
-            lang = ""
-            if ftype == "script":
-                lang = f.get("language") or SkillStorage._detect_language(fname)
-            result.append({
-                "path": f"{dir_name}/{fname}",
-                "type": ftype,
-                "description": f.get("description", ""),
-                "language": lang,
-                "size": size,
-            })
-        return result
+        return file_metadata(normalize_files(files))
 
     @staticmethod
     def _sync_scripts_column(skill: Skill) -> None:
@@ -126,184 +120,226 @@ class SkillService:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def lock_user(db: AsyncSession, user_id: UUID) -> None:
+        # All write entry points share this transaction lock (also protects names).
+        key = int.from_bytes(hashlib.sha256(f"skills:{user_id}".encode()).digest()[:8], "big", signed=True)
+        await db.execute(select(func.set_config("lock_timeout", "5s", True)))
+        try:
+            await db.execute(select(func.pg_advisory_xact_lock(key)))
+        except DBAPIError as exc:
+            if getattr(exc.orig, "sqlstate", None) == "55P03":
+                raise SkillError("busy", "技能正在被其他请求修改，请稍后重试") from exc
+            raise
+
+    @staticmethod
+    def snapshot(skill: Skill) -> dict:
+        fields = ("name", "description", "content", "tags", "category", "trigger_condition",
+                  "is_active", "is_public", "version", "files", "provenance", "verification")
+        return {key: getattr(skill, key, None) for key in fields}
+
+    @staticmethod
+    def read_files(skill: Skill, storage: SkillStorage | None) -> list[dict]:
+        if not skill.files:
+            return []
+        if not storage or not skill.object_key:
+            raise SkillError("storage_unavailable", "附件存储不可用，原版本未修改")
+        try:
+            data = SkillStorage.extract_all_files(storage.download_skill_zip(skill.object_key))
+        except Exception as exc:
+            raise SkillError("storage_unavailable", "无法读取原技能附件，原版本未修改") from exc
+        entries = []
+        for meta in skill.files:
+            path = validate_path(meta["path"])
+            if path not in data:
+                raise SkillError("missing_file", f"原技能包缺少附件：{path}")
+            entries.append({**meta, "content": data[path]})
+        return normalize_files(entries)
+
+    @staticmethod
+    def _track_upload(db, storage, key):
+        # Unique object keys make rollback cleanup safe even after retries.
+        session = db.sync_session
+        session.info.setdefault("skill_uploads", []).append((storage, key))
+        if session.info.get("skill_upload_hooks"):
+            return
+        session.info["skill_upload_hooks"] = True
+        def committed(session):
+            session.info.pop("skill_uploads", None)
+        def rolled_back(session):
+            for store, object_key in session.info.pop("skill_uploads", []):
+                try:
+                    store.delete_version(object_key)
+                except Exception:
+                    logger.exception("orphan_skill_object", object_key=object_key)
+        event.listen(session, "after_commit", committed)
+        event.listen(session, "after_rollback", rolled_back)
+
+    @staticmethod
+    def _upload(db, skill, files, storage):
+        if not storage:
+            if files:
+                raise SkillError("storage_unavailable", "带附件的技能需要对象存储")
+            return None
+        try:
+            package = SkillStorage.create_skill_zip(skill.content, skill.name, SkillService.snapshot(skill), files)
+            key = storage.upload_skill_zip(skill.user_id, skill.id, skill.version, package)
+        except Exception as exc:
+            if files:
+                raise SkillError("storage_unavailable", "技能附件保存失败") from exc
+            logger.warning("skill_text_only_storage_fallback", skill_id=str(skill.id))
+            return None
+        SkillService._track_upload(db, storage, key)
+        return key
+
+    @staticmethod
+    async def _same_name(db, user_id, name, exclude=None):
+        # Normalize in Python so Unicode names and legacy rows have the same semantics.
+        rows = (await db.execute(select(Skill).where(Skill.user_id == user_id)
+                                .execution_options(populate_existing=True))).scalars().all()
+        return next((s for s in rows if s.id != exclude and normalize_name(s.name) == normalize_name(name)), None)
+
+    @staticmethod
     async def create_skill(
-        db: AsyncSession,
-        user_id: UUID,
-        name: str,
-        description: str | None = None,
-        content: str | None = None,
-        tags: list[str] | None = None,
-        category: str = "general",
-        trigger_condition: str | None = None,
-        storage: SkillStorage | None = None,
-        files: list[dict] | None = None,
+        db: AsyncSession, user_id: UUID, name: str, description: str | None = None,
+        content: str | None = None, tags: list[str] | None = None, category: str = "general",
+        trigger_condition: str | None = None, storage: SkillStorage | None = None,
+        files: list[dict] | None = None, source: dict | None = None,
     ) -> Skill:
-        """
-        Create a new skill.
-
-        Args:
-            files: Optional list of {filename, content, type, description, language}
-                for files to include in the skill package.
-        """
-        search_vec = SkillService._tokenize(name, description, content)
-
-        files_metadata = SkillService._build_files_metadata(files) if files else []
-
-        skill = Skill(
-            user_id=user_id,
-            name=name,
-            description=description,
-            content=content,
-            tags=tags or [],
-            category=category,
-            trigger_condition=trigger_condition,
-            version=1,
-            search_vec=search_vec,
-            files=files_metadata,
-        )
+        validate_content(name, content, description)
+        files = normalize_files(files)
+        validate_references(content, files)
+        metadata = file_metadata(files)
+        await SkillService.lock_user(db, user_id)
+        old = await SkillService._same_name(db, user_id, name)
+        proposed = {"name": name.strip(), "description": description or "", "content": content,
+                    "tags": tags or [], "category": category, "trigger_condition": trigger_condition or "",
+                    "files": metadata}
+        if old:
+            current = {k: getattr(old, k) for k in proposed}
+            current["name"] = name.strip()  # normalized name already matched
+            current["description"] = current["description"] or ""
+            current["trigger_condition"] = current["trigger_condition"] or ""
+            current["files"] = file_metadata(SkillService.read_files(old, storage))
+            if digest(current) == digest(proposed):
+                old.mutation_status = "existing"
+                return old
+            raise SkillError("name_conflict", "同名技能已存在，请先读取后修改，或使用其他名称另存", skill_id=str(old.id))
+        source = {**(source or {"type": "manual"}), "at": datetime.now(UTC).isoformat()}
+        skill = Skill(user_id=user_id, **proposed, version=1,
+                      provenance={"created": source, "modified": source},
+                      verification={"status": "unverified"}, is_active=True, is_public=False,
+                      search_vec=SkillService._tokenize(name, description, content))
         SkillService._sync_scripts_column(skill)
         db.add(skill)
         await db.flush()
-
-        # Upload zip to MinIO
-        if storage and content:
-            zip_bytes = SkillStorage.create_skill_zip(
-                content=content,
-                name=name,
-                metadata={
-                    "description": description or "",
-                    "tags": tags or [],
-                    "category": category,
-                    "trigger_condition": trigger_condition or "",
-                },
-                files=files,
-            )
-            object_key = storage.upload_skill_zip(user_id, skill.id, 1, zip_bytes)
-            skill.object_key = object_key
-            await db.flush()
-
+        skill.object_key = SkillService._upload(db, skill, files, storage)
+        await db.flush()
         await db.refresh(skill)
-        logger.info("skill_created", skill_id=str(skill.id), name=name)
+        skill.mutation_status = "created"
         return skill
 
     @staticmethod
     async def update_skill(
-        db: AsyncSession,
-        skill_id: UUID,
-        user_id: UUID,
-        name: str | None = None,
-        description: str | None = None,
-        content: str | None = None,
-        tags: list[str] | None = None,
-        category: str | None = None,
-        trigger_condition: str | None = None,
-        is_active: bool | None = None,
-        is_public: bool | None = None,
-        storage: SkillStorage | None = None,
-        files: list[dict] | None = None,
-        files_metadata: list[dict] | None = None,
+        db: AsyncSession, skill_id: UUID, user_id: UUID,
+        name: str | None = None, description: str | None = None, content: str | None = None,
+        tags: list[str] | None = None, category: str | None = None, trigger_condition: str | None = None,
+        is_active: bool | None = None, is_public: bool | None = None,
+        storage: SkillStorage | None = None, files: list[dict] | None = None,
+        files_metadata: list[dict] | None = None, expected_version: int | None = None,
+        file_changes: list[dict] | None = None, remove_files: list[str] | None = None,
+        source: dict | None = None, change_summary: str = "",
     ) -> Skill | None:
-        """
-        Update an existing skill.
-
-        - Archives current version to skill_versions
-        - Increments version number
-        - Uploads new zip to MinIO
-        - Re-tokenizes search_vec
-
-        Args:
-            files: Optional list of {filename, content, type, description}
-                to replace ALL files in the zip.
-            files_metadata: Optional explicit files metadata for the JSONB column.
-                If not provided and files is given, metadata is derived from files.
-        """
-        skill = await SkillService.get_skill(db, skill_id, user_id)
+        await SkillService.lock_user(db, user_id)
+        skill = (await db.execute(select(Skill).where(Skill.id == skill_id, Skill.user_id == user_id)
+                                 .execution_options(populate_existing=True))).scalar_one_or_none()
         if not skill:
             return None
-
-        # Archive current version
-        version_record = SkillVersion(
-            skill_id=skill.id,
-            version=skill.version,
-            content=skill.content or "",
-            object_key=skill.object_key,
-        )
-        db.add(version_record)
-
-        # Apply updates
-        if name is not None:
-            skill.name = name
-        if description is not None:
-            skill.description = description
-        if content is not None:
-            skill.content = content
-        if tags is not None:
-            skill.tags = tags
-        if category is not None:
-            skill.category = category
-        if trigger_condition is not None:
-            skill.trigger_condition = trigger_condition
-        if is_active is not None:
-            skill.is_active = is_active
-        if is_public is not None:
-            skill.is_public = is_public
-
-        # Handle files metadata
-        if files_metadata is not None:
-            skill.files = files_metadata
-        elif files is not None:
-            skill.files = SkillService._build_files_metadata(files)
-        SkillService._sync_scripts_column(skill)
-
-        # Increment version
+        if expected_version is not None and skill.version != expected_version:
+            raise SkillError("version_conflict", "技能已被修改，请重新读取后再提交", current_version=skill.version)
+        before = SkillService.snapshot(skill)
+        values = {"name": name, "description": description, "content": content, "tags": tags,
+                  "category": category, "trigger_condition": trigger_condition,
+                  "is_active": is_active, "is_public": is_public}
+        values = {k: v for k, v in values.items() if v is not None}
+        if "name" in values:
+            values["name"] = values["name"].strip()
+            if await SkillService._same_name(db, user_id, values["name"], skill.id):
+                raise SkillError("name_conflict", "该名称已被其他技能使用")
+        after = {**before, **values}
+        validate_content(after["name"], after["content"], after["description"])
+        original_files = SkillService.read_files(skill, storage)
+        final_files = normalize_files(files) if files is not None else original_files
+        merged = {f["path"]: f for f in final_files}
+        for path in remove_files or []:
+            validate_path(path)
+            if path not in merged:
+                raise SkillError("missing_file", f"待移除附件不存在：{path}")
+            del merged[path]
+        for f in normalize_files(file_changes):
+            if f["path"] in (remove_files or []):
+                raise SkillError("invalid_file", f"同一路径不能同时移除和替换：{f['path']}")
+            merged[f["path"]] = f
+        final_files = normalize_files(list(merged.values()))
+        after["files"] = file_metadata(final_files)
+        validate_references(after["content"], final_files)
+        compare_before = {**before, "files": file_metadata(original_files)}
+        if digest(compare_before) == digest(after):
+            skill.mutation_status = "unchanged"
+            skill.previous_version = skill.version
+            return skill
+        changed = [k for k in values if before[k] != after[k]]
+        files_changed = digest(compare_before["files"]) != digest(after["files"])
+        for k, v in values.items():
+            setattr(skill, k, v)
+        skill.files = after["files"]
         skill.version += 1
-
-        # Re-tokenize
-        skill.search_vec = SkillService._tokenize(
-            skill.name, skill.description, skill.content
-        )
-
-        # Upload new zip to MinIO
-        if storage and skill.content:
-            zip_bytes = SkillStorage.create_skill_zip(
-                content=skill.content,
-                name=skill.name,
-                metadata={
-                    "description": skill.description or "",
-                    "tags": skill.tags or [],
-                    "category": skill.category,
-                    "trigger_condition": skill.trigger_condition or "",
-                },
-                files=files,
-            )
-            object_key = storage.upload_skill_zip(
-                user_id, skill.id, skill.version, zip_bytes
-            )
-            skill.object_key = object_key
-
+        if files_changed or any(k in changed for k in ("content", "trigger_condition", "description")):
+            skill.verification = {"status": "unverified"}
+        src = {**(source or {"type": "manual"}), "at": datetime.now(UTC).isoformat(),
+               "summary": change_summary or "更新技能", "fields": changed,
+               "files_added": sorted(set(merged) - {f["path"] for f in original_files}),
+               "files_removed": sorted({f["path"] for f in original_files} - set(merged)),
+               "files_modified": sorted(f["path"] for f in original_files if f["path"] in merged and digest({**f, "content": f["content"].hex()}) != digest({**merged[f["path"]], "content": merged[f["path"]]["content"].hex()}))}
+        skill.provenance = {**(skill.provenance or {}), "modified": src}
+        skill.search_vec = SkillService._tokenize(skill.name, skill.description, skill.content)
+        SkillService._sync_scripts_column(skill)
+        # Old object is never overwritten; archive complete metadata before promotion.
+        old_key = skill.object_key
+        skill.object_key = SkillService._upload(db, skill, final_files, storage)
+        db.add(SkillVersion(skill_id=skill.id, version=before["version"],
+                            content=before["content"] or "", object_key=old_key, snapshot=before))
         await db.flush()
         await db.refresh(skill)
-        logger.info("skill_updated", skill_id=str(skill.id), new_version=skill.version)
+        skill.previous_version = before["version"]
+        skill.mutation_status = "updated"
         return skill
 
     @staticmethod
-    async def delete_skill(
-        db: AsyncSession,
-        skill_id: UUID,
-        user_id: UUID,
-        storage: SkillStorage | None = None,
-    ) -> bool:
-        """Delete a skill and all its MinIO zips. Returns True if deleted."""
+    async def delete_skill(db, skill_id, user_id, storage=None) -> bool:
+        await SkillService.lock_user(db, user_id)
         skill = await SkillService.get_skill(db, skill_id, user_id)
         if not skill:
             return False
-
-        if storage:
-            storage.delete_skill_zips(user_id, skill_id)
-
+        # Keep immutable packages until deletion is committed; storage cleanup is best effort.
+        await db.execute(delete(SkillVersion).where(SkillVersion.skill_id == skill_id))
+        from aio_agent_platform.db.models import AgentSkill
+        await db.execute(delete(AgentSkill).where(AgentSkill.skill_id == skill_id))
         await db.delete(skill)
         await db.flush()
-        logger.info("skill_deleted", skill_id=str(skill_id))
+        if storage:
+            marker = f"delete_skill:{skill_id}"
+            db.sync_session.info[marker] = True
+            def cleanup(session):
+                if not session.info.pop(marker, False):
+                    return
+                try:
+                    storage.delete_skill_zips(user_id, skill_id)
+                except Exception:
+                    logger.exception("deleted_skill_objects_cleanup_failed", skill_id=str(skill_id))
+            def cancel_cleanup(session):
+                session.info.pop(marker, None)
+            event.listen(db.sync_session, "after_commit", cleanup, once=True)
+            event.listen(db.sync_session, "after_rollback", cancel_cleanup, once=True)
         return True
 
     # ---- Versioning ----
@@ -360,139 +396,31 @@ class SkillService:
         if not ver:
             return None
 
+        # DB snapshot contains the Markdown body. ZIP SKILL.md also has
+        # frontmatter, which must not be rendered as part of historical prose.
+        if ver.content:
+            return ver.content
         if storage and ver.object_key:
-            try:
-                zip_bytes = storage.download_skill_zip(ver.object_key)
-                return SkillStorage.extract_skill_md(zip_bytes)
-            except Exception as e:
-                logger.warning(
-                    "skill_version_zip_download_failed",
-                    skill_id=str(skill_id),
-                    version=version,
-                    error=str(e),
-                )
-
+            return SkillStorage.parse_skill_zip(storage.download_skill_zip(ver.object_key))["content"]
         return ver.content
 
     # ---- File Management ----
 
     @staticmethod
-    async def add_file_to_skill(
-        db: AsyncSession,
-        skill_id: UUID,
-        user_id: UUID,
-        filename: str,
-        file_content: bytes,
-        file_type: str = "script",
-        description: str = "",
-        language: str | None = None,
-        storage: SkillStorage | None = None,
-    ) -> Skill | None:
-        """Add a file to an existing skill.
-
-        Downloads the current zip, adds the file, re-uploads, and updates metadata.
-
-        Args:
-            file_type: 'script' | 'reference' | 'asset'
-        """
-        skill = await SkillService.get_skill(db, skill_id, user_id)
-        if not skill:
-            return None
-
-        dir_name = TYPE_TO_DIR.get(file_type, "scripts")
-        file_path = f"{dir_name}/{filename}"
-        size = len(file_content)
-        lang = ""
-        if file_type == "script":
-            lang = language or SkillStorage._detect_language(filename)
-
-        # Update files metadata
-        current_files = list(skill.files or [])
-        new_entry = {
-            "path": file_path,
-            "type": file_type,
-            "description": description,
-            "language": lang,
-            "size": size,
-        }
-        # Replace if same path exists, otherwise append
-        replaced = False
-        for i, f in enumerate(current_files):
-            if f.get("path") == file_path:
-                current_files[i] = new_entry
-                replaced = True
-                break
-        if not replaced:
-            current_files.append(new_entry)
-        skill.files = current_files
-        SkillService._sync_scripts_column(skill)
-
-        # Re-build zip with the new file
-        if storage and skill.object_key:
-            try:
-                existing_zip = storage.download_skill_zip(skill.object_key)
-            except Exception:
-                existing_zip = None
-
-            if existing_zip:
-                new_zip = SkillStorage.add_file_to_zip(existing_zip, file_path, file_content)
-                object_key = storage.upload_skill_zip(
-                    user_id, skill.id, skill.version, new_zip
-                )
-                skill.object_key = object_key
-
-        await db.flush()
-        await db.refresh(skill)
-        logger.info("skill_file_added", skill_id=str(skill_id), path=file_path)
-        return skill
+    async def add_file_to_skill(db, skill_id, user_id, filename, file_content,
+                                file_type="script", description="", language=None, storage=None,
+                                expected_version=None):
+        return await SkillService.update_skill(db, skill_id, user_id, storage=storage,
+            expected_version=expected_version, file_changes=[{"filename": filename,
+                "content": file_content, "type": file_type, "description": description,
+                "language": language}], change_summary=f"更新附件 {filename}")
 
     @staticmethod
-    async def remove_file_from_skill(
-        db: AsyncSession,
-        skill_id: UUID,
-        user_id: UUID,
-        file_path: str,
-        storage: SkillStorage | None = None,
-    ) -> Skill | None:
-        """Remove a file from a skill.
-
-        Args:
-            file_path: Full relative path (e.g. 'scripts/deploy.sh' or 'deploy.sh')
-        """
-        skill = await SkillService.get_skill(db, skill_id, user_id)
-        if not skill:
-            return None
-
-        # Normalize path: if no directory prefix, assume scripts/
-        if "/" not in file_path:
-            file_path = f"scripts/{file_path}"
-
-        # Update files metadata
-        current_files = list(skill.files or [])
-        skill.files = [f for f in current_files if f.get("path") != file_path]
-        SkillService._sync_scripts_column(skill)
-
-        # Remove from zip
-        if storage and skill.object_key:
-            try:
-                existing_zip = storage.download_skill_zip(skill.object_key)
-                new_zip = SkillStorage.remove_file_from_zip(existing_zip, file_path)
-                object_key = storage.upload_skill_zip(
-                    user_id, skill.id, skill.version, new_zip
-                )
-                skill.object_key = object_key
-            except Exception as e:
-                logger.warning(
-                    "skill_file_remove_zip_failed",
-                    skill_id=str(skill_id),
-                    path=file_path,
-                    error=str(e),
-                )
-
-        await db.flush()
-        await db.refresh(skill)
-        logger.info("skill_file_removed", skill_id=str(skill_id), path=file_path)
-        return skill
+    async def remove_file_from_skill(db, skill_id, user_id, file_path, storage=None,
+                                     expected_version=None):
+        path = file_path if "/" in file_path else f"scripts/{file_path}"
+        return await SkillService.update_skill(db, skill_id, user_id, storage=storage,
+            expected_version=expected_version, remove_files=[path], change_summary=f"移除附件 {path}")
 
     @staticmethod
     async def deploy_files_to_sandbox(
@@ -517,45 +445,23 @@ class SkillService:
         if not skill.files or not skill.object_key:
             return []
 
-        # Download zip and extract all files
-        zip_bytes = storage.download_skill_zip(skill.object_key)
-        all_files = SkillStorage.extract_all_files(zip_bytes)
-        if not all_files:
-            return []
-
-        # Get or create sandbox
+        files = SkillService.read_files(skill, storage)
         ws_slug = workspace_slug or "default"
+        validate_path(ws_slug, package=False)
         sandbox = await sandbox_mgr.get_or_create(user_id, session_id, workspace_id, ws_slug)
-
-        deployed_paths = []
-        # Sanitize skill name for filesystem
-        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in skill.name)
-
-        for rel_path, data in all_files.items():
-            target = f"skills/{safe_name}/{rel_path}"
-            b64 = base64.b64encode(data).decode("ascii")
-
-            # Create directory and write file
-            cmd = (
-                f"mkdir -p /workspace/$(dirname {target}) && "
-                f"echo '{b64}' | base64 -d > /workspace/{target}"
-            )
-            await sandbox_mgr.execute(sandbox, cmd)
-
-            # Make script files executable
-            fname = rel_path.split("/")[-1]
-            ext = os.path.splitext(fname)[1].lower()
-            if rel_path.startswith("scripts/") and ext in SCRIPT_EXTENSIONS:
-                await sandbox_mgr.execute(sandbox, f"chmod +x /workspace/{target}")
-
-            deployed_paths.append(target)
-            logger.info(
-                "skill_file_deployed",
-                skill_id=str(skill.id),
-                path=target,
-            )
-
-        return deployed_paths
+        base_path = f"{ws_slug}/skills/{skill.id}/v{skill.version}"
+        from aio_agent_platform.skills.workspace import WRITE_PACKAGE_SCRIPT
+        # Keep each argv well below OS ARG_MAX, including binary templates.
+        for f in files:
+            data = f["content"]
+            for offset in range(0, max(1, len(data)), 32 * 1024):
+                payload = {"base": base_path, "files": [{"path": f["path"], "offset": offset,
+                    "data": base64.b64encode(data[offset:offset + 32 * 1024]).decode()}]}
+                cmd = "python3 -c " + shlex.quote(WRITE_PACKAGE_SCRIPT) + " " + shlex.quote(json.dumps(payload))
+                result = await sandbox_mgr.execute(sandbox, cmd)
+                if result.exit_code != 0:
+                    raise SkillError("deployment_failed", "技能附件部署失败")
+        return [f"{base_path}/{f['path']}" for f in files]
 
     # ---- Search ----
 
@@ -578,10 +484,7 @@ class SkillService:
             stmt = (
                 select(Skill, literal(1.0).label("score"))
                 .where(
-                    or_(
-                        Skill.user_id == user_id,
-                        Skill.is_public == True,  # noqa: E712
-                    ),
+                    Skill.user_id == user_id,
                     Skill.is_active == True,  # noqa: E712
                 )
                 .order_by(Skill.updated_at.desc())
@@ -607,10 +510,7 @@ class SkillService:
         stmt = (
             select(Skill, sim_score)
             .where(
-                or_(
-                    Skill.user_id == user_id,
-                    Skill.is_public == True,  # noqa: E712
-                ),
+                Skill.user_id == user_id,
                 Skill.is_active == True,  # noqa: E712
                 or_(
                     func.similarity(search_col, tokenized_query) > threshold,
@@ -635,9 +535,33 @@ class SkillService:
         user_id: UUID,
         user_message: str,
         top_k: int = 3,
+        bound_skills: list | None = None,
     ) -> list[Skill]:
-        """Get relevant skills to inject into the system prompt."""
+        """Get relevant skills to inject into the system prompt.
+
+        Relevant skills match the current message, so they keep the first slots.
+        Bound skills are the ones the agent is configured with, so they are
+        never crowded out entirely: when both sources have candidates the last
+        slot is reserved for the bound list and the previous one stays with a
+        relevant skill, which keeps both an existing binding and a freshly
+        created skill reachable in the same prompt.
+        """
         results = await SkillService.search_skills(
             db, user_id, user_message, top_k=top_k
         )
-        return [skill for skill, _score in results]
+        relevant = [skill for skill, _score in results]
+        bound_ids = list(dict.fromkeys(s.id for s in bound_skills or []))
+        bound: list[Skill] = []
+        if bound_ids:
+            rows = (await db.execute(select(Skill).where(Skill.id.in_(bound_ids),
+                    Skill.user_id == user_id, Skill.is_active == True))).scalars().all()  # noqa: E712
+            by_id = {s.id: s for s in rows}
+            bound = [by_id[i] for i in bound_ids if i in by_id]
+        bound_set = {s.id for s in bound}
+        fresh = [s for s in relevant if s.id not in bound_set]
+        if not bound:
+            return fresh[:top_k]
+        if not fresh or top_k < 2:
+            return (fresh + bound)[:top_k]
+        fresh_slots = min(len(fresh), top_k - 1)
+        return [*fresh[:fresh_slots], *bound[: top_k - fresh_slots]]

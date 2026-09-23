@@ -120,7 +120,7 @@ class ChatResponse(BaseModel):
     reasoning: list[dict] = Field(default_factory=list)
 
 
-def _format_page_context_section(page_context: dict) -> str:
+def _format_page_context_section(page_context: dict, allowed_tools: set[str]) -> str:
     """渲染 system prompt 的「当前页面」段（docs/22-浏览器页面自动化 §2.6）。
 
     保持短小——它每轮 ReAct 迭代都会随 system prompt 重发。
@@ -132,20 +132,23 @@ def _format_page_context_section(page_context: dict) -> str:
     if path or title:
         lines.append(f"用户正在浏览: {path}（{title}）")
     actions = page_context.get("actions") or []
-    if actions:
+    if actions and "ui_click" in allowed_tools:
         lines.append(
-            "已注册的页面动作（优先用 ui_click 的 action_ref 调用，"
-            "比 ui_read_screen 读屏更省 token）："
+            "已注册的页面动作（优先用 ui_click 的 action_ref 调用）："
         )
         for a in actions[:20]:
             risk = a.get("risk", "write")
             suffix = " [危险操作，需用户确认]" if risk == "dangerous" else ""
             lines.append(f"- {a.get('name')}: {a.get('description', '')}{suffix}")
-    lines.append(
-        "页面操作工具优先级：注册动作(action_ref) > ui_read_screen 文本快照 "
-        "> ui_screenshot 截图（仅文本快照不足以决策时才用）。"
-        "复杂表单组件（Select/DatePicker 等）不能用 ui_input，请找对应注册动作。"
-    )
+    available_ui = sorted(allowed_tools & set(FRONTEND_TOOL_NAMES))
+    if available_ui:
+        lines.append("当前已授权的页面工具：" + ", ".join(available_ui))
+        if {"ui_read_screen", "ui_screenshot"} <= allowed_tools:
+            lines.append("优先使用 ui_read_screen 文本快照，仅文本不足以决策时使用 ui_screenshot。")
+        if "ui_input" in allowed_tools:
+            lines.append("ui_input 仅适用于原生输入框，不适用于 Select/DatePicker 等复杂表单组件。")
+    else:
+        lines.append("当前智能体未启用页面操作工具，以上页面信息仅作为上下文。")
     return "\n".join(lines)
 
 
@@ -569,6 +572,7 @@ async def chat(
         delegation=delegation,
         workspace_id=workspace_id,
         workspace_slug=workspace_slug,
+        allowed_tools={s["function"]["name"] for s in tools_schema},
     )
 
     # Convert Pydantic AttachmentOut objects to dicts for JSONB storage and build_user_content
@@ -1019,7 +1023,9 @@ async def chat_stream(
                         dangerous_refs=req.page_context.get("dangerous_refs"),
                         page_context=req.page_context,
                     )
-                    system_prompt += _format_page_context_section(req.page_context)
+                    system_prompt += _format_page_context_section(
+                        req.page_context, {s["function"]["name"] for s in tools_schema}
+                    )
 
                 # Resolve workspace first (needed by delegation context)
                 agent_model_id = (session.model_id if session and session.model_id else None) or (agent.model_id if agent else None)
@@ -1055,6 +1061,7 @@ async def chat_stream(
                     event_queue=event_queue,
                     workspace_id=workspace_id,
                     workspace_slug=workspace_slug,
+                    allowed_tools={s["function"]["name"] for s in tools_schema},
                 )
                 logger.info(
                     "stream_agent_loop_ready",
@@ -1470,10 +1477,6 @@ async def chat_websocket(
     # Get tool executor from app state
     tool_executor: ToolExecutor = websocket.app.state.tool_executor
 
-    # Build tools schema
-    tools_list = tool_executor.registry.list_tools()
-    tools_schema = tool_executor.registry.to_openai_tools()
-
     # Get DB session
     factory = get_session_factory()
     async with factory() as db:
@@ -1518,6 +1521,10 @@ async def chat_websocket(
                 logger.info(f"加载了 {len(history)} 条历史消息")
 
                 # Build system prompt with memories (per-message for freshness)
+                await refresh_mcp_tools_for_agent(tool_executor, agent)
+                tools_list, tools_schema = _filter_tools_by_agent(
+                    tool_executor, agent, extra_blacklist=set(FRONTEND_TOOL_NAMES)
+                )
                 system_prompt = await _build_system_prompt_with_memories(
                     db, user_id, user_message, tools_list, agent=agent,
                     workspace_files=None,  # WebSocket doesn't support file attachments
@@ -1559,6 +1566,7 @@ async def chat_websocket(
                     delegation=delegation,
                     workspace_id=workspace_id,
                     workspace_slug=workspace_slug,
+                    allowed_tools={s["function"]["name"] for s in tools_schema},
                 )
                 logger.info("Agent loop 已创建，开始处理...")
 

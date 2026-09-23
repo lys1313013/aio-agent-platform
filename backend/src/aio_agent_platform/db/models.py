@@ -912,6 +912,9 @@ class Skill(Base):
         DateTime(timezone=True), default=func.now(), onupdate=func.now(), comment="更新时间"
     )
 
+    provenance: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}", comment="创建和修改来源")
+    verification: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}", comment="当前版本验证信息")
+
     user: Mapped["User"] = relationship(
         back_populates="skills",
         primaryjoin="Skill.user_id == User.id",
@@ -936,6 +939,16 @@ class Skill(Base):
     )
 
 
+class SkillMutation(Base):
+    __tablename__ = "skill_mutations"
+
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
+
+
 class SkillVersion(Base):
     __tablename__ = "skill_versions"
 
@@ -949,6 +962,8 @@ class SkillVersion(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False, comment="版本内容")
     object_key: Mapped[str | None] = mapped_column(String(512), nullable=True, comment="MinIO对象存储键")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="创建时间")
+
+    snapshot: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}", comment="完整版本元数据快照")
 
     skill: Mapped["Skill"] = relationship(
         back_populates="versions",

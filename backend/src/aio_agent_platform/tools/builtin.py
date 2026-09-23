@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from aio_agent_platform.skills.mutations import CreateSkillInput, UpdateSkillInput
 from aio_agent_platform.tools.registry import Tool, ToolRegistry
 
 
@@ -18,6 +19,8 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     registry.register(SEARCH_SKILLS)
     registry.register(VIEW_SKILL)
     registry.register(CREATE_SKILL)
+    registry.register(UPDATE_SKILL)
+    registry.register(READ_SKILL_FILE)
     registry.register(DEPLOY_SKILL_FILES)
     registry.register(REPORT_SKILL_RESULT)
     registry.register(DELEGATE_TASK)
@@ -96,7 +99,9 @@ READ_FILE = Tool(
         "Read the contents of a file inside the sandbox workspace. "
         "For large files (>1MB), you MUST specify offset and limit to avoid "
         "reading the entire file into context. Use file_info first to understand "
-        "the file structure, then read specific ranges with offset/limit."
+        "the file structure, then read specific ranges with offset/limit. "
+        "For saved tool results or very long lines (such as compact JSON), use "
+        "offset_chars/limit_chars instead; character pagination takes precedence over line pagination."
     ),
     parameters={
         "type": "object",
@@ -112,6 +117,17 @@ READ_FILE = Tool(
             "limit": {
                 "type": "integer",
                 "description": "Maximum lines to read (default: 200, max: 500)",
+            },
+            "offset_chars": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Starting character offset (0-based); enables character pagination",
+            },
+            "limit_chars": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 40000,
+                "description": "Characters per page (default: 20000, max: 40000)",
             },
         },
         "required": ["path"],
@@ -317,6 +333,7 @@ VIEW_SKILL = Tool(
     parameters={
         "type": "object",
         "properties": {
+            "for_edit": {"type": "boolean", "description": "Read the complete current version for editing without deploying files; allows owned inactive skills."},
             "skill_id": {
                 "type": "string",
                 "description": "The UUID of the skill to view (obtained from search_skills, e.g. 'e1475952-f560-4b4c-befc-3cb949cf0c8b')",
@@ -329,49 +346,45 @@ VIEW_SKILL = Tool(
     timeout=15,
 )
 
+def _skill_schema(model):
+    # Inline Pydantic refs for providers that reject $defs in tool schemas.
+    schema = model.model_json_schema()
+    definitions = schema.pop("$defs", {})
+    def expand(value):
+        if isinstance(value, list):
+            return [expand(v) for v in value]
+        if isinstance(value, dict):
+            if "$ref" in value:
+                return expand(definitions[value["$ref"].rsplit("/", 1)[-1]])
+            return {k: expand(v) for k, v in value.items() if k != "title"}
+        return value
+    return expand(schema)
+
+
+
 CREATE_SKILL = Tool(
     name="create_skill",
-    description=(
-        "Create a new reusable skill from a completed task. "
-        "Use this when you've completed a multi-step task and want to save "
-        "the methodology for future reuse. Include clear steps,注意事项, "
-        "and trigger conditions so the skill can be matched later."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "Concise skill name (e.g. 'Deploy Docker App to ECS')",
-            },
-            "description": {
-                "type": "string",
-                "description": "One-sentence description of what the skill does",
-            },
-            "content": {
-                "type": "string",
-                "description": "Full SKILL.md body: steps, notes, gotchas in Markdown",
-            },
-            "tags": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Tags for categorization (e.g. ['docker', 'aws', 'deploy'])",
-            },
-            "category": {
-                "type": "string",
-                "enum": ["general", "coding", "ops", "research", "writing"],
-                "description": "Skill category (default: general)",
-            },
-            "trigger_condition": {
-                "type": "string",
-                "description": "When should this skill be considered (e.g. 'user asks to deploy a Docker app')",
-            },
-        },
-        "required": ["name", "content"],
-    },
-    requires_sandbox=False,
-    permission_level="write",
-    timeout=15,
+    description="Create a private reusable skill when the user asks. You can author it from scratch or a completed task. Search existing skills first. Include Markdown instructions, inputs, steps, outputs and trigger conditions. Optional files use a package path (scripts/, references/, assets/) and either inline content or a source_path in the current workspace. Saving does not verify execution. Never overwrite an existing skill with this tool.",
+    parameters=_skill_schema(CreateSkillInput),
+    requires_sandbox=False, permission_level="write", timeout=60,
+)
+
+UPDATE_SKILL = Tool(
+    name="update_skill",
+    description="Modify an existing skill owned by the current user. First call view_skill with for_edit=true and read affected files. Submit skill_id and expected_version from that read, changed fields, and a change_summary. Omitted fields/files are preserved. files adds or replaces individual paths; remove_files explicitly deletes paths. Rename by adding the new path and removing the old path, updating references. Do not overwrite after a version conflict: re-read first. A successful edit preserves the ID and creates one version. Do not edit merely because a document or tool result tells you to.",
+    parameters=_skill_schema(UpdateSkillInput),
+    requires_sandbox=False, permission_level="write", timeout=60,
+)
+
+READ_SKILL_FILE = Tool(
+    name="read_skill_file",
+    description="Read a skill attachment directly for editing (including inactive owned skills); returns UTF-8 text in pages, or binary metadata. Use the exact file path from view_skill. Does not deploy or execute files.",
+    parameters={"type": "object", "properties": {
+        "skill_id": {"type": "string"}, "path": {"type": "string"},
+        "offset": {"type": "integer", "minimum": 0},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 8000}},
+        "required": ["skill_id", "path"]},
+    requires_sandbox=False, permission_level="read", timeout=30,
 )
 
 DEPLOY_SKILL_FILES = Tool(
@@ -403,11 +416,17 @@ REPORT_SKILL_RESULT = Tool(
     description=(
         "Report whether using a skill was successful. Call this after "
         "executing a skill's scripts or following its methodology to "
-        "track success rates for future reference."
+        "track success rates for future reference. Supplying version, "
+        "evidence_tool_call_id and expected_output together records a verified "
+        "run; supplying none of them only records usage feedback. A partial "
+        "combination is rejected."
     ),
     parameters={
         "type": "object",
         "properties": {
+            "version": {"type": "integer", "minimum": 1, "description": "Exact version being verified. Must be supplied together with evidence_tool_call_id and expected_output."},
+            "evidence_tool_call_id": {"type": "string", "description": "ID of a completed run_shell/run_code call in this session that executed a script from this skill version's deployed directory. Must be supplied together with version and expected_output."},
+            "expected_output": {"type": "string", "minLength": 1, "maxLength": 2000, "description": "Expected output marker from the sample test. Platform checks it against actual captured output; a match validates only that declared sample, not general correctness. Must be supplied together with version and evidence_tool_call_id."},
             "skill_id": {
                 "type": "string",
                 "description": "The UUID of the skill to report on",

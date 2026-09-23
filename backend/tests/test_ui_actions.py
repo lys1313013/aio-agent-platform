@@ -8,6 +8,8 @@ import asyncio
 import uuid
 from unittest.mock import MagicMock
 
+import pytest
+
 from aio_agent_platform.core.agent import AgentLoop
 from aio_agent_platform.core.ui_action import (
     REF_FAILURE_BREAKER_THRESHOLD,
@@ -170,6 +172,7 @@ async def test_ui_action_happy_path():
     """Full loop: ui_action_required pushed → respond → ok tool_result."""
     queue: asyncio.Queue = asyncio.Queue()
     loop = _make_loop_for_ui(event_queue=queue)
+    loop.allowed_tools = {"ui_navigate"}
     _scripted_stream(loop.provider, [
         _tool_stream("ui_navigate", '{"path": "/agents"}'),
         _text_stream(),
@@ -211,7 +214,7 @@ async def _aiter(items):
         yield it
 
 
-# ---- filter_tools_by_agent 注入维度（docs/22 §2.2：执行通道，非 enabled_tools）----
+# ---- UI tools require both agent permission and a frontend channel ----
 
 
 def _make_executor_with_builtin_tools():
@@ -234,20 +237,86 @@ def _make_agent(enabled_tools=None):
     return agent
 
 
-def test_ui_tools_auto_injected_despite_enabled_tools_whitelist():
-    """agent 配置了 enabled_tools 白名单时，ui_* 仍应注入（SSE 会话）。"""
+def test_ui_tools_not_injected_outside_agent_whitelist():
+    """有浏览器不代表获得未配置的页面操作权限。"""
     from aio_agent_platform.core.chat import filter_tools_by_agent
+    from aio_agent_platform.tools.builtin import FRONTEND_TOOL_NAMES
 
     executor = _make_executor_with_builtin_tools()
     agent = _make_agent(enabled_tools=["run_shell"])
     tools_list, tools_schema = filter_tools_by_agent(executor, agent)
     names = {t.name for t in tools_list}
-    assert {
-        "ui_navigate", "ui_click", "ui_input",
-        "ui_scroll_to", "ui_read_screen", "ui_screenshot",
-    } <= names
+    assert "run_shell" in names
+    assert not names.intersection(FRONTEND_TOOL_NAMES)
     schema_names = {s["function"]["name"] for s in tools_schema}
-    assert "ui_navigate" in schema_names
+    assert not schema_names.intersection(FRONTEND_TOOL_NAMES)
+
+
+def test_only_explicitly_selected_ui_tools_are_available():
+    from aio_agent_platform.core.chat import filter_tools_by_agent
+    from aio_agent_platform.tools.builtin import FRONTEND_TOOL_NAMES
+
+    tools, schema = filter_tools_by_agent(
+        _make_executor_with_builtin_tools(),
+        _make_agent(enabled_tools=["run_shell", "ui_read_screen"]),
+    )
+    assert {t.name for t in tools}.intersection(FRONTEND_TOOL_NAMES) == {"ui_read_screen"}
+    assert {s["function"]["name"] for s in schema}.intersection(FRONTEND_TOOL_NAMES) == {"ui_read_screen"}
+
+
+@pytest.mark.parametrize("enabled_tools", [None, []])
+def test_legacy_all_tools_default_is_preserved(enabled_tools):
+    from aio_agent_platform.core.chat import filter_tools_by_agent
+    from aio_agent_platform.tools.builtin import FRONTEND_TOOL_NAMES
+
+    _, schema = filter_tools_by_agent(_make_executor_with_builtin_tools(), _make_agent(enabled_tools))
+    assert set(FRONTEND_TOOL_NAMES) <= {s["function"]["name"] for s in schema}
+
+
+async def test_unconfigured_ui_call_is_denied_before_browser_dispatch():
+    from aio_agent_platform.core.chat import filter_tools_by_agent
+
+    executor = _make_executor_with_builtin_tools()
+    _, schema = filter_tools_by_agent(executor, _make_agent(["run_shell"]))
+    queue = asyncio.Queue()
+    loop = AgentLoop(provider=MagicMock(), tool_executor=executor, event_queue=queue,
+                     allowed_tools={s["function"]["name"] for s in schema})
+    loop._run_ui_action_flow = MagicMock(side_effect=AssertionError("must not dispatch"))
+    _scripted_stream(loop.provider, [
+        _tool_stream("ui_click", '{"action_ref":"nav.goto_skills"}'),
+        _text_stream(),
+    ])
+    events = []
+    async with asyncio.timeout(2):
+        async for event in loop.run(user_input="查看技能", user_id=uuid.uuid4(),
+                                    session_id=uuid.uuid4(), conversation_history=[], tools=schema):
+            events.append(event)
+    results = [e for e in events if isinstance(e, str) and e.startswith("tool_result:")]
+    assert any(":ui_click:err:" in e and "Permission denied" in e for e in results)
+    loop._run_ui_action_flow.assert_not_called()
+    executor.execute.assert_not_called()
+    assert queue.empty()
+
+
+@pytest.mark.parametrize("allowed", [set(), {"run_shell"}, {"ui_read_screen"}])
+def test_page_context_does_not_advertise_unavailable_click_actions(allowed):
+    from aio_agent_platform.interface.routes.chat import _format_page_context_section
+
+    section = _format_page_context_section({"page_path": "/agents", "actions": [
+        {"name": "nav.goto_skills", "description": "查看技能"},
+    ]}, allowed)
+    assert "/agents" in section
+    assert "ui_click" not in section
+    assert "nav.goto_skills" not in section
+
+
+def test_page_context_advertises_authorized_click_actions():
+    from aio_agent_platform.interface.routes.chat import _format_page_context_section
+
+    section = _format_page_context_section({"actions": [
+        {"name": "nav.goto_skills", "description": "查看技能"},
+    ]}, {"ui_click"})
+    assert "nav.goto_skills" in section and "ui_click" in section
 
 
 def test_ui_tools_excluded_by_blacklist():

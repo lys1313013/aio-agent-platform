@@ -29,7 +29,7 @@ NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 BUILTIN_TOOL_NAMES = {
     "run_shell", "run_code", "read_file", "write_file", "edit_file", "list_directory",
     "memory_read", "memory_write",
-    "search_skills", "view_skill", "create_skill",
+    "search_skills", "view_skill", "create_skill", "update_skill", "read_skill_file",
     "delegate_task", "AskUserQuestion",
     "knowledge_retrieval",
 }

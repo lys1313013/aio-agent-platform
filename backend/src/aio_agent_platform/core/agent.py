@@ -693,7 +693,7 @@ class AgentLoop:
                 step.tool_results.append(result)
 
                 status = "ok" if result.success else "err"
-                output_preview = (result.output if result.success else result.error or "")[:10000]
+                output_preview = result.output if result.success else (result.error or "")[:50000]
                 logger.debug(
                     "agent_loop_tool_result",
                     session_id=str(session_id),
@@ -745,7 +745,7 @@ class AgentLoop:
                     step.tool_results.append(result)
 
                     status = "ok" if result.success else "err"
-                    output_preview = (result.output if result.success else result.error or "")[:500]
+                    output_preview = result.output if result.success else (result.error or "")[:50000]
                     logger.info(
                         "agent_loop_delegation_result",
                         session_id=str(session_id),
@@ -755,6 +755,9 @@ class AgentLoop:
                         duration_ms=round(result.duration_ms, 2),
                     )
                     yield f"tool_result:{tc.id}:{tc.name}:{status}:{json.dumps(output_preview, ensure_ascii=False)}"
+
+                    if result.file_changes:
+                        yield f"file_changes:{json.dumps(result.file_changes, ensure_ascii=False)}"
 
             # Inject tool results as messages
             for tr in step.tool_results:
@@ -970,7 +973,7 @@ class AgentLoop:
 
         if tool_obs:
             status = "success" if result.success else "error"
-            output = (result.output if result.success else result.error or "")[:10000]
+            output = (result.output if result.success else result.error or "")[:50000]
             tool_obs.update(
                 output=output,
                 metadata={

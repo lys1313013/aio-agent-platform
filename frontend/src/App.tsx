@@ -13,6 +13,7 @@ import UsagePage from '@/pages/UsagePage';
 import ObservabilityPage from '@/pages/ObservabilityPage';
 import MemoryPage from '@/pages/MemoryPage';
 import SkillsPage from '@/pages/SkillsPage';
+import SkillDetailPage from '@/pages/SkillDetailPage';
 import PetsPage from '@/pages/PetsPage';
 import WorkspacesPage from '@/pages/WorkspacesPage';
 import SettingsPage from '@/pages/SettingsPage';
@@ -32,6 +33,7 @@ import TenantManagementPage from '@/pages/TenantManagementPage';
 import UserManagementPage from '@/pages/UserManagementPage';
 import PortalAgentListPage from '@/pages/portal/PortalAgentListPage';
 import PortalChatPage from '@/pages/portal/PortalChatPage';
+import PortalSkillsPage from '@/pages/portal/PortalSkillsPage';
 import AppLayout from '@/components/layout/AppLayout';
 import PortalLayout from '@/components/layout/PortalLayout';
 
@@ -87,6 +89,8 @@ export default function App() {
         }
       />
 
+      <Route path="/skills/:skillId" element={<ProtectedRoute><SkillDetailPage /></ProtectedRoute>} />
+
       {/* Protected routes */}
       <Route
         element={
@@ -136,6 +140,7 @@ export default function App() {
         }
       >
         <Route path="/portal" element={<PortalAgentListPage />} />
+        <Route path="/portal/skills" element={<PortalSkillsPage />} />
         <Route path="/portal/rooms" element={<RoomsPage />} />
         <Route path="/portal/rooms/:roomId" element={<RoomsPage />} />
         <Route path="/portal/agents/:agentId/chat" element={<PortalChatPage />} />

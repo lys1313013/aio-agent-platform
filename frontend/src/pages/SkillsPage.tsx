@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ThunderboltOutlined,
   PlusOutlined,
@@ -40,6 +41,8 @@ import {
   Checkbox,
 } from 'antd';
 import { skillsApi } from '@/lib/api';
+import { openSourceSession } from '@/lib/skillSource';
+import { useAuthStore } from '@/stores/authStore';
 import type { Skill, SkillVersion, SkillFile, SkillsShRepoMeta, SkillsShResolveResult, SkillsShSearchItem } from '@/lib/types';
 import SkillEditorDrawer from '@/components/skills/SkillEditorDrawer';
 
@@ -63,6 +66,8 @@ interface ShResult extends SkillsShRepoMeta {
 }
 
 export default function SkillsPage() {
+  const navigate = useNavigate();
+  const role = useAuthStore(s => s.role);
   const [activeCategory, setActiveCategory] = useState('全部');
   const [searchQuery, setSearchQuery] = useState('');
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -99,7 +104,8 @@ export default function SkillsPage() {
           id: r.id, name: r.name, description: r.description, content: null,
           tags: r.tags, category: r.category, trigger_condition: null,
           use_count: r.use_count, success_count: r.success_count,
-          is_public: false, is_active: true, version: r.version,
+          is_public: r.is_public ?? false, is_active: true, version: r.version,
+          provenance: r.provenance, verification: r.verification,
           files: r.files || [], last_used_at: null, created_at: '', updated_at: '',
         })));
         setTotal(results.length);
@@ -119,11 +125,10 @@ export default function SkillsPage() {
 
   const openCreate = () => { setEditorSkill(null); setEditorMode('create'); setEditorOpen(true); };
 
-  const openView = async (skill: Skill) => {
-    try {
-      const full = await skillsApi.get(skill.id);
-      setEditorSkill(full); setEditorMode('view'); setEditorOpen(true);
-    } catch { message.error('加载技能详情失败'); }
+  const openView = (skill: Skill) => navigate(`/skills/${skill.id}`);
+
+  const openSource = async (sessionId: string) => {
+    if (!await openSourceSession(sessionId, role, navigate)) message.error('来源会话已删除或无权访问');
   };
 
   const openEdit = async (skill: Skill) => {
@@ -319,7 +324,7 @@ export default function SkillsPage() {
                 description={
                   <div>
                     <Text type="secondary">{searchQuery || activeCategory !== '全部' ? '没有匹配的技能。' : '还没有学到任何技能。'}</Text><br />
-                    <Text type="secondary" className="text-xs">当 Agent 完成多步骤任务时，技能会自动提取。</Text>
+                    <Text type="secondary" className="text-xs">可在对话中要求智能体创建技能，或在此手工创建。</Text>
                   </div>
                 }
               />
@@ -354,6 +359,29 @@ export default function SkillsPage() {
                           {skill.description || '暂无描述'}
                         </Text>
 
+                        <div className="flex flex-wrap gap-1 mb-2">
+                          <Tag>{skill.provenance?.created?.type === 'agent' ? '智能体创建' : skill.provenance?.created?.type === 'manual' ? '手工创建' : '历史记录，来源未知'}</Tag>
+                          <Tag>{skill.verification?.status === 'passed' ? '验证通过' : skill.verification?.status === 'failed' ? '验证失败' : '未验证'}</Tag>
+                          {!skill.is_active && <Tag>已停用</Tag>}
+                        </div>
+                        {(skill.provenance?.created?.agent_id || skill.provenance?.created?.session_id || (skill.verification?.status === 'failed' && skill.verification?.note)) && (
+                          <div className="flex flex-wrap items-center gap-2 mb-2">
+                            {skill.provenance?.created?.agent_id && (
+                              <Tooltip title={skill.provenance.created.agent_id}>
+                                <Text type="secondary" className="text-[10px]">创建智能体 {skill.provenance.created.agent_id.slice(0, 8)}</Text>
+                              </Tooltip>
+                            )}
+                            {skill.provenance?.created?.session_id && (
+                              <Button type="link" size="small" className="!text-[10px] !p-0 h-auto"
+                                onClick={() => openSource(skill.provenance!.created!.session_id!)}>
+                                来源会话
+                              </Button>
+                            )}
+                            {skill.verification?.status === 'failed' && skill.verification?.note && (
+                              <Text type="danger" className="text-[10px]">{skill.verification.note}</Text>
+                            )}
+                          </div>
+                        )}
                         {/* Tags */}
                         {skill.tags.length > 0 && (
                           <div className="flex flex-wrap gap-1 mb-3">
@@ -466,7 +494,7 @@ export default function SkillsPage() {
                     <div>
                       <div className="flex items-center gap-2 mb-1">
                         <Text strong className="text-sm">v{v.version}</Text>
-                        {i === 0 && <Tag color="blue" className="!text-[10px]">最新</Tag>}
+                        <Button type="link" size="small" onClick={() => navigate(`/skills/${versionsSkill?.id}?version=${v.version}`)}>查看完整版本</Button>
                       </div>
                       <Text type="secondary" className="text-xs block">{new Date(v.created_at).toLocaleString('zh-CN')}</Text>
                       <pre className="mt-2 text-xs bg-muted p-3 rounded-lg max-h-40 overflow-auto whitespace-pre-wrap leading-relaxed">

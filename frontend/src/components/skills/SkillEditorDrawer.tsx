@@ -141,13 +141,14 @@ export default function SkillEditorDrawer({ open, mode: initialMode, skill, onCl
   const [formTrigger, setFormTrigger] = useState('');
   const [formFiles, setFormFiles] = useState<{ file: File; type: 'script' | 'reference' | 'asset' }[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [removedFiles, setRemovedFiles] = useState<string[]>([]);
 
-  const existingFiles: { path: string; type: string }[] = skill?.files?.map((f) => ({ path: f.path, type: f.type })) || [];
+  const existingFiles: { path: string; type: string }[] = skill?.files?.filter(f => !removedFiles.includes(f.path)).map((f) => ({ path: f.path, type: f.type })) || [];
   const pendingFiles: { path: string; type: string }[] = formFiles.map((f) => ({
     path: `${f.type === 'script' ? 'scripts' : f.type === 'reference' ? 'references' : 'assets'}/${f.file.name}`,
     type: f.type,
   }));
-  const allTreeFiles = [...existingFiles, ...pendingFiles];
+  const allTreeFiles = [...new Map([...existingFiles, ...pendingFiles].map(f => [f.path, f])).values()];
   const tree = buildTree(allTreeFiles);
 
   // ── sync on open ──
@@ -156,6 +157,7 @@ export default function SkillEditorDrawer({ open, mode: initialMode, skill, onCl
     setSelectedPath('SKILL.md');
     setFileContents({});
     setFormFiles([]);
+    setRemovedFiles([]);
     if (skill) {
       setFormName(skill.name);
       setFormDescription(skill.description || '');
@@ -201,19 +203,10 @@ export default function SkillEditorDrawer({ open, mode: initialMode, skill, onCl
     loadFile(path);
   };
 
-  const handleDeleteFile = async (filePath: string) => {
-    if (!skill) return;
-    try {
-      await skillsApi.deleteFile(skill.id, filePath);
-      message.success('文件已删除');
-      setFileContents((prev) => { const c = { ...prev }; delete c[filePath]; return c; });
-      const refreshed = await skillsApi.get(skill.id);
-      setFileContents((prev) => ({ ...prev, 'SKILL.md': refreshed.content || '' }));
-      if (selectedPath === filePath) setSelectedPath('SKILL.md');
-      onSaved();
-    } catch {
-      message.error('删除文件失败');
-    }
+  const handleDeleteFile = (filePath: string) => {
+    setRemovedFiles(prev => [...new Set([...prev, filePath])]);
+    if (selectedPath === filePath) setSelectedPath('SKILL.md');
+    message.info('已标记移除，保存更改后生效');
   };
 
   // ── save ──
@@ -221,44 +214,30 @@ export default function SkillEditorDrawer({ open, mode: initialMode, skill, onCl
     if (!formName.trim() || !formContent.trim()) { message.warning('名称和内容不能为空'); return; }
     setSubmitting(true);
     try {
-      let skillId: string;
+      const files = await Promise.all(formFiles.map(async ({ file, type }) => {
+        if (file.size > 1024 * 1024) throw new Error(`${file.name} 超过 1 MiB`);
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+        const dir = type === 'script' ? 'scripts' : type === 'reference' ? 'references' : 'assets';
+        return { path: `${dir}/${file.name}`, content_base64: btoa(binary) };
+      }));
+      const data = {
+        name: formName.trim(), description: formDescription.trim(), content: formContent.trim(),
+        tags: formTags, category: formCategory, trigger_condition: formTrigger.trim(), files,
+      };
       if (mode === 'edit' && skill) {
-        const updated = await skillsApi.update(skill.id, {
-          name: formName.trim(),
-          description: formDescription.trim() || undefined,
-          content: formContent.trim(),
-          tags: formTags,
-          category: formCategory,
-          trigger_condition: formTrigger.trim() || undefined,
-        });
-        skillId = updated.id;
+        await skillsApi.update(skill.id, { ...data, expected_version: skill.version,
+          remove_files: removedFiles.filter(path => !files.some(f => f.path === path)) });
         message.success('技能已更新');
       } else {
-        const created = await skillsApi.create({
-          name: formName.trim(),
-          description: formDescription.trim() || undefined,
-          content: formContent.trim(),
-          tags: formTags,
-          category: formCategory,
-          trigger_condition: formTrigger.trim() || undefined,
-        });
-        skillId = created.id;
+        await skillsApi.create(data);
         message.success('技能已创建');
-      }
-      if (formFiles.length > 0) {
-        const byType: Record<string, File[]> = { script: [], reference: [], asset: [] };
-        formFiles.forEach(({ file, type }) => byType[type].push(file));
-        for (const [ft, fl] of Object.entries(byType)) {
-          if (fl.length > 0) {
-            try { await skillsApi.uploadFiles(skillId, fl, ft as 'script' | 'reference' | 'asset'); }
-            catch { message.warning(`${ft} 文件上传失败`); }
-          }
-        }
       }
       onSaved();
       onClose();
-    } catch {
-      message.error(mode === 'edit' ? '更新失败' : '创建失败');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : mode === 'edit' ? '更新失败' : '创建失败');
     } finally {
       setSubmitting(false);
     }
@@ -466,6 +445,21 @@ export default function SkillEditorDrawer({ open, mode: initialMode, skill, onCl
                     ))}
                   </div>
                 )}
+
+                {/* Files marked for removal on save */}
+                {removedFiles.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    <Text type="secondary" className="text-[10px]">待移除 ({removedFiles.length}):</Text>
+                    {removedFiles.map((path) => (
+                      <div key={path} className="flex items-center justify-between text-xs bg-red-50/60 dark:bg-red-950/30 border border-red-100 dark:border-red-900/30 px-2 py-1 rounded-md">
+                        <span className="truncate text-[11px] line-through">{path}</span>
+                        <Button type="text" size="small" className="!text-[10px]" onClick={() => setRemovedFiles((p) => p.filter((x) => x !== path))}>
+                          撤销
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -484,8 +478,8 @@ export default function SkillEditorDrawer({ open, mode: initialMode, skill, onCl
                     {selectedFile.size < 1024 ? `${selectedFile.size} B` : `${(selectedFile.size / 1024).toFixed(1)} KB`}
                   </Text>
                 )}
-                {mode === 'view' && selectedPath !== 'SKILL.md' && (
-                  <Popconfirm title="删除此文件？" onConfirm={() => handleDeleteFile(selectedFile.path)} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
+                {mode !== 'create' && selectedPath !== 'SKILL.md' && (
+                  <Popconfirm title="移除此文件？保存更改后生效" onConfirm={() => handleDeleteFile(selectedFile.path)} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
                     <Button size="small" type="text" danger icon={<DeleteOutlined />} className="!text-xs" />
                   </Popconfirm>
                 )}

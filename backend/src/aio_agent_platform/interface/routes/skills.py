@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -11,7 +12,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +21,7 @@ from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.db.connection import get_db
 from aio_agent_platform.db.models import Skill
 from aio_agent_platform.interface.headers import attachment_disposition
+from aio_agent_platform.skills.contracts import SkillError
 from aio_agent_platform.skills.service import SkillService
 from aio_agent_platform.skills.sh_client import (
     SkillsShError,
@@ -28,7 +31,20 @@ from aio_agent_platform.skills.sh_client import (
 )
 from aio_agent_platform.skills.storage import SCRIPT_EXTENSIONS, SkillStorage
 
-router = APIRouter(prefix="/api/skills", tags=["skills"])
+
+class SkillRoute(APIRoute):
+    def get_route_handler(self):
+        original = super().get_route_handler()
+        async def handler(request):
+            try:
+                return await original(request)
+            except SkillError as exc:
+                status = 409 if exc.code in {"version_conflict", "name_conflict", "busy"} else 502 if exc.code == "storage_unavailable" else 400
+                raise HTTPException(status_code=status, detail=exc.payload()) from exc
+        return handler
+
+
+router = APIRouter(prefix="/api/skills", tags=["skills"], route_class=SkillRoute)
 
 # ---- File validation constants ----
 MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MB per file
@@ -40,6 +56,8 @@ VALID_FILE_TYPES = {"script", "reference", "asset"}
 
 
 class SkillOut(BaseModel):
+    provenance: dict = Field(default_factory=dict)
+    verification: dict = Field(default_factory=dict)
     id: UUID
     name: str
     description: str | None = None
@@ -63,6 +81,8 @@ class SkillOut(BaseModel):
     def from_model(cls, s: Skill) -> SkillOut:
         return cls(
             id=s.id,
+            provenance=s.provenance or {},
+            verification=s.verification or {},
             name=s.name,
             description=s.description,
             content=s.content,
@@ -81,7 +101,28 @@ class SkillOut(BaseModel):
         )
 
 
+class SkillFileInput(BaseModel):
+    path: str
+    content: str | None = None
+    content_base64: str | None = Field(default=None, max_length=1398104)
+    description: str = ""
+
+    @model_validator(mode="after")
+    def single_source(self):
+        if (self.content is None) == (self.content_base64 is None):
+            raise ValueError("附件必须提供且只提供 content 或 content_base64")
+        return self
+
+    def entry(self):
+        try:
+            data = base64.b64decode(self.content_base64, validate=True) if self.content_base64 is not None else self.content
+        except ValueError as exc:
+            raise SkillError("invalid_file", f"附件编码无效：{self.path}") from exc
+        return {"path": self.path, "content": data, "description": self.description}
+
+
 class SkillCreate(BaseModel):
+    files: list[SkillFileInput] = Field(default_factory=list, max_length=50)
     name: str = Field(..., min_length=1, max_length=256)
     description: str | None = Field(default=None, max_length=2000)
     content: str = Field(..., min_length=1)
@@ -91,6 +132,9 @@ class SkillCreate(BaseModel):
 
 
 class SkillUpdate(BaseModel):
+    files: list[SkillFileInput] = Field(default_factory=list, max_length=50)
+    remove_files: list[str] = Field(default_factory=list, max_length=50)
+    expected_version: int = Field(ge=1)
     name: str | None = Field(default=None, min_length=1, max_length=256)
     description: str | None = None
     content: str | None = Field(default=None, min_length=1)
@@ -108,6 +152,7 @@ class SkillListResponse(BaseModel):
 
 
 class SkillVersionOut(BaseModel):
+    snapshot: dict = Field(default_factory=dict)
     id: UUID
     skill_id: UUID
     version: int
@@ -118,6 +163,9 @@ class SkillVersionOut(BaseModel):
 
 
 class SkillSearchResult(BaseModel):
+    provenance: dict = Field(default_factory=dict)
+    verification: dict = Field(default_factory=dict)
+    is_public: bool = False
     id: UUID
     name: str
     description: str | None = None
@@ -215,6 +263,9 @@ async def search_skills(
     return [
         SkillSearchResult(
             id=s.id,
+            provenance=s.provenance or {},
+            verification=s.verification or {},
+            is_public=s.is_public,
             name=s.name,
             description=s.description,
             category=s.category,
@@ -431,7 +482,7 @@ async def import_skill(
             # Unknown directory — treat as asset
             ftype = "asset"
         # Use basename for filename
-        fname = path.split("/")[-1]
+        fname = path.split("/", 1)[1] if "/" in path else path
         file_entries.append({
             "filename": fname,
             "content": file_content,
@@ -473,6 +524,7 @@ async def create_skill(
         category=req.category,
         trigger_condition=req.trigger_condition,
         storage=storage,
+        files=[f.entry() for f in req.files],
     )
     await db.commit()
     return SkillOut.from_model(skill).model_dump(mode="json")
@@ -513,6 +565,9 @@ async def update_skill(
         is_active=req.is_active,
         is_public=req.is_public,
         storage=storage,
+        expected_version=req.expected_version,
+        file_changes=[f.entry() for f in req.files],
+        remove_files=req.remove_files,
     )
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
@@ -570,6 +625,7 @@ async def get_version(
         "skill_id": str(skill_id),
         "version": version,
         "content": content,
+        "snapshot": ver.snapshot if ver else {},
         "created_at": ver.created_at.isoformat() if ver else None,
     }
 
@@ -587,6 +643,8 @@ async def download_skill(
 
     storage = _get_storage()
     if not storage or not skill.object_key:
+        if skill.files:
+            raise HTTPException(status_code=502, detail="附件存储不可用，无法下载完整技能包")
         if not skill.content:
             raise HTTPException(status_code=404, detail="No content available")
         zip_bytes = SkillStorage.create_skill_zip(
@@ -655,6 +713,7 @@ async def upload_skill_files(
     files: list[UploadFile] = File(...),
     file_type: str = Form("script"),
     descriptions: str = Form("[]"),
+    expected_version: int = Form(...),
 ) -> dict:
     """Upload files to an existing skill.
 
@@ -696,19 +755,11 @@ async def upload_skill_files(
             detail=f"Total file size exceeds 10 MB limit ({total_size} bytes)",
         )
 
-    # Upload each file
-    for fname, data, desc_info in file_data_list:
-        await SkillService.add_file_to_skill(
-            db=db,
-            skill_id=skill_id,
-            user_id=user.id,
-            filename=fname,
-            file_content=data,
-            file_type=file_type,
-            description=desc_info.get("description", ""),
-            language=desc_info.get("language"),
-            storage=storage,
-        )
+    await SkillService.update_skill(db, skill_id, user.id, storage=storage,
+        expected_version=expected_version,
+        file_changes=[{"filename": fname, "content": data, "type": file_type,
+                       "description": desc.get("description", ""), "language": desc.get("language")}
+                      for fname, data, desc in file_data_list], change_summary="上传附件")
 
     await db.commit()
 
@@ -738,6 +789,7 @@ async def list_skill_files(
 async def delete_skill_file(
     skill_id: UUID,
     file_path: str,
+    expected_version: int,
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
@@ -752,6 +804,7 @@ async def delete_skill_file(
         user_id=user.id,
         file_path=file_path,
         storage=storage,
+        expected_version=expected_version,
     )
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
@@ -806,3 +859,26 @@ async def download_skill_file(
             "Content-Disposition": attachment_disposition(filename),
         },
     )
+
+
+@router.get("/{skill_id}/versions/{version}/download")
+async def download_skill_version(skill_id: UUID, version: int, user: CurrentUser,
+                                 db: Annotated[AsyncSession, Depends(get_db)]) -> StreamingResponse:
+    ver = await SkillService.get_version(db, skill_id, version, user.id)
+    if not ver:
+        raise HTTPException(status_code=404, detail="Version not found")
+    storage = _get_storage()
+    if ver.object_key:
+        if not storage:
+            raise SkillError("storage_unavailable", "历史附件存储不可用")
+        try:
+            data = storage.download_skill_zip(ver.object_key)
+        except Exception as exc:
+            raise SkillError("storage_unavailable", "历史技能包不可读取") from exc
+    else:
+        snapshot = ver.snapshot or {}
+        if snapshot.get("files"):
+            raise SkillError("storage_unavailable", "历史附件缺失")
+        data = SkillStorage.create_skill_zip(ver.content, snapshot.get("name", "skill"), snapshot)
+    return StreamingResponse(io.BytesIO(data), media_type="application/zip",
+        headers={"Content-Disposition": attachment_disposition(f"skill_v{version}.zip")})

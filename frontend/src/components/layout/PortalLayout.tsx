@@ -70,6 +70,7 @@ export default function PortalLayout() {
 
         <div className="flex items-center gap-2">
           <button onClick={() => navigate('/portal/rooms')} className="rounded-lg px-2 py-1.5 text-sm text-primary hover:bg-muted">聊天室</button>
+          <button onClick={() => navigate('/portal/skills')} className="rounded-lg px-2 py-1.5 text-sm text-primary hover:bg-muted">我的技能</button>
           {tenantOptions.length > 1 ? (
             <Select
               aria-label="当前租户"

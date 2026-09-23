@@ -100,6 +100,36 @@ async def obtain(manager, user="user", workspace="workspace", slug="default"):
     return await manager.get_or_create(user, "session", workspace, slug)
 
 
+async def test_result_file_is_synced_before_write_returns(setup, monkeypatch):
+    _, storage = setup
+    manager = SandboxManager(storage)
+    sandbox = await obtain(manager)
+    writes = []
+
+    async def live_write(*args):
+        assert manager._owners[sandbox.user_id] is asyncio.current_task()
+        writes.append("sandbox")
+        return True
+
+    storage.put_file = Mock(side_effect=lambda *_: writes.append("storage"))
+    monkeypatch.setattr("aio_agent_platform.storage.workspace.WorkspaceStorage.write_file_live", live_write)
+    assert await manager.write_workspace_file(sandbox, "workspace", "default", "result.txt", b"full")
+    assert writes == ["sandbox", "storage"]
+    storage.put_file.assert_called_once_with("workspace", "result.txt", b"full")
+
+
+async def test_result_file_storage_failure_is_propagated(setup, monkeypatch):
+    _, storage = setup
+    manager = SandboxManager(storage)
+    sandbox = await obtain(manager)
+    storage.put_file = Mock(side_effect=RuntimeError("storage failed"))
+    monkeypatch.setattr(
+        "aio_agent_platform.storage.workspace.WorkspaceStorage.write_file_live", AsyncMock(return_value=True),
+    )
+    with pytest.raises(RuntimeError, match="storage failed"):
+        await manager.write_workspace_file(sandbox, "workspace", "default", "result.txt", b"full")
+
+
 def expire(manager, sandbox):
     sandbox.last_used_at = datetime.now(UTC) - timedelta(seconds=settings.sandbox.session_ttl + 10)
     stamp = sandbox.last_used_at.timestamp()

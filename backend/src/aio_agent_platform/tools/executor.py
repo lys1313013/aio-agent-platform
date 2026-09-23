@@ -7,10 +7,12 @@ import json
 import mimetypes
 import posixpath
 import re
+import shlex
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import structlog
 
@@ -45,6 +47,9 @@ class ToolResult:
     error: str | None = None
     duration_ms: float = 0
     file_changes: list[dict] = field(default_factory=list)
+    output_chars: int = 0
+    output_bytes: int = 0
+    output_file: str | None = None
 
 
 @dataclass
@@ -62,11 +67,11 @@ class ToolExecutor:
     Responsibilities:
     - Path safety validation (no /workspace traversal)
     - Dangerous command blacklist
-    - Output truncation (>10K chars)
+    - Output preview (>50K chars) with full results saved to workspace files
     - Sandbox dispatch for requires_sandbox tools
     """
 
-    MAX_OUTPUT_SIZE = 10_000
+    MAX_OUTPUT_SIZE = 50_000
 
     DANGEROUS_COMMANDS = (
         "rm -rf /",
@@ -99,6 +104,8 @@ class ToolExecutor:
         self.remote_executor: RemoteToolExecutor | None = remote_executor
         # Cache for file analysis results: key = "workspace_id:path" -> FileMeta dict
         self._file_meta_cache: dict[str, dict] = {}
+        # Bounded evidence for explicitly requested skill sample validation.
+        self.skill_execution_evidence: dict[tuple[str, str, str], dict] = {}
 
     def register_direct_handler(self, name: str, handler: Callable) -> None:
         """Register a handler for a non-sandbox tool."""
@@ -152,6 +159,17 @@ class ToolExecutor:
             allowed_tools=allowed_tools,
             t_start=t_start,
         )
+        if tool_name in {"run_shell", "run_code"}:
+            self.skill_execution_evidence[(user_id, session_id, tool_call_id)] = {
+                "tool": tool_name, "arguments": arguments,
+                "success": result.success and "[exit code:" not in result.output,
+                "output": (result.output if result.success else result.error or "")[:16000],
+            }
+            while len(self.skill_execution_evidence) > 100:
+                self.skill_execution_evidence.pop(next(iter(self.skill_execution_evidence)))
+        if result.success:
+            await self._prepare_output(result, user_id, session_id, workspace_id, workspace_slug)
+        result.duration_ms = (time.monotonic() - t_start) * 1000
         self._record_tool_call(result, user_id, session_id)
         get_hook_manager().fire_nowait(
             "PostToolUse",
@@ -166,7 +184,8 @@ class ToolExecutor:
                 "error_type": self._error_type(result),
                 "duration_ms": int(result.duration_ms),
                 "output_excerpt": (result.output if result.success else result.error or "")[:500],
-                "is_truncated": len(result.output) > self.MAX_OUTPUT_SIZE,
+                "is_truncated": result.output_file is not None,
+                "output_file": result.output_file,
             },
         )
         return result
@@ -202,7 +221,6 @@ class ToolExecutor:
         if self.mcp_manager and self.mcp_manager.is_mcp_tool(tool_name):
             try:
                 output = await self.mcp_manager.call_tool(tool_name, arguments)
-                output = self._truncate(output)
                 return ToolResult(
                     tool_call_id=tool_call_id,
                     name=tool_name,
@@ -226,7 +244,6 @@ class ToolExecutor:
         if self.remote_manager and self.remote_manager.is_remote_tool(tool_name):
             try:
                 output = await self.remote_executor.call(tool_name, arguments)
-                output = self._truncate(output)
                 return ToolResult(
                     tool_call_id=tool_call_id,
                     name=tool_name,
@@ -259,13 +276,13 @@ class ToolExecutor:
                         workspace_id=workspace_id,
                         workspace_slug=workspace_slug,
                     )
-                    output = self._truncate(output)
                     return ToolResult(
                         tool_call_id=tool_call_id,
                         name=tool_name,
                         arguments=arguments,
                         output=output,
-                        success=True,
+                        success=getattr(output, "success", True),
+                        error=getattr(output, "error", None),
                         duration_ms=(time.monotonic() - t_start) * 1000,
                     )
                 except Exception as e:
@@ -317,15 +334,13 @@ class ToolExecutor:
                 )
                 file_changes = []
 
-            # 4. Truncate
-            output = self._truncate(output)
-
             return ToolResult(
                 tool_call_id=tool_call_id,
                 name=tool_name,
                 arguments=arguments,
                 output=output,
-                success=True,
+                success=getattr(output, "success", True),
+                error=getattr(output, "error", None),
                 file_changes=file_changes,
                 duration_ms=(time.monotonic() - t_start) * 1000,
             )
@@ -383,8 +398,8 @@ class ToolExecutor:
     def _record_tool_call(self, result: ToolResult, user_id: str, session_id: str) -> None:
         try:
             output = result.output if result.success else (result.error or "")
-            output_chars = len(output)
-            output_bytes = len(output.encode("utf-8", errors="replace"))
+            output_chars = result.output_chars if result.success else len(output)
+            output_bytes = result.output_bytes if result.success else len(output.encode("utf-8", errors="replace"))
             args_json = json.dumps(result.arguments, ensure_ascii=False, default=str)
             arg_chars = len(args_json)
             arg_bytes = len(args_json.encode("utf-8", errors="replace"))
@@ -400,8 +415,8 @@ class ToolExecutor:
                 arg_chars=arg_chars,
                 output_bytes=output_bytes,
                 output_chars=output_chars,
-                est_injected_tokens=int(output_chars / 4) if output_chars else None,
-                is_truncated=output_chars > self.MAX_OUTPUT_SIZE,
+                est_injected_tokens=int(len(output) / 4) if output else None,
+                is_truncated=result.output_file is not None,
             )
         except Exception:
             logger.exception("tool_observation_record_failed", tool_name=result.name)
@@ -424,31 +439,58 @@ class ToolExecutor:
         if not normalized.startswith("/workspace"):
             raise SecurityError(f"Path traversal blocked: {path}")
 
-    def _truncate(self, output: str) -> str:
-        """Truncate output exceeding MAX_OUTPUT_SIZE.
-
-        For JSON-like output (starting with '{' or '['), attempts to cut at
-        the last newline before the limit so the LLM sees complete lines rather
-        than a mid-token break.
-        """
-        # Strip NUL bytes — they pollute the LLM context and break the JSONB
-        # write when this output is later persisted in tool_calls.
-        output = sanitize_pg_text(output)
-
+    async def _prepare_output(
+        self, result: ToolResult, user_id: str, session_id: str,
+        workspace_id: str | None, workspace_slug: str | None,
+    ) -> None:
+        """Persist before shortening; failed persistence must never discard output."""
+        raw = result.output
+        output = sanitize_pg_text(raw)
+        result.output = output
+        result.output_chars = len(raw)
+        data = raw.encode("utf-8")
+        result.output_bytes = len(data)
         if len(output) <= self.MAX_OUTPUT_SIZE:
-            return output
+            return
 
-        suffix = f"\n\n... [output truncated, {len(output)} chars total]"
-        stripped = output.lstrip()
+        ws_id, ws_slug = workspace_id or user_id, workspace_slug or "default"
+        relative_path = f"tool-results/{uuid4().hex}.txt"
+        path = f"/workspace/{ws_slug}/{relative_path}"
+        try:
+            sandbox = await self.sandbox_mgr.get_or_create(user_id, session_id, ws_id, ws_slug)
+            durable = await self.sandbox_mgr.write_workspace_file(
+                sandbox, ws_id, ws_slug, relative_path, data,
+            )
+        except Exception:
+            logger.exception("tool_output_persist_failed", tool_name=result.name, session_id=session_id)
+            # The tool may have performed a mutation. Do not turn a storage failure
+            # into a tool failure that invites a duplicate execution.
+            result.output = (
+                "[Full tool result could not be saved to a file; returning the complete output. "
+                "Do not rerun the tool just to recover its output.]\n" + output
+            )
+            return
 
-        # JSON-aware: try to cut at a newline boundary
-        if stripped and stripped[0] in ("{", "["):
-            cut_point = output.rfind("\n", 0, self.MAX_OUTPUT_SIZE)
-            if cut_point > self.MAX_OUTPUT_SIZE // 2:
-                return output[:cut_point] + suffix
-
-        # Fallback: hard cut (no worse than before)
-        return output[: self.MAX_OUTPUT_SIZE] + suffix
+        result.output_file = path
+        result.file_changes.append({
+            "action": "created", "workspace_id": str(ws_id), "path": relative_path,
+            "filename": posixpath.basename(relative_path), "mime_type": "text/plain",
+            "size": len(data),
+        })
+        header = (
+            f"[Full tool output saved: {path}]\n"
+            f"Total: {len(raw)} characters. The following is a preview, not the complete result.\n"
+            f'Read with read_file({{"path": "{path}", "offset_chars": 0, "limit_chars": 20000}}); '
+            "advance offset_chars to continue, or use file_grep to search.\n"
+        )
+        if not durable:
+            header += "File is available in this sandbox only; durable storage is unavailable.\n"
+        footer = "\n[Preview ends; read the saved file for the rest.]"
+        budget = self.MAX_OUTPUT_SIZE - len(header) - len(footer)
+        cut = output.rfind("\n", 0, budget)
+        if cut < budget // 2:
+            cut = budget
+        result.output = header + output[:cut] + footer
 
     # ---- Execution Dispatch ----
 
@@ -494,6 +536,14 @@ class ToolExecutor:
 
         elif tool_name == "read_file":
             path = self._sandbox_path(args["path"], ws_slug)
+            if "offset_chars" in args or "limit_chars" in args:
+                offset_chars = args.get("offset_chars", 0)
+                limit_chars = args.get("limit_chars", 20000)
+                if not isinstance(offset_chars, int) or offset_chars < 0:
+                    raise ValueError("offset_chars must be a non-negative integer")
+                if not isinstance(limit_chars, int) or not 1 <= limit_chars <= 40000:
+                    raise ValueError("limit_chars must be an integer between 1 and 40000")
+                return await self._read_file_chars(sandbox, path, offset_chars, limit_chars, ws_slug)
             offset = args.get("offset")
             limit = args.get("limit", 200)
 
@@ -714,6 +764,32 @@ print(json.dumps(files, ensure_ascii=False))
             total_lines = 0
         position = f"\n[第 {offset + 1}-{offset + limit} 行 / 共 {total_lines:,} 行]"
         return output + position
+
+    async def _read_file_chars(
+        self, sandbox, path: str, offset: int, limit: int, workspace_slug: str,
+    ) -> str:
+        """Page UTF-8 text, including single-line JSON, without loading it all."""
+        script = """
+import sys
+offset, limit = int(sys.argv[2]), int(sys.argv[3])
+with open(sys.argv[1], encoding='utf-8', errors='replace', newline='') as f:
+    remaining = offset
+    while remaining:
+        chunk = f.read(min(remaining, 65536))
+        if not chunk:
+            break
+        remaining -= len(chunk)
+    text = f.read(limit)
+    more = bool(f.read(1))
+sys.stdout.write(text)
+sys.stdout.write('\\n[Characters %d-%d; %s]' % (
+    offset, offset + len(text),
+    'continue with offset_chars=%d' % (offset + len(text)) if more else 'end of file'))
+"""
+        result = await self.sandbox_mgr.execute(
+            sandbox, f"python3 -c {shlex.quote(script)} {self._qpath(path, workspace_slug)} {offset} {limit}",
+        )
+        return self._format_exec_result(result)
 
     async def _file_grep(
         self, sandbox, path: str, pattern: str,

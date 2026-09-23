@@ -22,6 +22,8 @@ TOOL_META: dict[str, dict] = {
     "search_skills": {"label": "搜索技能", "category": "skills"},
     "view_skill": {"label": "查看技能", "category": "skills"},
     "create_skill": {"label": "创建技能", "category": "skills"},
+    "update_skill": {"label": "修改技能", "category": "skills"},
+    "read_skill_file": {"label": "读取技能附件", "category": "skills"},
     "deploy_skill_files": {"label": "部署技能文件", "category": "skills"},
     "report_skill_result": {"label": "上报技能结果", "category": "skills"},
     "delegate_task": {"label": "委派任务", "category": "multi_agent"},

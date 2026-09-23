@@ -320,6 +320,9 @@ def _summarize_tool_result(msg: LLMMessage) -> str:
     content = _content_to_text(msg.content)
     if not content:
         return "[tool executed]"
+    # Keep the full file reference after old results become one-line summaries.
+    if content.startswith("[Full tool output saved: "):
+        return content.split("\n", 1)[0]
     # Take first line or first 100 chars
     first_line = content.split("\n")[0][:100]
     status = "ok" if not content.startswith("Error:") else "error"

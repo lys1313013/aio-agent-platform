@@ -162,6 +162,25 @@ async def handle_view_skill(arguments: dict, user_id: str, session_id: str,
         if not skill:
             return "Error: skill not found"
 
+        if not skill.is_active and not arguments.get("for_edit", False):
+            from aio_agent_platform.skills.mutations import SkillToolOutput
+            return SkillToolOutput({"success": False, "code": "inactive", "message": "技能已停用，仅可读取以修改", "skill_id": str(skill.id)})
+        if arguments.get("for_edit", False):
+            from aio_agent_platform.skills.contracts import SkillError
+            from aio_agent_platform.skills.mutations import SkillToolOutput
+            try:
+                files = SkillService.read_files(skill, storage)
+                text_files = []
+                for f in files:
+                    try:
+                        text = f["content"].decode("utf-8")
+                    except UnicodeDecodeError:
+                        text = None
+                    text_files.append({"path": f["path"], "content": text if text is not None and len(text) <= 3000 else None,
+                                       "note": "内容较大或为二进制，使用 read_skill_file 按需读取" if text is None or len(text) > 3000 else ""})
+                return SkillToolOutput({"success": True, "skill_id": str(skill.id), **SkillService.snapshot(skill), "attachment_contents": text_files})
+            except SkillError as exc:
+                return SkillToolOutput(exc.payload())
         # Update usage stats
         skill.use_count += 1
         skill.last_used_at = datetime.now(UTC)
@@ -202,7 +221,8 @@ async def handle_view_skill(arguments: dict, user_id: str, session_id: str,
     # Build response
     parts = [
         f"## {skill.name}",
-        f"**Category:** {skill.category} | **Version:** {skill.version}",
+        f"**ID:** {skill.id} | **Category:** {skill.category} | **Version:** {skill.version}",
+        f"**Active:** {skill.is_active} | **Verification:** {(skill.verification or {}).get('status', 'unverified')}",
         f"**Tags:** {', '.join(skill.tags) if skill.tags else 'none'}",
     ]
 
@@ -229,8 +249,7 @@ async def handle_view_skill(arguments: dict, user_id: str, session_id: str,
     if skill.files:
         parts.append(_format_files_section(skill.files))
 
-        safe_name = _safe_skill_name(skill.name)
-        base_path = f"/workspace/skills/{safe_name}"
+        base_path = f"/workspace/{workspace_slug or 'default'}/skills/{skill.id}/v{skill.version}"
 
         if deployed_files:
             parts.append(f"\nAll files deployed to `{base_path}/`.")
@@ -269,48 +288,13 @@ async def handle_view_skill(arguments: dict, user_id: str, session_id: str,
 
 
 async def handle_create_skill(arguments: dict, user_id: str, session_id: str, **kwargs) -> str:
-    """Handle create_skill tool call — create a new reusable skill."""
-    name = arguments.get("name", "")
-    description = arguments.get("description", "")
-    content = arguments.get("content", "")
-    tags = arguments.get("tags", [])
-    category = arguments.get("category", "general")
-    trigger_condition = arguments.get("trigger_condition", "")
+    from aio_agent_platform.skills.mutations import mutate_skill
+    return await mutate_skill("create", arguments, user_id, session_id, _get_storage(), **kwargs)
 
-    if not name:
-        return "Error: name is required"
-    if not content:
-        return "Error: content is required"
 
-    uid = UUID(user_id)
-    factory = get_session_factory()
-    storage = _get_storage()
-
-    async with factory() as db:
-        current_user_id.set(user_id)
-        await _set_rls_context(db, user_id)
-
-        skill = await SkillService.create_skill(
-            db=db,
-            user_id=uid,
-            name=name,
-            description=description,
-            content=content,
-            tags=tags,
-            category=category,
-            trigger_condition=trigger_condition,
-            storage=storage,
-        )
-        await db.commit()
-
-    return (
-        f"Skill created successfully!\n"
-        f"- **Name:** {skill.name}\n"
-        f"- **ID:** {skill.id}\n"
-        f"- **Category:** {skill.category}\n"
-        f"- **Version:** {skill.version}\n"
-        f"- **Tags:** {', '.join(skill.tags) if skill.tags else 'none'}"
-    )
+async def handle_update_skill(arguments: dict, user_id: str, session_id: str, **kwargs) -> str:
+    from aio_agent_platform.skills.mutations import mutate_skill
+    return await mutate_skill("update", arguments, user_id, session_id, _get_storage(), **kwargs)
 
 
 async def handle_deploy_skill_files(arguments: dict, user_id: str, session_id: str,
@@ -348,6 +332,8 @@ async def handle_deploy_skill_files(arguments: dict, user_id: str, session_id: s
         if not skill:
             return "Error: skill not found"
 
+        if not skill.is_active:
+            return "Error: skill is inactive"
         if not skill.files:
             return f"Skill '{skill.name}' has no files to deploy."
 
@@ -372,8 +358,7 @@ async def handle_deploy_skill_files(arguments: dict, user_id: str, session_id: s
         })
         await db.commit()
 
-    safe_name = _safe_skill_name(skill.name)
-    base_path = f"/workspace/skills/{safe_name}"
+    base_path = f"/workspace/{workspace_slug or 'default'}/skills/{skill.id}/v{skill.version}"
     lines = [f"Deployed {len(deployed)} file(s) for skill '{skill.name}' to `{base_path}/`:\n"]
     for path in deployed:
         lines.append(f"- `/workspace/{path}`")
@@ -402,10 +387,39 @@ async def handle_report_skill_result(arguments: dict, user_id: str, session_id: 
         current_user_id.set(user_id)
         await _set_rls_context(db, user_id)
 
+        await SkillService.lock_user(db, uid)
         skill = await SkillService.get_skill(db, skill_id, uid)
         if not skill:
             return "Error: skill not found"
 
+        evidence_id = arguments.get("evidence_tool_call_id")
+        version = arguments.get("version")
+        expected = arguments.get("expected_output", "")
+        # Verification needs all three inputs. Reporting usage only is fine, but
+        # a partial triple would otherwise silently skip verification and still
+        # count as success, so it is rejected instead of downgraded.
+        supplied = (evidence_id is not None, version is not None, bool(expected))
+        if any(supplied) and not all(supplied):
+            from aio_agent_platform.skills.mutations import SkillToolOutput
+            return SkillToolOutput({"success": False, "code": "invalid_arguments",
+                "message": "验证需要同时提交 version、evidence_tool_call_id 和 expected_output；仅上报使用结果时三项都应省略"})
+        if evidence_id:
+            from aio_agent_platform.skills.mutations import SkillToolOutput
+            executor = kwargs.get("tool_executor")
+            evidence = getattr(executor, "skill_execution_evidence", {}).get((user_id, session_id, evidence_id))
+            if version != skill.version:
+                return SkillToolOutput({"success": False, "code": "version_conflict", "message": "验证目标版本已变化，请重新加载", "current_version": skill.version})
+            marker = f"/skills/{skill.id}/v{skill.version}/scripts/"
+            if not evidence or marker not in str(evidence.get("arguments", {})) or not isinstance(expected, str) or not expected or len(expected) > 2000:
+                return SkillToolOutput({"success": False, "code": "invalid_evidence", "message": "需要当前会话中执行本版本脚本的真实工具记录及预期输出"})
+            success = bool(success and evidence["success"] and expected in evidence["output"])
+            skill.verification = {"status": "passed" if success else "failed", "version": skill.version,
+                "note": note or "仅验证声明的样例输出，不代表通用业务正确性",
+                "expected_output": expected, "evidence_tool_call_id": evidence_id,
+                "session_id": session_id, "at": datetime.now(UTC).isoformat(),
+                "output_excerpt": evidence["output"][:2000]}
+            if not success:
+                skill.is_active = False
         if success:
             skill.success_count += 1
 
@@ -431,11 +445,58 @@ async def handle_report_skill_result(arguments: dict, user_id: str, session_id: 
     )
 
 
+async def handle_read_skill_file(arguments, user_id, session_id, **kwargs):
+    from aio_agent_platform.skills.contracts import SkillError, validate_path
+    from aio_agent_platform.skills.mutations import SkillToolOutput
+    try:
+        path = validate_path(arguments.get("path", ""))
+        offset = max(0, int(arguments.get("offset", 0)))
+        limit = max(1, min(8000, int(arguments.get("limit", 8000))))
+        async with get_session_factory()() as db:
+            await _set_rls_context(db, user_id)
+            skill = await SkillService.get_skill(db, UUID(arguments["skill_id"]), UUID(user_id))
+            if not skill:
+                raise SkillError("not_found", "技能不存在或不可访问")
+            files = SkillService.read_files(skill, _get_storage())
+            file = next((f for f in files if f["path"] == path), None)
+            if file is None:
+                raise SkillError("missing_file", "附件不存在")
+            try:
+                content = file["content"].decode("utf-8")
+            except UnicodeDecodeError:
+                return SkillToolOutput({"success": True, "path": path, "binary": True, "size": len(file["content"]), "version": skill.version})
+            return SkillToolOutput({"success": True, "path": path, "version": skill.version,
+                "content": content[offset:offset + limit], "offset": offset,
+                "next_offset": offset + limit if offset + limit < len(content) else None})
+    except SkillError as exc:
+        return SkillToolOutput(exc.payload())
+    except (ValueError, KeyError):
+        return SkillToolOutput({"success": False, "code": "invalid_arguments", "message": "技能 ID 或读取参数无效"})
+
+
 # Registry mapping tool_name -> handler function
 SKILL_HANDLERS: dict[str, Callable] = {
     "search_skills": handle_search_skills,
     "view_skill": handle_view_skill,
+    "read_skill_file": handle_read_skill_file,
     "create_skill": handle_create_skill,
+    "update_skill": handle_update_skill,
     "deploy_skill_files": handle_deploy_skill_files,
     "report_skill_result": handle_report_skill_result,
 }
+
+
+def _business_result(handler):
+    """Legacy skill handlers return error text; expose failures consistently."""
+    from functools import wraps
+    @wraps(handler)
+    async def wrapped(*args, **kwargs):
+        result = await handler(*args, **kwargs)
+        if isinstance(result, str) and result.startswith("Error"):
+            from aio_agent_platform.skills.mutations import SkillToolOutput
+            return SkillToolOutput({"success": False, "code": "skill_error", "message": result})
+        return result
+    return wrapped
+
+
+SKILL_HANDLERS = {name: _business_result(handler) for name, handler in SKILL_HANDLERS.items()}

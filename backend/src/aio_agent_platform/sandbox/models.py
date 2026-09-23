@@ -329,6 +329,28 @@ class SandboxManager:
                 if not internal:
                     self._touch(sandbox)
 
+    async def write_workspace_file(
+        self, sandbox: Sandbox, workspace_id: str, workspace_slug: str,
+        path: str, content: bytes,
+    ) -> bool:
+        """Write a result and immediately sync it, excluding concurrent reclamation.
+
+        Returns whether durable object storage was available. A failed write
+        raises so callers can retain the original output instead of truncating.
+        """
+        from aio_agent_platform.storage.workspace import WorkspaceStorage
+
+        async with self._user_lock(sandbox.user_id):
+            written = await WorkspaceStorage.write_file_live(
+                self, sandbox, path, content, workspace_slug,
+            )
+            if not written:
+                raise RuntimeError("Could not write full tool output to the sandbox")
+            if self._workspace_storage is None:
+                return False
+            await self._docker_call(self._workspace_storage.put_file, workspace_id, path, content)
+            return True
+
     async def _read_workspaces(self, sandbox: Sandbox) -> None:
         # Storage IDs must never come from files writable by sandbox commands.
         path = self._lock_path(sandbox.user_id).with_suffix(".json")

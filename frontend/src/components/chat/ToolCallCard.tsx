@@ -15,6 +15,7 @@ import {
   ReadOutlined,
 } from '@ant-design/icons';
 import { Tag } from 'antd';
+import { Link } from 'react-router-dom';
 import type { FileChangeInfo, ToolCallInfo } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { FileChangeResult } from './FileChangeList';
@@ -42,6 +43,8 @@ const TOOL_LABELS: Record<string, string> = {
   search_skills: '搜索技能',
   view_skill: '查看技能',
   create_skill: '创建技能',
+  update_skill: '修改技能',
+  read_skill_file: '读取技能附件',
   deploy_skill_files: '部署技能文件',
   report_skill_result: '上报技能结果',
   delegate_task: '委派任务',
@@ -665,7 +668,50 @@ export function parseWebpageResult(preview?: string): WebpageResult | null {
   return null;
 }
 
+interface SkillMutationResult {
+  success: boolean;
+  status?: string;
+  name?: string;
+  description?: string;
+  skill_id?: string;
+  version?: number;
+  previous_version?: number;
+  files?: unknown[];
+  verification?: { status?: string };
+  visibility?: string;
+  is_active?: boolean;
+  message?: string;
+  changes?: { summary?: string; files_added?: string[]; files_modified?: string[]; files_removed?: string[] };
+}
+
+function SkillMutationCard({ toolCall }: Props) {
+  if (!toolCall.result) return <DefaultToolCard toolCall={toolCall} />;
+  let result: SkillMutationResult;
+  try {
+    result = JSON.parse(toolCall.result.preview);
+    if (!result || typeof result !== 'object' || typeof result.success !== 'boolean') return <DefaultToolCard toolCall={toolCall} />;
+  }
+  catch { return <DefaultToolCard toolCall={toolCall} />; }
+  const labels: Record<string, string> = { created: '已创建技能', updated: '已更新技能', existing: '使用已有技能', unchanged: '无需更新' };
+  const ok = result.success === true && toolCall.result.status === 'ok';
+  return <div className="rounded-lg border p-3 my-2 space-y-2">
+    <div><Tag color={ok ? 'green' : 'red'}>{ok ? labels[result.status ?? ''] || '已保存技能' : '技能保存失败'}</Tag><strong>{result.name || ''}</strong></div>
+    {ok ? <>
+      <div className="text-sm">{result.previous_version && result.previous_version !== result.version ? `v${result.previous_version} → ` : ''}v{result.version} · {result.files?.length || 0} 个附件 · {result.verification?.status === 'passed' ? '验证通过' : result.verification?.status === 'failed' ? '验证失败' : '未验证'} · {result.visibility === 'public' ? '已公开' : '仅本人可见'}</div>
+      {result.description && <p className="text-sm">{result.description}</p>}
+      {result.is_active === false && <Tag>已停用</Tag>}
+      {result.changes?.summary && <p className="text-sm">{result.changes.summary}</p>}
+      {(['files_added', 'files_modified', 'files_removed'] as const).map((key, index) => result.changes?.[key]?.length ?
+        <p key={key} className="text-sm break-all">{['新增附件', '修改附件', '移除附件'][index]}：{result.changes[key]!.join('、')}</p> : null)}
+      {result.skill_id && <Link to={`/skills/${encodeURIComponent(result.skill_id)}?version=${result.version}`}>查看技能</Link>}
+    </> : <p className="text-sm">{result.message || '保存失败，请检查权限或重试'}</p>}
+  </div>;
+}
+
 export default function ToolCallCard({ toolCall, fileChange }: Props) {
+  if (toolCall.name === 'create_skill' || toolCall.name === 'update_skill') {
+    return <SkillMutationCard toolCall={toolCall} />;
+  }
   // Delegate to custom renderers for specific tools
   if (toolCall.name === 'memory_write') {
     return <MemoryWriteCard toolCall={toolCall} />;
