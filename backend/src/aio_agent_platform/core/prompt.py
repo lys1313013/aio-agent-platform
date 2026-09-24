@@ -38,6 +38,17 @@ def _format_current_datetime() -> str:
     return f"{current.isoformat(sep=' ', timespec='seconds')} ({_MODEL_TIMEZONE.key})"
 
 
+def build_current_time_context() -> str:
+    """Fresh runtime context appended to each model request, outside saved history."""
+    return (
+        "[平台时间上下文]\n"
+        f"当前时间（北京时间）：{_format_current_datetime()}\n"
+        "涉及“现在、今天、明天”等相对时间时，请以此时间为准，"
+        "不要将历史对话、记忆或先前提示中的时间当作当前时间。"
+        "这是平台自动附加的上下文，请继续处理用户的请求，无需单独回复此提示。"
+    )
+
+
 def build_system_prompt(
     tools: list | None = None,
     persistent_memories: list | None = None,

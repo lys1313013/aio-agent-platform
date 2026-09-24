@@ -19,6 +19,7 @@ from aio_agent_platform.core.context import (
     compress_early_tool_results,
     estimate_messages_tokens,
 )
+from aio_agent_platform.core.prompt import build_current_time_context
 from aio_agent_platform.core.ui_action import (
     REF_FAILURE_BREAKER_THRESHOLD,
     ui_action_manager,
@@ -418,7 +419,15 @@ class AgentLoop:
             )
             for stream_attempt in range(1, _STREAM_RETRY_MAX + 2):  # 1, 2, 3
                 try:
-                    async for chunk in self.provider.stream(messages, tools=tools):
+                    # Refresh after tools, user confirmations, and retries without
+                    # accumulating stale clocks in history. The platform clock
+                    # is system context; Anthropic collects it at the end of
+                    # its system prompt instead of the conversation tail.
+                    request_messages = [
+                        *messages,
+                        LLMMessage(role="system", content=build_current_time_context()),
+                    ]
+                    async for chunk in self.provider.stream(request_messages, tools=tools):
                         if chunk.type == "text_delta" and chunk.content:
                             if provider_reasoning_chunks and not provider_reasoning_emitted:
                                 yield f"reasoning:{''.join(provider_reasoning_chunks)}"
