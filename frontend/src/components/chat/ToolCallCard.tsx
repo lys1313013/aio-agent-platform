@@ -54,6 +54,10 @@ const TOOL_LABELS: Record<string, string> = {
   file_grep: '文件检索',
   file_query: '文件查询',
   read_pdf: '读取 PDF',
+  read_document: '读取文档',
+  document_search: '文档检索',
+  render_document: '文档渲染',
+  view_image: '查看图片',
   update_user_portrait: '更新用户画像',
   create_webpage: '创建网页',
 };

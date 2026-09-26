@@ -329,6 +329,32 @@ class SandboxManager:
                 if not internal:
                     self._touch(sandbox)
 
+    async def inject_uploaded_file(
+        self, user_id: str, workspace_id: str, workspace_slug: str, path: str, content: bytes,
+    ) -> bool:
+        """Refresh an already-running workspace after upload; do not start a container.
+
+        The caller has persisted the file in object storage. New containers load it
+        on initialization; existing containers need this explicit, chunked write.
+        """
+        from aio_agent_platform.storage.workspace import WorkspaceStorage
+
+        async with self._user_lock(user_id):
+            sandbox = self._active.get(self._key(user_id)) or await self._discover(user_id)
+            if sandbox is None:
+                return False
+            container = await self._container(sandbox.container_id)
+            if container is None or container.status != "running":
+                return False
+            await self._ensure_workspace(sandbox, workspace_id, workspace_slug)
+            written = await WorkspaceStorage.write_file_live(
+                self, sandbox, path, content, workspace_slug,
+            )
+            if not written:
+                raise RuntimeError("Could not inject uploaded file into the active workspace")
+            self._touch(sandbox)
+            return True
+
     async def write_workspace_file(
         self, sandbox: Sandbox, workspace_id: str, workspace_slug: str,
         path: str, content: bytes,

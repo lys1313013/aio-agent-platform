@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
+import { chatApi, type ChatRunInfo } from '@/lib/api';
 import type { StreamingState } from '@/lib/types';
 
 function mergeFileChanges(
@@ -35,6 +36,7 @@ export const IDLE_STREAMING: StreamingState = {
 export type ChatStreamEvent = Record<string, unknown> & { type?: string };
 
 export interface UseChatStreamOptions {
+  sessionId?: string | null;
   /**
    * 事件前置钩子，在所有内置处理之前调用。
    * 返回 true 表示事件已被消费（如 ui_* 页内操作事件），跳过后续内置处理。
@@ -63,6 +65,14 @@ export interface UseChatStreamOptions {
 export function useChatStream(options: UseChatStreamOptions = {}) {
   const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAMING);
   const [error, setError] = useState<string | null>(null);
+  const selectedSessionId = useChatStore((state) => state.activeSessionId);
+  const activeSessionId = options.sessionId === undefined ? selectedSessionId : options.sessionId;
+  const [run, setRun] = useState<ChatRunInfo | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const runRef = useRef<ChatRunInfo | null>(null);
+  const generationRef = useRef(0);
+  const sequenceRef = useRef(0);
+  const consumeRef = useRef<(event: ChatStreamEvent) => void>(() => {});
   const abortRef = useRef<AbortController | null>(null);
   /** 当前这一轮的会话 id（done/session_title 等事件回写消息的归属） */
   const turnSessionIdRef = useRef<string | null>(null);
@@ -73,6 +83,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
 
   // 页面卸载时主动断开 fetch/SSE，避免后台的阻塞式 Redis XREAD 继续占用连接。
   useEffect(() => () => {
+    generationRef.current += 1;
     abortRef.current?.abort();
     abortRef.current = null;
   }, []);
@@ -89,26 +100,95 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     // 同一页面开始新一轮前关闭旧传输，防止快速重连或切换会话留下并行 SSE。
     abortRef.current?.abort();
     abortRef.current = null;
+    const generation = ++generationRef.current;
+    sequenceRef.current = 0;
+    runRef.current = null;
+    setRun(null);
     turnSessionIdRef.current = sessionId;
     flushOnDoneRef.current = opts?.flushOnDone ?? true;
     gotCommandResultRef.current = false;
     setError(null);
     setStreaming({ ...IDLE_STREAMING, isStreaming: true });
+    return (event: ChatStreamEvent) => {
+      if (generation === generationRef.current) consumeRef.current(event);
+    };
   }, []);
 
-  const interrupt = useCallback(() => {
+  const disconnect = useCallback(() => {
+    generationRef.current += 1;
     abortRef.current?.abort();
     abortRef.current = null;
+    runRef.current = null;
+    setRun(null);
     setStreaming(IDLE_STREAMING);
   }, []);
 
+  const interrupt = useCallback(async (): Promise<boolean> => {
+    const sid = turnSessionIdRef.current;
+    const generation = generationRef.current;
+    if (!sid) return true;
+    setStopping(true);
+    try {
+      let task = runRef.current;
+      // The POST may still be reserving the run when Stop is clicked.
+      for (let attempt = 0; !task && attempt < 20; attempt += 1) {
+        const observed = runRef.current ?? await chatApi.latestRun(sid);
+        // A previous completed turn can still be "latest" while the new POST
+        // is reserving its task. Never mistake it for the turn being stopped.
+        task = observed && (observed.status === 'running' || observed.id === runRef.current?.id)
+          ? observed : null;
+        if (!task) await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      if (!task) throw new Error('尚未确认任务状态，请稍后重试停止');
+      const stopped = task.status === 'running' ? await chatApi.stopRun(task.id) : task;
+      if (generation !== generationRef.current) return false;
+      disconnect();
+      runRef.current = stopped;
+      setRun(stopped);
+      await useChatStore.getState().loadSessionMessages(sid);
+      return true;
+    } catch (cause) {
+      const msg = cause instanceof Error ? cause.message : '停止任务失败';
+      setError(msg);
+      return false;
+    } finally {
+      setStopping(false);
+    }
+  }, [disconnect]);
+
   const handleEvent = useCallback((event: ChatStreamEvent) => {
+    if (typeof event.sequence === 'number') {
+      if (event.sequence <= sequenceRef.current) return;
+      sequenceRef.current = event.sequence;
+    }
+    // Replaying browser commands must never repeat a click or form submission.
+    if (event.replay && typeof event.type === 'string'
+      && (event.type.startsWith('ui_action') || event.type === 'pet_action')) return;
     if (onEventRef.current?.(event)) return;
 
     const sessionId = turnSessionIdRef.current;
     const type = event.type as string;
 
     switch (type) {
+      case 'run': {
+        const info = event as unknown as ChatRunInfo;
+        runRef.current = info;
+        setRun(info);
+        break;
+      }
+      case 'run_status': {
+        const info = event as unknown as ChatRunInfo;
+        runRef.current = info;
+        setRun(info);
+        setStreaming(IDLE_STREAMING);
+        if (sessionId) void useChatStore.getState().loadSessionMessages(sessionId);
+        break;
+      }
+      case 'transport_error':
+        abortRef.current = null;
+        setError('连接已断开，后台任务继续执行，正在重新连接…');
+        break;
+
       case 'session':
         // 信息性事件：会话由 createSession 建立，无需处理
         break;
@@ -243,12 +323,16 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       case 'text':
         setStreaming((prev) => ({
           ...prev,
-          isStreaming: false,
+          isStreaming: true,
           finalText: (event.content as string) || '',
         }));
         break;
 
       case 'done': {
+        if (runRef.current) {
+          runRef.current = { ...runRef.current, status: 'completed' };
+          setRun(runRef.current);
+        }
         setStreaming(IDLE_STREAMING);
         if (gotCommandResultRef.current) {
           // 斜杠命令轮：system 消息已由 command_result 落库，无 assistant 消息
@@ -463,12 +547,69 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
 
       case 'closed':
         // 回放流正常结束但未收到 done（如空流/任务已结束）：复位 streaming
-        setStreaming((prev) => (prev.isStreaming ? IDLE_STREAMING : prev));
+        abortRef.current = null;
+        if (runRef.current?.status !== 'running') {
+          setStreaming((prev) => (prev.isStreaming ? IDLE_STREAMING : prev));
+        }
         break;
     }
   }, []);
 
+  consumeRef.current = handleEvent;
+
+  // Refresh/mount/session switch and network failures all use the same recovery.
+  // Each reconnect rebuilds the current turn from sequence zero instead of
+  // appending a replay to the previous transient state.
+  useEffect(() => {
+    if (turnSessionIdRef.current !== activeSessionId) {
+      disconnect();
+      turnSessionIdRef.current = activeSessionId;
+    }
+    if (!activeSessionId) return;
+    let disposed = false;
+    let busy = false;
+    const recover = async () => {
+      if (disposed || busy || abortRef.current) return;
+      busy = true;
+      const generation = generationRef.current;
+      try {
+        const info = await chatApi.latestRun(activeSessionId);
+        if (disposed || generation !== generationRef.current || abortRef.current) return;
+        const changed = info?.id !== runRef.current?.id || info?.status !== runRef.current?.status;
+        runRef.current = info;
+        setRun(info);
+        if (info?.status === 'running') {
+          await useChatStore.getState().loadSessionMessages(activeSessionId);
+          if (disposed || generation !== generationRef.current || abortRef.current) return;
+          const consume = beginTurn(activeSessionId, { flushOnDone: false });
+          abortRef.current = chatApi.watchRun(info.id, consume);
+        } else if (changed) {
+          setStreaming(IDLE_STREAMING);
+          await useChatStore.getState().loadSessionMessages(activeSessionId);
+        }
+      } catch {
+        if (!disposed) setError('暂时无法读取后台任务状态，正在重试…');
+      } finally {
+        busy = false;
+      }
+    };
+    void recover();
+    const timer = window.setInterval(() => void recover(), 3000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [activeSessionId, beginTurn, disconnect]);
+
+  const resume = useCallback(() => {
+    const task = runRef.current;
+    if (!task?.can_resume) return;
+    const consume = beginTurn(task.session_id, { flushOnDone: false });
+    abortRef.current = chatApi.resumeRun(task.id, consume);
+  }, [beginTurn]);
+
   return {
+    run,
+    stopping,
+    resume,
+    disconnect,
     streaming,
     setStreaming,
     error,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from aio_agent_platform.skills.mutations import CreateSkillInput, UpdateSkillInput
+from aio_agent_platform.tools.document_tools import DOCUMENT_TOOLS
 from aio_agent_platform.tools.registry import Tool, ToolRegistry
 
 
@@ -31,6 +32,8 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     registry.register(FILE_GREP)
     registry.register(FILE_QUERY)
     registry.register(READ_PDF)
+    for document_tool in DOCUMENT_TOOLS:
+        registry.register(document_tool)
     registry.register(UPDATE_USER_PORTRAIT)
     registry.register(CREATE_CRON_JOB)
     registry.register(LIST_CRON_JOBS)

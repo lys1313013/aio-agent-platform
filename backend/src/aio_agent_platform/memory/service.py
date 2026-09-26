@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from uuid import UUID
 
 import rjieba
 import structlog
-from sqlalchemy import delete, func, literal, or_, select
+from sqlalchemy import func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.db.models import DEFAULT_TENANT_ID, Memory, User
+from aio_agent_platform.memory.history import record_change, snapshot
 
 logger = structlog.get_logger()
 
@@ -30,7 +32,7 @@ def _merge_meta(old: dict, new: dict) -> dict:
     is appended only when not already present. Other keys are overwritten by the
     incoming value.
     """
-    merged = dict(old)
+    merged = copy.deepcopy(old)
     for key, value in new.items():
         if key == "tags":
             merged[key] = list(dict.fromkeys([*(merged.get("tags") or []), *value]))
@@ -38,8 +40,9 @@ def _merge_meta(old: dict, new: dict) -> dict:
             # 兼容已有值可能是字符串(旧路径 str(session_id))或列表
             existing = merged.get("source_session")
             sessions = existing if isinstance(existing, list) else ([existing] if existing else [])
-            if value and value not in sessions:
-                sessions.append(value)
+            for item in value if isinstance(value, list) else [value]:
+                if item and item not in sessions:
+                    sessions.append(item)
             merged[key] = sessions
         else:
             merged[key] = value
@@ -183,6 +186,7 @@ class MemoryService:
         db.add(memory)
         await db.flush()
         await db.refresh(memory)  # re-fetch server-generated timestamps to avoid MissingGreenlet
+        await record_change(db, user_id, "create", {}, [memory])
         return memory
 
     @staticmethod
@@ -221,26 +225,18 @@ class MemoryService:
             db, user_id, layer, search_vec, threshold, agent_id=agent_id
         )
         if existing is not None:
+            before = {str(existing.id): snapshot(existing)}
             existing.content = content
             existing.search_vec = search_vec
             if meta is not None:
                 existing.meta = _merge_meta(existing.meta or {}, meta)
-            await db.flush()
-            await db.refresh(existing)  # re-fetch server-generated updated_at
+            await record_change(db, user_id, "automatic_update", before, [existing])
+            await db.refresh(existing)
             return existing, "updated"
 
-        memory = Memory(
-            user_id=user_id,
-            agent_id=agent_id,
-            tenant_id=tenant_id or await resolve_tenant_id(db, user_id),
-            layer=layer,
-            content=content,
-            search_vec=search_vec,
-            meta=meta or {},
+        memory = await MemoryService.create_memory(
+            db, user_id, layer, content, meta=meta, tenant_id=tenant_id, agent_id=agent_id,
         )
-        db.add(memory)
-        await db.flush()
-        await db.refresh(memory)
         return memory, "created"
 
     @staticmethod
@@ -279,12 +275,21 @@ class MemoryService:
         content: str | None = None,
         layer: str | None = None,
         meta: dict | None = None,
+        agent_id: UUID | None = None,
+        set_agent: bool = False,
+        expected_version: int | None = None,
     ) -> Memory | None:
         """Update an existing memory. Re-tokenizes search_vec if content changes."""
         memory = await MemoryService.get_memory(db, memory_id, user_id)
         if not memory:
             return None
 
+        if expected_version is not None and memory.version != expected_version:
+            from fastapi import HTTPException
+            raise HTTPException(409, "记忆已被更新，请刷新后再纠错")
+        before = {str(memory.id): snapshot(memory)}
+        if set_agent:
+            memory.agent_id = agent_id
         if content is not None and content != memory.content:
             memory.content = content
             memory.search_vec = MemoryService._tokenize(content)
@@ -293,8 +298,8 @@ class MemoryService:
         if meta is not None:
             memory.meta = meta
 
-        await db.flush()
-        await db.refresh(memory)  # re-fetch server-generated updated_at to avoid MissingGreenlet
+        await record_change(db, user_id, "edit", before, [memory])
+        await db.refresh(memory)
         return memory
 
     @staticmethod
@@ -307,8 +312,7 @@ class MemoryService:
         memory = await MemoryService.get_memory(db, memory_id, user_id)
         if not memory:
             return False
-        await db.delete(memory)
-        await db.flush()
+        await record_change(db, user_id, "delete", {str(memory.id): snapshot(memory)}, [], [memory])
         return True
 
     @staticmethod
@@ -320,11 +324,11 @@ class MemoryService:
         """Batch delete memories owned by a user. Returns number deleted."""
         if not memory_ids:
             return 0
-        result = await db.execute(
-            delete(Memory).where(Memory.user_id == user_id, Memory.id.in_(memory_ids))
-        )
-        await db.flush()
-        return result.rowcount or 0
+        rows = list((await db.scalars(select(Memory).where(
+            Memory.user_id == user_id, Memory.id.in_(memory_ids)).order_by(Memory.id).with_for_update())).all())
+        if rows:
+            await record_change(db, user_id, "delete", {str(row.id): snapshot(row) for row in rows}, [], rows)
+        return len(rows)
 
     # ---- Search ----
 

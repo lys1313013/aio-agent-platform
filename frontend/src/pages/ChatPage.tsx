@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useChatStore } from '@/stores/chatStore';
 import { usePetStore } from '@/stores/petStore';
 import { chatApi } from '@/lib/api';
@@ -7,6 +8,7 @@ import { useChatStream } from '@/hooks/useChatStream';
 import { handleUiActionEvent } from '@/hooks/useUiActionEvents';
 import { buildPageContext } from '@/lib/uiActions/registry';
 import type { ChatAttachment, FileAttachmentRef } from '@/lib/types';
+import ChatRunNotice from '@/components/chat/ChatRunNotice';
 import ChatWindow from '@/components/chat/ChatWindow';
 import ChatHistorySidebar from '@/components/chat/ChatHistorySidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
@@ -15,13 +17,19 @@ import { Alert, App, Button, Tooltip } from 'antd';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 
 export default function ChatPage() {
+  const { sessionId: urlSessionId } = useParams<{ sessionId?: string }>();
+  const navigate = useNavigate();
+  useEffect(() => {
+    useChatStore.getState().setActiveSession(urlSessionId || null);
+    void useChatStore.getState().refreshSessions();
+  }, [urlSessionId]);
   const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession, deleteSession } = useChatStore();
   const { message, modal } = App.useApp();
   const [creatingSession, setCreatingSession] = useState(false);
   // onDone 需要 flushNext，但 useChatStream 初始化早于 useMessageQueue —— 用 ref 打破循环依赖
   const flushNextRef = useRef<() => void>(() => {});
 
-  const { streaming, error, setError, abortRef, turnSessionIdRef, beginTurn, interrupt, handleEvent } =
+  const { run, stopping, resume, streaming, error, setError, abortRef, turnSessionIdRef, beginTurn, interrupt, handleEvent } =
     useChatStream({
       onEvent: (event) => {
         // ui_* 页内操作事件统一进全局 store
@@ -52,10 +60,11 @@ export default function ChatPage() {
   // flushed one by one as each turn completes.
   const handleSendRef = useRef<(content: string, attachments?: ChatAttachment[], files?: FileAttachmentRef[]) => Promise<void> | void>();
   const interruptStream = useCallback(() => {
-    interrupt();
+    const stopped = interrupt();
     usePetStore.getState().reportEvent('interrupt', {
       sessionId: useChatStore.getState().activeSessionId ?? undefined,
     });
+    return stopped;
   }, [interrupt]);
   const { queue, enqueue, remove: removeQueued, clear: clearQueue, flushNext, sendNow: sendQueuedNow } =
     useMessageQueue(
@@ -71,6 +80,7 @@ export default function ChatPage() {
       // Create a new session if none is active
       if (!sessionId) {
         sessionId = await createSession(content.slice(0, 100));
+        navigate(`/chat/${sessionId}`, { replace: true });
       } else if (content.trim()) {
         const session = sessions.find((s) => s.id === sessionId);
         if (session && (!session.title || session.title === '新对话' || session.title === 'New Chat')) {
@@ -91,18 +101,18 @@ export default function ChatPage() {
         created_at: new Date().toISOString(),
       });
 
-      beginTurn(sessionId);
+      const consume = beginTurn(sessionId);
       usePetStore.getState().startTask(sessionId, content);
 
       // Start SSE stream
       const controller = chatApi.stream(
         { session_id: sessionId, message: content, attachments, file_attachments: fileAttachments, page_context: buildPageContext() },
-        handleEvent,
+        consume,
       );
 
       abortRef.current = controller;
     },
-    [activeSessionId, sessions, createSession, renameSession, addMessage, message, beginTurn, handleEvent, abortRef],
+    [activeSessionId, sessions, navigate, createSession, renameSession, addMessage, message, beginTurn, handleEvent, abortRef],
   );
 
   handleSendRef.current = handleSend;
@@ -116,7 +126,8 @@ export default function ChatPage() {
     if (creatingSession) return;
     setCreatingSession(true);
     try {
-      await createSession('新对话');
+      const sid = await createSession('新对话');
+      navigate(`/chat/${sid}`);
     } finally {
       setCreatingSession(false);
     }
@@ -125,7 +136,6 @@ export default function ChatPage() {
   const handleDeleteChat = () => {
     const sid = activeSessionId;
     if (!sid) return;
-    interruptStream();
     modal.confirm({
       title: '删除对话？',
       content: '此操作无法撤销。',
@@ -133,7 +143,9 @@ export default function ChatPage() {
       okType: 'danger',
       cancelText: '取消',
       onOk: async () => {
+        if (streaming.isStreaming && !await interruptStream()) return;
         await deleteSession(sid);
+        navigate('/chat', { replace: true });
         usePetStore.getState().removeTask(sid);
       },
     });
@@ -152,7 +164,8 @@ export default function ChatPage() {
     interruptStream();
   };
 
-  const currentMessages = activeSessionId ? messages[activeSessionId] || [] : [];
+  const currentMessages = (activeSessionId ? messages[activeSessionId] || [] : [])
+    .filter((item) => !(streaming.isStreaming && run && item.id === run.assistant_message_id));
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
@@ -194,6 +207,7 @@ export default function ChatPage() {
           loading={messagesLoading}
           messages={{ messages: currentMessages, streaming, conversationId: activeSessionId, onNewChat: handleNewChat, onEditResend: handleEditResend }}
           status={<>
+            <ChatRunNotice run={run} stopping={stopping} onResume={resume} />
             {error && (
               <div className="mx-auto max-w-3xl w-full px-4 pb-2">
                 <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} />
@@ -201,7 +215,12 @@ export default function ChatPage() {
             )}
           </>}
           input={{
-            onSend: handleSend, onStop: handleStop, isStreaming: streaming.isStreaming, sessionId: activeSessionId, onEnsureSession: async () => activeSessionId || await createSession('新对话'),
+            onSend: handleSend, onStop: handleStop, isStreaming: streaming.isStreaming, sessionId: activeSessionId, onEnsureSession: async () => {
+              if (activeSessionId) return activeSessionId;
+              const sid = await createSession('新对话');
+              navigate(`/chat/${sid}`, { replace: true });
+              return sid;
+            },
             queue, onQueue: enqueue, onQueueSendNow: sendQueuedNow, onQueueRemove: removeQueued,
           }}
         />

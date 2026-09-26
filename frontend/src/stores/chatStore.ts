@@ -116,7 +116,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => {
       const existing = state.messages[sessionId] || [];
       return {
-        messages: { ...state.messages, [sessionId]: [...existing, msg] },
+        messages: { ...state.messages, [sessionId]: existing.some((item) => item.id === msg.id)
+          ? existing.map((item) => item.id === msg.id ? msg : item)
+          : [...existing, msg] },
       };
     });
   },

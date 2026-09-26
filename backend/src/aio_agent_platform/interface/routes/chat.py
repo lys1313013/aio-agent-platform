@@ -30,6 +30,7 @@ from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.auth.jwt_handler import TokenExpiredError, decode_token
+from aio_agent_platform.core import chat_runs
 from aio_agent_platform.core.agent import AgentStep, DelegationContext
 from aio_agent_platform.core.auto_title import generate_session_title
 from aio_agent_platform.core.chat import (
@@ -93,6 +94,7 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 class ChatRequest(BaseModel):
     session_id: UUID | None = None
+    resume_run_id: UUID | None = None
     agent_id: UUID | None = None
     message: str = Field("", max_length=50000)
     attachments: list[AttachmentOut] | None = None
@@ -391,7 +393,7 @@ async def upload_workspace_file(
         if room.is_archived:
             raise HTTPException(409, "请先恢复已归档的聊天室")
 
-    workspace_id, _workspace_slug = await _resolve_workspace(db, session, user.id)
+    workspace_id, workspace_slug = await _resolve_workspace(db, session, user.id)
 
     # Read file data
     data = await file.read()
@@ -429,17 +431,9 @@ async def upload_workspace_file(
     try:
         tool_executor = request.app.state.tool_executor
         sandbox_mgr = tool_executor.sandbox_mgr
-        key = sandbox_mgr._key(str(workspace_id), str(session_id))
-        if key in sandbox_mgr._active:
-            sandbox = sandbox_mgr._active[key]
-            import base64
-            import shlex
-            b64_data = base64.b64encode(data).decode()
-            cmd = (
-                f"mkdir -p /workspace/uploads && "
-                f"echo '{b64_data}' | base64 -d > {shlex.quote('/workspace/' + workspace_path)}"
-            )
-            await sandbox_mgr.execute(sandbox, cmd)
+        if await sandbox_mgr.inject_uploaded_file(
+            str(user.id), str(workspace_id), workspace_slug, workspace_path, data,
+        ):
             logger.info(
                 "workspace_file_injected_to_sandbox",
                 workspace_path=workspace_path,
@@ -879,6 +873,11 @@ async def chat_stream(
 
     session_id = session.id
 
+    # Serialize all Web turns in a session before persisting the user message.
+    run = await chat_runs.reserve(
+        db, user.id, session_id, req.model_dump(mode="json"), req.resume_run_id,
+    )
+
     # Resolve model/provider info for provider-specific content formatting
     agent_model_id = (session.model_id if session and session.model_id else None) or (agent.model_id if agent else None)
     agent_enable_retry = agent.enable_retry if agent else True
@@ -915,6 +914,8 @@ async def chat_stream(
         file_attachments=_file_attachments_data,
     )
     db.add(user_msg)
+    db.add(Message(id=run.assistant_message_id, session_id=session_id,
+                   user_id=user.id, role="assistant", content=""))
     await db.commit()
 
     # First message in the session → auto-generate title concurrently (if enabled on the agent)
@@ -961,6 +962,7 @@ async def chat_stream(
                     gen_db, session_id,
                     provider_type=provider_type_for_content,
                     allow_images=allow_images,
+                    exclude_message_id=run.assistant_message_id,
                 )
                 logger.info(
                     "stream_history_loaded",
@@ -1108,6 +1110,7 @@ async def chat_stream(
                 )
 
                 turn = ChatTurnRecorder(session_id, user.id)
+                turn.message_id = run.assistant_message_id
                 final_output = ""
                 tool_calls_list = turn.tool_calls
                 saved_flag = {"done": False}
@@ -1357,17 +1360,17 @@ async def chat_stream(
                         })
 
         except asyncio.CancelledError:
-            # Client disconnected — this is expected, not an error
+            # Only explicit stop, lease loss or server shutdown cancels execution.
             elapsed = (time.monotonic() - t_start) * 1000
             logger.info(
                 "stream_cancelled",
                 session_id=str(session_id),
                 user_id=str(user.id),
                 elapsed_ms=round(elapsed, 2),
-                reason="client_disconnected",
+                reason="background_task_cancelled",
             )
             if root_obs:
-                root_obs.update(level="DEFAULT", status_message="client disconnected")
+                root_obs.update(level="DEFAULT", status_message="background task cancelled")
             # Rescue tool calls accumulated so far. Shield the save so it isn't
             # itself cancelled, then let the cancellation propagate.
             try:
@@ -1437,8 +1440,10 @@ async def chat_stream(
                 except Exception:
                     pass
 
+    # Producer owns execution. The HTTP response is only an independent reader.
+    chat_runs.start(run, event_generator())
     return StreamingResponse(
-        event_generator(),
+        chat_runs.subscribe(run.id, user.id, replay=False),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1446,6 +1451,51 @@ async def chat_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/sessions/{session_id}/run")
+async def latest_chat_run(
+    session_id: UUID, user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict | None:
+    run = await chat_runs.latest(db, user.id, session_id)
+    return chat_runs.describe(run) if run else None
+
+
+@router.get("/runs/{run_id}/events")
+async def watch_chat_run(
+    run_id: UUID, user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    after: int = Query(default=0, ge=0),
+) -> StreamingResponse:
+    await chat_runs.owned(db, user.id, run_id)
+    await db.commit()
+    return StreamingResponse(chat_runs.subscribe(run_id, user.id, after),
+                             media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/runs/{run_id}/stop")
+async def stop_chat_run(
+    run_id: UUID, user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    return await chat_runs.stop(db, user.id, run_id)
+
+
+@router.post("/runs/{run_id}/resume")
+async def resume_chat_run(
+    run_id: UUID, request: Request, user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StreamingResponse:
+    prior = await chat_runs.owned(db, user.id, run_id)
+    req = ChatRequest(
+        session_id=prior.session_id, agent_id=prior.request.get("agent_id"),
+        resume_run_id=run_id,
+        message=("继续上次未完成的任务。根据已有对话和已保存的工具结果继续完成，"
+                 "不要重复已完成的外部操作；若无法确认下一步是否安全，先询问用户。"),
+    )
+    return await chat_stream(req, request, user, db)
 
 
 # ---- WebSocket Chat (legacy) ----

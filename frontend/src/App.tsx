@@ -105,6 +105,7 @@ export default function App() {
         <Route path="/agents/:agentId/chat/:sessionId" element={<AgentChatPage />} />
         <Route path="/agents/:agentId/api" element={<AgentApiPage />} />
         <Route path="/chat" element={<ChatPage />} />
+        <Route path="/chat/:sessionId" element={<ChatPage />} />
         <Route path="/rooms" element={<RoomsPage />} />
         <Route path="/rooms/:roomId" element={<RoomsPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />

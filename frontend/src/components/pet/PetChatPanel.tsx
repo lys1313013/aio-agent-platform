@@ -5,27 +5,15 @@ import { CloseOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useChatStore } from '@/stores/chatStore';
 import { usePetStore } from '@/stores/petStore';
 import { chatApi, petsApi } from '@/lib/api';
+import { useChatStream } from '@/hooks/useChatStream';
+import ChatRunNotice from '@/components/chat/ChatRunNotice';
 import { useMessageQueue } from '@/hooks/useMessageQueue';
 import { handleUiActionEvent } from '@/hooks/useUiActionEvents';
 import { buildPageContext } from '@/lib/uiActions/registry';
-import { uiActionStore } from '@/stores/uiActionStore';
 import MessageList from '@/components/chat/MessageList';
 import ChatInput from '@/components/chat/ChatInput';
 import PetCanvas from './PetCanvas';
-import type { ChatAttachment, FileAttachmentRef, StreamingState, UserPet } from '@/lib/types';
-
-const IDLE_STREAMING: StreamingState = {
-  thinking: '',
-  thinkingChunks: [],
-  toolCalls: [],
-  finalText: '',
-  isStreaming: false,
-  delegations: [],
-  actionOrder: [],
-  confirmations: [],
-  confirmationsResolved: {},
-  fileChanges: [],
-};
+import type { ChatAttachment, FileAttachmentRef, UserPet } from '@/lib/types';
 
 const PANEL_W = 340;
 const PANEL_H = 620;
@@ -61,11 +49,24 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
   const addMessage = useChatStore((s) => s.addMessage);
   const deleteSession = useChatStore((s) => s.deleteSession);
   const messages = useChatStore((s) => (sessionId ? s.messages[sessionId] : undefined)) ?? [];
-  const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAMING);
-  const [error, setError] = useState<string | null>(null);
+  const flushNextRef = useRef<() => void>(() => {});
+  const { run, stopping, resume, streaming, error, setError, abortRef, beginTurn, interrupt } = useChatStream({
+    sessionId: open ? sessionId : null,
+    onEvent: (event) => {
+      if (handleUiActionEvent(event)) return true;
+      const type = event.type as string;
+      usePetStore.getState().reportEvent(type, {
+        sessionId: sessionId ?? undefined,
+        tool: type === 'tool_call' ? event.name as string : undefined,
+        petAction: type === 'pet_action' ? { name: event.name as string, row: event.row as number } : undefined,
+      });
+      return false;
+    },
+    onDone: (_sid, { flush }) => { if (flush) flushNextRef.current(); },
+    onError: (err) => message.error(err),
+  });
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [newSessionLoading, setNewSessionLoading] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number; moved: boolean } | null>(null);
   const resizeRef = useRef<{
@@ -99,28 +100,10 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
     };
   }, [open, sessionId]);
 
-  // 关闭时中断流并复位；卸载兜底
-  useEffect(() => {
-    if (open) return;
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setStreaming(IDLE_STREAMING);
-    setError(null);
-  }, [open]);
-  useEffect(() => () => abortRef.current?.abort(), []);
-
-  const interruptStream = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setStreaming(IDLE_STREAMING);
-    usePetStore.getState().reportEvent('interrupt', {
-      sessionId: sessionId ?? undefined,
-    });
-  }, [sessionId]);
+  const interruptStream = useCallback(() => interrupt(), [interrupt]);
 
   const handleDeleteConversation = () => {
     if (!sessionId) return;
-    interruptStream();
     modal.confirm({
       title: '删除对话？',
       content: '此操作无法撤销。',
@@ -128,6 +111,7 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
       okType: 'danger',
       cancelText: '取消',
       onOk: async () => {
+        if (streaming.isStreaming && !await interruptStream()) return;
         await deleteSession(sessionId);
         usePetStore.getState().removeTask(sessionId);
         onClose();
@@ -135,10 +119,9 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
     });
   };
 
-  // 新建会话：保留旧会话，中断当前流后切换到新 session
+  // 新建会话仅切换订阅，旧任务继续在后台执行。
   const handleNewConversation = () => {
     if (!pet || newSessionLoading) return;
-    interruptStream();
     setNewSessionLoading(true);
     void (async () => {
       try {
@@ -153,22 +136,7 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
     })();
   };
 
-  // 有页内操作进行中时关闭面板需确认（关闭会 abort SSE → 中断整个 run）
-  const handleClose = () => {
-    const { queue, active } = uiActionStore.getState();
-    if (!active && queue.length === 0) {
-      onClose();
-      return;
-    }
-    modal.confirm({
-      title: '操作进行中',
-      content: '智能体正在操作页面，关闭面板将中断操作。确定关闭？',
-      okText: '关闭并中断',
-      okType: 'danger',
-      cancelText: '继续等待',
-      onOk: () => onClose(),
-    });
-  };
+  const handleClose = onClose;
 
   const handleSendRef = useRef<(content: string, attachments?: ChatAttachment[], fileAttachments?: FileAttachmentRef[]) => Promise<void> | void>();
   const { queue, enqueue, remove: removeQueued, clear: clearQueue, flushNext, sendNow: sendQueuedNow } =
@@ -176,6 +144,7 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
       (content, attachments, fileAttachments) => { void handleSendRef.current?.(content, attachments, fileAttachments); },
       interruptStream,
     );
+  flushNextRef.current = flushNext;
 
   useEffect(() => {
     clearQueue();
@@ -194,8 +163,7 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
         created_at: new Date().toISOString(),
       });
 
-      setError(null);
-      setStreaming({ ...IDLE_STREAMING, isStreaming: true });
+      const consume = beginTurn(sessionId);
       usePetStore.getState().startTask(sessionId, content || '文件任务', agentId ?? undefined);
 
       const controller = chatApi.stream(
@@ -207,186 +175,12 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
           file_attachments: fileAttachments && fileAttachments.length > 0 ? fileAttachments : null,
           page_context: buildPageContext(),
         },
-        (event) => {
-          // ui_* 页内操作事件统一进全局 store（runner 在 AppLayout 执行）
-          if (handleUiActionEvent(event)) return;
-
-          const type = event.type as string;
-          usePetStore.getState().reportEvent(type, {
-            sessionId,
-            tool: type === 'tool_call' ? ((event.name as string) || undefined) : undefined,
-            petAction:
-              type === 'pet_action'
-                ? {
-                    name: (event.name as string) || undefined,
-                    row: typeof event.row === 'number' ? (event.row as number) : undefined,
-                  }
-                : undefined,
-          });
-
-          switch (type) {
-            case 'session':
-              break;
-
-            case 'session_title': {
-              const sid = (event.session_id as string) || sessionId;
-              const newTitle = event.title as string;
-              if (sid && newTitle) {
-                useChatStore.getState().setSessionTitleLocal(sid, newTitle);
-              }
-              break;
-            }
-
-            case 'thinking':
-              setStreaming((prev) => {
-                const content = (event.content as string) || '';
-                const lastAction = prev.actionOrder[prev.actionOrder.length - 1];
-                if (lastAction?.type === 'thinking') {
-                  return {
-                    ...prev,
-                    isStreaming: true,
-                    thinking: prev.thinking + content,
-                    thinkingChunks: prev.thinkingChunks.map((c, i) =>
-                      i === prev.thinkingChunks.length - 1 ? { ...c, content: c.content + content } : c,
-                    ),
-                  };
-                }
-                const newId = `thinking-${prev.thinkingChunks.length}`;
-                return {
-                  ...prev,
-                  isStreaming: true,
-                  thinking: prev.thinking + content,
-                  thinkingChunks: [...prev.thinkingChunks, { id: newId, content }],
-                  actionOrder: [...prev.actionOrder, { type: 'thinking' as const, id: newId }],
-                };
-              });
-              break;
-
-            case 'tool_call':
-              setStreaming((prev) => ({
-                ...prev,
-                toolCalls: [
-                  ...prev.toolCalls,
-                  {
-                    id: (event.id as string) || '',
-                    name: (event.name as string) || '',
-                    arguments: (event.arguments as Record<string, unknown>) || {},
-                  },
-                ],
-                actionOrder: [...prev.actionOrder, { type: 'tool', id: (event.id as string) || '' }],
-              }));
-              break;
-
-            case 'tool_result':
-              setStreaming((prev) => ({
-                ...prev,
-                toolCalls: prev.toolCalls.map((tc) =>
-                  tc.id === event.tool_call_id
-                    ? {
-                        ...tc,
-                        result: {
-                          status: (event.status as string) || '',
-                          preview: (event.preview as string) || '',
-                        },
-                      }
-                    : tc,
-                ),
-              }));
-              break;
-
-            case 'text_delta':
-              setStreaming((prev) => ({
-                ...prev,
-                isStreaming: true,
-                finalText: prev.finalText + ((event.content as string) || ''),
-              }));
-              break;
-
-            case 'text':
-              setStreaming((prev) => ({
-                ...prev,
-                isStreaming: false,
-                finalText: (event.content as string) || '',
-              }));
-              break;
-
-            case 'done': {
-              const finalText = (event.content as string) || '';
-              const msgId = (event.message_id as string) || `msg-assistant-${Date.now()}`;
-              const toolCalls = event.tool_calls as Record<string, unknown>[] | undefined;
-
-              addMessage(sessionId, {
-                id: msgId,
-                role: 'assistant',
-                content: finalText,
-                tool_calls: toolCalls || null,
-                created_at: new Date().toISOString(),
-              });
-
-              setStreaming(IDLE_STREAMING);
-              flushNext();
-              break;
-            }
-
-            case 'error': {
-              setStreaming(IDLE_STREAMING);
-              const raw = event.message;
-              const errStr = typeof raw === 'string' ? raw
-                : Array.isArray(raw) ? raw.map((d: unknown) => typeof d === 'object' && d !== null ? (d as Record<string, unknown>).msg || JSON.stringify(d) : String(d)).join('; ')
-                : String(raw ?? '未知错误');
-              setError(errStr);
-              message.error(errStr);
-              break;
-            }
-
-            // ---- Confirmation events (AskUserQuestion) ----
-            // M0 修复：宠物面板此前丢弃确认事件，Agent 会干挂 300s。
-            // 渲染由 MessageList → StreamingMessage → ConfirmationCard 提供。
-            case 'confirmation_required':
-              setStreaming((prev) => ({
-                ...prev,
-                confirmations: [
-                  ...prev.confirmations,
-                  {
-                    confirmation_id: (event.confirmation_id as string) || '',
-                    question: (event.question as string) || '',
-                    mode: (event.mode as import('@/lib/types').ConfirmationMode) || 'single_select',
-                    options: (event.options as import('@/lib/types').ConfirmationOption[]) || [],
-                    table_schema: (event.table_schema as import('@/lib/types').TableSchema) || undefined,
-                    context: (event.context as import('@/lib/types').ConfirmationContext) || { timeout_seconds: 300 },
-                    created_at: (event.created_at as string) || new Date().toISOString(),
-                  },
-                ],
-                actionOrder: [
-                  ...prev.actionOrder,
-                  { type: 'confirmation', id: (event.confirmation_id as string) || '' },
-                ],
-              }));
-              break;
-
-            case 'confirmation_resolved':
-              setStreaming((prev) => ({
-                ...prev,
-                confirmationsResolved: {
-                  ...prev.confirmationsResolved,
-                  [(event.confirmation_id as string) || '']: {
-                    confirmation_id: (event.confirmation_id as string) || '',
-                    status: (event.status as import('@/lib/types').ConfirmationStatus) || 'timeout',
-                    selected_options: (event.selected_options as string[]) || undefined,
-                    user_input: (event.user_input as string) || undefined,
-                    table_data: (event.table_data as Record<string, unknown>[]) || undefined,
-                    resolved_at: (event.resolved_at as string) || new Date().toISOString(),
-                  },
-                },
-              }));
-              break;
-          }
-        },
+        consume,
       );
 
       abortRef.current = controller;
     },
-    [sessionId, agentId, addMessage, flushNext],
+    [sessionId, agentId, addMessage, beginTurn, abortRef],
   );
 
   handleSendRef.current = handleSend;
@@ -565,7 +359,7 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
           </div>
         ) : (
           <MessageList
-            messages={messages}
+            messages={messages.filter((item) => !(streaming.isStreaming && run && item.id === run.assistant_message_id))}
             streaming={streaming}
             compact
             emptyTitle={pet ? `和 ${pet.package.display_name} 打个招呼吧` : '和宠物打个招呼吧'}
@@ -577,6 +371,7 @@ export default function PetChatPanel({ open, pet, sessionId, agentId, onClose, o
           />
         )}
 
+        <ChatRunNotice run={run} stopping={stopping} onResume={resume} />
         {error && (
           <div className="w-full px-3 pb-2">
             <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} />

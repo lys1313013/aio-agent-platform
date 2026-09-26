@@ -907,6 +907,12 @@ class ChannelInboundPipeline:
 
         workspace_path = f"uploads/{file_id}_{filename}"
         WorkspaceStorage(ObjectStorage()).put_file(str(workspace_id), workspace_path, data)
+        try:
+            await self.tool_executor.sandbox_mgr.inject_uploaded_file(
+                str(ctx.user_id), str(workspace_id), _slug, workspace_path, data,
+            )
+        except Exception as error:
+            logger.warning("channel_attachment_inject_failed", error=str(error))
 
         ref = {
             "file_id": file_id,

@@ -1,7 +1,7 @@
 """SQLAlchemy models — all tables with RLS, no foreign key constraints."""
 
 from datetime import date, datetime
-from typing import Annotated
+from typing import Annotated, ClassVar
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -35,6 +35,37 @@ class Base(DeclarativeBase):
     """Base class for all models."""
 
     pass
+
+
+class ChatRun(Base):
+    """Durable Web turn; browser subscriptions never own its execution."""
+
+    __tablename__ = "chat_runs"
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    session_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    assistant_message_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    resumed_from: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    owner: Mapped[str] = mapped_column(String(36), nullable=False)
+    stop_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    request: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    last_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        Index("uq_chat_runs_active_session", "session_id", unique=True,
+              postgresql_where=text("status = 'running'"), sqlite_where=text("status = 'running'")),
+    )
+
+
+class ChatRunEvent(Base):
+    __tablename__ = "chat_run_events"
+    run_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
 
 # ---- User & Auth ----
@@ -800,6 +831,9 @@ class ChatRoomMessage(Base):
 class Memory(Base):
     __tablename__ = "memories"
 
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    __mapper_args__: ClassVar[dict] = {"version_id_col": version, "version_id_generator": False}
+
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, comment="主键ID")
     agent_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, comment="记忆归属智能体;空为用户共享")
     user_id: Mapped[UUID] = mapped_column(
@@ -831,6 +865,41 @@ class Memory(Base):
         Index("idx_memories_tenant", "tenant_id"),
         {"comment": "记忆表"},
     )
+
+
+class MemoryChange(Base):
+    __tablename__ = "memory_changes"
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    before: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    after: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    undone_by: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), server_default=func.now())
+
+
+class MemoryVersion(Base):
+    __tablename__ = "memory_versions"
+    memory_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    change_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), index=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), server_default=func.now())
+
+
+class MemoryOrganizePlan(Base):
+    __tablename__ = "memory_organize_plans"
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    agent_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    layer: Mapped[str] = mapped_column(String(4), nullable=False)
+    groups: Mapped[list] = mapped_column(JSONB, nullable=False)
+    originals: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    applied_change_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    applied_digest: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), server_default=func.now())
 
 
 class DailyMemory(Base):

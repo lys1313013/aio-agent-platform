@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.db.models import Memory
+from aio_agent_platform.memory.history import record_change, snapshot
 from aio_agent_platform.memory.service import (
     MemoryService,
     _merge_meta,
@@ -58,8 +59,10 @@ async def reconcile_memory(
         .execution_options(populate_existing=True)
     )
     if exact is not None:
+        before = {str(exact.id): snapshot(exact)}
         exact.meta = _merge_meta(exact.meta or {}, meta or {})
-        await db.flush()
+        if snapshot(exact) != before[str(exact.id)]:
+            await record_change(db, user_id, "automatic_sources", before, [exact])
         await db.refresh(exact)
         return exact, "skipped"
 
@@ -95,6 +98,7 @@ async def reconcile_memory(
     if decision is not None and decision["action"] != "create":
         existing = candidates[decision["memory_id"]]
         action = decision["action"]
+        before = {str(existing.id): snapshot(existing)}
         merged_meta = _merge_meta(existing.meta or {}, meta or {})
         if action != "skip":
             # Bounded audit trail; never accept history supplied by the model.
@@ -111,7 +115,8 @@ async def reconcile_memory(
             existing.content = decision["content"]
             existing.search_vec = MemoryService._tokenize(existing.content)
         existing.meta = merged_meta
-        await db.flush()
+        if snapshot(existing) != before[str(existing.id)]:
+            await record_change(db, user_id, "automatic_" + action, before, [existing])
         await db.refresh(existing)
         return existing, {"skip": "skipped", "merge": "merged", "update": "updated"}[action]
 

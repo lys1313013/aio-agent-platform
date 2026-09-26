@@ -614,6 +614,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # ---- Shutdown ----
+    from aio_agent_platform.core.chat_runs import shutdown as shutdown_chat_runs
+    await shutdown_chat_runs()
     from aio_agent_platform.rooms.runtime import shutdown as shutdown_rooms
     await shutdown_rooms()
     conn_manager = getattr(app.state, "channel_connection_manager", None)

@@ -227,7 +227,10 @@ def _build_files_section(files: list) -> str:
         lines.append("")
     lines.append(
         "使用 `file_info` 查看文件详细结构, 使用 `file_read`/`file_grep`/`file_query` "
-        "按需访问内容。PDF 文件用 `read_pdf` 提取正文 (大文件按页码范围读取)。"
+        "按需访问内容。PDF、扫描件、Word、Excel、PPT 优先使用 `read_document`，"
+        "用 `document_search` 检索原文；遵循返回的 coverage、next_page、next_offset 分批读取，"
+        "不要把部分范围的结果当作全文。检查排版时先 `render_document`，再对返回图片 `view_image`。"
+        "普通图片用 `view_image` 查看；非视觉模型可用 `read_document` 做文字 OCR。"
         "**不要直接读取大文件全文。**"
     )
     return "\n".join(lines)

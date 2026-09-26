@@ -50,6 +50,8 @@ class ToolResult:
     output_chars: int = 0
     output_bytes: int = 0
     output_file: str | None = None
+    # Ephemeral pixels: consumed by AgentLoop, never part of output/trace/SSE text.
+    image_data: str | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -58,6 +60,7 @@ class SandboxToolOutput:
 
     text: str
     file_changes: list[dict] = field(default_factory=list)
+    image_data: str | None = field(default=None, repr=False)
 
 
 class ToolExecutor:
@@ -307,6 +310,7 @@ class ToolExecutor:
 
         try:
             # 1. Security checks
+            image_data = None
             if tool_name == "run_shell":
                 self._check_dangerous_command(arguments.get("command", ""))
 
@@ -322,6 +326,7 @@ class ToolExecutor:
                 if isinstance(sandbox_output, SandboxToolOutput):
                     output = sandbox_output.text
                     file_changes = sandbox_output.file_changes
+                    image_data = sandbox_output.image_data
                 else:
                     output = sandbox_output
                     file_changes = []
@@ -342,6 +347,7 @@ class ToolExecutor:
                 success=getattr(output, "success", True),
                 error=getattr(output, "error", None),
                 file_changes=file_changes,
+                image_data=image_data,
                 duration_ms=(time.monotonic() - t_start) * 1000,
             )
 
@@ -512,6 +518,8 @@ class ToolExecutor:
         # workspace_slug is required; fall back to "default" for backward compat
         ws_slug = workspace_slug or "default"
         sandbox = await self.sandbox_mgr.get_or_create(user_id, session_id, ws_id, ws_slug)
+        if tool_name in {"read_document", "document_search", "render_document", "view_image"}:
+            return await self._execute_document_tool(sandbox, tool_name, args, ws_id, ws_slug)
         tracked = tool_name in {"run_shell", "run_code", "write_file", "edit_file"}
         before = await self._workspace_manifest(sandbox, ws_slug) if tracked else {}
 
@@ -626,6 +634,58 @@ class ToolExecutor:
 
         else:
             return f"Unknown sandbox tool: {tool_name}"
+
+    async def _execute_document_tool(
+        self, sandbox, tool_name: str, args: dict, workspace_id: str, workspace_slug: str,
+    ) -> SandboxToolOutput:
+        """Run the parser inside the sandbox, keeping raw image data out of tool text."""
+        import base64
+        from pathlib import Path
+
+        if not workspace_slug or "/" in workspace_slug or workspace_slug in {".", ".."}:
+            raise SecurityError("Invalid workspace slug")
+        raw_path = args.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ValueError("path must be a nonempty workspace file path")
+        root = f"/workspace/{workspace_slug}"
+        # Absolute paths must name THIS workspace; never reinterpret another user's root.
+        if posixpath.isabs(raw_path):
+            if not raw_path.startswith(root + "/"):
+                raise SecurityError("File is outside the current workspace")
+            relative = raw_path[len(root) + 1:]
+        else:
+            relative = raw_path
+        relative = posixpath.normpath(relative)
+        if relative == ".." or relative.startswith("../"):
+            raise SecurityError("File is outside the current workspace")
+        request = {"operation": tool_name, "root": root, "args": {**args, "path": relative}}
+        encoded_request = base64.b64encode(json.dumps(request).encode()).decode()
+        script = Path(__file__).with_name("document_runtime.py").read_bytes()
+        encoded_script = base64.b64encode(script).decode()
+        launcher = f"import base64; exec(compile(base64.b64decode('{encoded_script}'), '<document-worker>', 'exec'))"
+        result = await self.sandbox_mgr.execute(
+            sandbox, f"python3 -c {shlex.quote(launcher)} {shlex.quote(encoded_request)}",
+        )
+        try:
+            payload = json.loads(result.stdout)
+        except (TypeError, ValueError):
+            raise ValueError("Document worker failed; verify document dependencies in the sandbox image")
+        if result.exit_code != 0 or payload.get("error"):
+            raise ValueError(payload.get("error") or "Document worker failed")
+        metadata = payload["result"]
+        changes = []
+        if tool_name == "render_document":
+            for item in metadata["files"]:
+                path = item["path"]
+                # File-change events use the same shape as other sandbox artifacts.
+                size = await self._get_file_size(sandbox, path, workspace_slug)
+                changes.append({"path": path, "filename": posixpath.basename(path),
+                                "action": "created", "size": size or 0,
+                                "mime_type": "image/png", "workspace_id": workspace_id})
+        return SandboxToolOutput(
+            text=json.dumps(metadata, ensure_ascii=False), file_changes=changes,
+            image_data=payload.get("image") if tool_name == "view_image" else None,
+        )
 
     # ---- File helpers ----
 

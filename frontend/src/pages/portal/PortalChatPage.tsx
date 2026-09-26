@@ -4,6 +4,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { chatApi, portalApi } from '@/lib/api';
 import { useMessageQueue } from '@/hooks/useMessageQueue';
 import { useChatStream } from '@/hooks/useChatStream';
+import ChatRunNotice from '@/components/chat/ChatRunNotice';
 import ChatWindow from '@/components/chat/ChatWindow';
 import SessionSidebar from '@/components/chat/SessionSidebar';
 import { Alert, App, Typography, Button, Skeleton, Tooltip } from 'antd';
@@ -28,7 +29,7 @@ export default function PortalChatPage() {
   // onDone 需要 flushNext，但 useChatStream 初始化早于 useMessageQueue —— 用 ref 打破循环依赖
   const flushNextRef = useRef<() => void>(() => {});
 
-  const { streaming, error, setError, abortRef, beginTurn, interrupt, handleEvent } =
+  const { run, stopping, resume, streaming, error, setError, abortRef, beginTurn, interrupt, handleEvent } =
     useChatStream({
       onDone: (_sid, { flush }) => {
         refreshSessions(agentId);
@@ -107,7 +108,7 @@ export default function PortalChatPage() {
         created_at: new Date().toISOString(),
       });
 
-      beginTurn(sessionId);
+      const consume = beginTurn(sessionId);
 
       const controller = chatApi.stream(
         {
@@ -116,7 +117,7 @@ export default function PortalChatPage() {
           message: content,
           attachments: attachments.length > 0 ? attachments : null,
         },
-        handleEvent,
+        consume,
       );
 
       abortRef.current = controller;
@@ -160,7 +161,8 @@ export default function PortalChatPage() {
     handleSend(prompt);
   };
 
-  const currentMessages = activeSessionId ? messages[activeSessionId] || [] : [];
+  const currentMessages = (activeSessionId ? messages[activeSessionId] || [] : [])
+    .filter((item) => !(streaming.isStreaming && run && item.id === run.assistant_message_id));
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -210,6 +212,7 @@ export default function PortalChatPage() {
           loading={messagesLoading || agentLoading}
           messages={{ messages: currentMessages, streaming, conversationId: activeSessionId, agent, onEditResend: handleEditResend }}
           status={<>
+            <ChatRunNotice run={run} stopping={stopping} onResume={resume} />
             {error && (
               <div className="mx-auto max-w-3xl w-full px-4 pb-2">
                 <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} />

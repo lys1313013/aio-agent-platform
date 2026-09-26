@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useChatStore } from '@/stores/chatStore';
 import { formatRelativeTime, cn } from '@/lib/utils';
 import type { Session } from '@/lib/types';
@@ -30,6 +31,7 @@ const SESSION_SOURCE_LABELS: Record<string, string> = {
 };
 
 export default function ChatHistorySidebar() {
+  const navigate = useNavigate();
   const { modal } = App.useApp();
   const {
     sessions,
@@ -97,6 +99,7 @@ export default function ChatHistorySidebar() {
 
   const handleSelectSession = (id: string) => {
     setActiveSession(id);
+    navigate(`/chat/${id}`);
     // Keep sidebar open — user collapses manually via toggle button
   };
 

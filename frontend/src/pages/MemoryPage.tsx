@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   App,
@@ -8,6 +8,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Pagination,
   Select,
   Spin,
   Tabs,
@@ -29,6 +30,9 @@ import type { TabsProps } from 'antd';
 import { CalendarOutlined } from '@ant-design/icons';
 import { agentsApi, memoriesApi } from '@/lib/api';
 import type { Agent, Memory, MemoryLayer } from '@/lib/types';
+import MemoryOrganizationModal from '@/components/memory/MemoryOrganizationModal';
+import MemoryHistoryDrawer from '@/components/memory/MemoryHistoryDrawer';
+import MemorySources from '@/components/memory/MemorySources';
 import DailyMemoryTimeline from '@/components/memory/DailyMemoryTimeline';
 
 type MemoryTab = MemoryLayer | 'daily';
@@ -90,6 +94,9 @@ export default function MemoryPage() {
     { value: '', label: '用户共享记忆' },
     ...agents.map((agent) => ({ value: agent.id, label: `${agent.name} · 专属记忆` })),
   ];
+  const [page, setPage] = useState(1);
+  const [organizing, setOrganizing] = useState<{ layer: 'L1' | 'L2'; agentId: string; ids?: string[] } | null>(null);
+  const [historyView, setHistoryView] = useState<{ memoryId?: string; agentId: string; layer?: string } | null>(null);
   const [activeLayer, setActiveLayer] = useState<MemoryTab>('L1');
   const [searchQuery, setSearchQuery] = useState('');
   const [memories, setMemories] = useState<Memory[]>([]);
@@ -106,6 +113,7 @@ export default function MemoryPage() {
   const [formLayer, setFormLayer] = useState<MemoryLayer>('L1');
   const [formContent, setFormContent] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const listRequest = useRef(0);
 
   const isDailyTab = activeLayer === 'daily';
   const config = isDailyTab
@@ -116,36 +124,34 @@ export default function MemoryPage() {
     : LAYER_CONFIG[activeLayer];
 
   const fetchMemories = useCallback(async () => {
+    const request = ++listRequest.current;
     if (activeLayer === 'daily') return;
     setLoading(true);
     try {
       if (searchQuery.trim()) {
         const results = await memoriesApi.search(searchQuery, { layer: activeLayer, agent_id: scopeAgent || undefined });
+        if (request !== listRequest.current) return;
         setScores(Object.fromEntries(results.map((r) => [r.id, r.score])));
         setMemories(
           results.map((r) => ({
-            id: r.id,
-            agent_id: r.agent_id,
-            layer: r.layer,
-            content: r.content,
-            metadata: {},
-            created_at: r.created_at,
-            updated_at: r.created_at,
+            ...r,
           })),
         );
         setTotal(results.length);
       } else {
-        const resp = await memoriesApi.list({ layer: activeLayer, agent_id: scopeAgent || undefined });
+        const resp = await memoriesApi.list({ layer: activeLayer, agent_id: scopeAgent || undefined, limit: 50, offset: (page - 1) * 50 });
+        if (request !== listRequest.current) return;
+        if (page > Math.max(1, Math.ceil(resp.total / 50))) setPage(Math.max(1, Math.ceil(resp.total / 50)));
         setScores({});
         setMemories(resp.items);
         setTotal(resp.total);
       }
     } catch {
-      message.error('加载记忆失败');
+      if (request === listRequest.current) message.error('加载记忆失败');
     } finally {
-      setLoading(false);
+      if (request === listRequest.current) setLoading(false);
     }
-  }, [activeLayer, searchQuery, message, scopeAgent]);
+  }, [activeLayer, searchQuery, message, scopeAgent, page]);
 
   const fetchCounts = useCallback(async () => {
     try {
@@ -215,6 +221,7 @@ export default function MemoryPage() {
     setSubmitting(true);
     try {
       await memoriesApi.update(editingMemory.id, {
+        expected_version: editingMemory.version,
         content: formContent.trim(),
         layer: formLayer,
         agent_id: formAgent || null,
@@ -224,8 +231,8 @@ export default function MemoryPage() {
       setFormContent('');
       fetchMemories();
       fetchCounts();
-    } catch {
-      message.error('更新失败');
+    } catch (cause) {
+      message.error(cause instanceof Error ? cause.message : '更新失败');
     } finally {
       setSubmitting(false);
     }
@@ -266,7 +273,9 @@ export default function MemoryPage() {
     setCreateModalOpen(true);
   };
 
-  const openEditModal = (memory: Memory) => {
+  const openEditModal = async (memory: Memory) => {
+    try { memory = await memoriesApi.get(memory.id); }
+    catch (cause) { message.error(cause instanceof Error ? cause.message : '加载记忆失败'); return; }
     setFormLayer(memory.layer);
     setFormAgent(memory.agent_id || '');
     setFormContent(memory.content);
@@ -275,6 +284,7 @@ export default function MemoryPage() {
 
   const handleTabChange = (key: string) => {
     setActiveLayer(key as MemoryTab);
+    setPage(1);
     setSearchQuery('');
   };
 
@@ -335,13 +345,15 @@ export default function MemoryPage() {
                 id="memory-scope"
                 aria-label="记忆范围"
                 value={scopeAgent}
-                onChange={(value) => { setScopeAgent(value); setSelectedIds(new Set()); }}
+                onChange={(value) => { setScopeAgent(value); setPage(1); setSelectedIds(new Set()); }}
                 options={scopeOptions}
                 className="w-full sm:w-60"
                 showSearch
                 optionFilterProp="label"
               />
             </div>
+            {!isDailyTab && <Button icon={<HistoryOutlined />} onClick={() => setHistoryView({ agentId: scopeAgent, layer: activeLayer })}>修改记录</Button>}
+            {(activeLayer === 'L1' || activeLayer === 'L2') && <Button onClick={() => setOrganizing({ layer: activeLayer, agentId: scopeAgent })}>整理记忆</Button>}
             {!isDailyTab && (
               <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
                 添加记忆
@@ -391,6 +403,11 @@ export default function MemoryPage() {
               <Button size="small" onClick={() => setSelectedIds(new Set())}>
                 取消
               </Button>
+              {(activeLayer === 'L1' || activeLayer === 'L2') && <Button size="small"
+                disabled={selectedCount < 2 || selectedCount > 30}
+                onClick={() => setOrganizing({ layer: activeLayer, agentId: scopeAgent, ids: Array.from(selectedIds) })}>
+                整理所选（2–30 条）
+              </Button>}
               <Popconfirm
                 title={`确定删除选中的 ${selectedCount} 条记忆吗？`}
                 onConfirm={handleBatchDelete}
@@ -466,6 +483,7 @@ export default function MemoryPage() {
                           <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
                             {memory.content}
                           </p>
+                          <MemorySources metadata={memory.metadata} />
                           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
                             <Tag color={LAYER_CONFIG[memory.layer].color} className="!mr-0">
                               {memory.layer}
@@ -499,6 +517,8 @@ export default function MemoryPage() {
                               </span>
                             )}
                             <div className="ml-auto flex items-center gap-1">
+                              <Button size="small" type="text" icon={<HistoryOutlined />} aria-label="来源与版本"
+                                onClick={() => setHistoryView({ memoryId: memory.id, agentId: scopeAgent })}>来源与版本</Button>
                               <Button
                                 size="small"
                                 type="text"
@@ -526,8 +546,15 @@ export default function MemoryPage() {
             </>
           )}
         </Spin>
+        {!searchQuery.trim() && total > 50 && <Pagination current={page} pageSize={50} total={total}
+          showSizeChanger={false} onChange={setPage} style={{ marginTop: 20, textAlign: 'right' }} />}
           </>
         )}
+
+        {organizing && <MemoryOrganizationModal {...organizing} onClose={() => setOrganizing(null)}
+          onChanged={() => { setSelectedIds(new Set()); void fetchMemories(); void fetchCounts(); }} />}
+        {historyView && <MemoryHistoryDrawer {...historyView} onClose={() => setHistoryView(null)}
+          onChanged={() => { void fetchMemories(); void fetchCounts(); }} />}
 
         {/* Create Modal */}
         <Modal
@@ -564,7 +591,7 @@ export default function MemoryPage() {
 
         {/* Edit Modal */}
         <Modal
-          title="编辑记忆"
+          title="纠正记忆（保存后可恢复旧版本）"
           open={!!editingMemory}
           onOk={handleUpdate}
           onCancel={() => setEditingMemory(null)}

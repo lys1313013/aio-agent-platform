@@ -7,6 +7,7 @@ import { useMessageQueue } from '@/hooks/useMessageQueue';
 import { useChatStream } from '@/hooks/useChatStream';
 import { handleUiActionEvent } from '@/hooks/useUiActionEvents';
 import { buildPageContext } from '@/lib/uiActions/registry';
+import ChatRunNotice from '@/components/chat/ChatRunNotice';
 import ChatWindow from '@/components/chat/ChatWindow';
 import AgentConfigSidebar from '@/components/AgentConfigSidebar';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
@@ -32,7 +33,7 @@ export default function AgentChatPage() {
   // onDone 需要 flushNext，但 useChatStream 初始化早于 useMessageQueue —— 用 ref 打破循环依赖
   const flushNextRef = useRef<() => void>(() => {});
 
-  const { streaming, error, setError, abortRef, turnSessionIdRef, beginTurn, interrupt, handleEvent } =
+  const { run, stopping, resume, streaming, error, setError, abortRef, turnSessionIdRef, beginTurn, interrupt, handleEvent } =
     useChatStream({
       onEvent: (event) => {
         // ui_* 页内操作事件统一进全局 store（runner 在 AppLayout 执行）
@@ -63,10 +64,11 @@ export default function AgentChatPage() {
   // flushed one by one as each turn completes.
   const handleSendRef = useRef<(content: string, attachments?: ChatAttachment[], fileAttachments?: FileAttachmentRef[]) => Promise<void> | void>();
   const interruptStream = useCallback(() => {
-    interrupt();
+    const stopped = interrupt();
     usePetStore.getState().reportEvent('interrupt', {
       sessionId: useChatStore.getState().activeSessionId ?? undefined,
     });
+    return stopped;
   }, [interrupt]);
   const { queue, enqueue, remove: removeQueued, clear: clearQueue, flushNext, sendNow: sendQueuedNow } =
     useMessageQueue(
@@ -172,7 +174,7 @@ export default function AgentChatPage() {
         created_at: new Date().toISOString(),
       });
 
-      beginTurn(sessionId);
+      const consume = beginTurn(sessionId);
       usePetStore.getState().startTask(sessionId, content || '文件任务', agentId);
 
       // Start SSE stream
@@ -185,7 +187,7 @@ export default function AgentChatPage() {
           file_attachments: fileAttachments && fileAttachments.length > 0 ? fileAttachments : null,
           page_context: buildPageContext(),
         },
-        handleEvent,
+        consume,
       );
 
       abortRef.current = controller;
@@ -216,7 +218,6 @@ export default function AgentChatPage() {
   const handleDeleteChat = () => {
     const sid = activeSessionId;
     if (!sid) return;
-    interruptStream();
     modal.confirm({
       title: '删除对话？',
       content: '此操作无法撤销。',
@@ -224,6 +225,7 @@ export default function AgentChatPage() {
       okType: 'danger',
       cancelText: '取消',
       onOk: async () => {
+        if (streaming.isStreaming && !await interruptStream()) return;
         await deleteSession(sid);
         usePetStore.getState().removeTask(sid);
         // 回到无会话的空对话状态，URL 去掉 sessionId
@@ -263,15 +265,16 @@ export default function AgentChatPage() {
     if (!urlSessionId || !agentId) return;
     setSessionStatus(null);
     // 回放流：done 后不触发队列 flush
-    beginTurn(urlSessionId, { flushOnDone: false });
+    const consume = beginTurn(urlSessionId, { flushOnDone: false });
     usePetStore.getState().startTask(urlSessionId, sessionStatus?.label || '重新连接', agentId);
 
-    const controller = sessionsApi.watchEvents(urlSessionId, handleEvent);
+    const controller = sessionsApi.watchEvents(urlSessionId, consume);
 
     abortRef.current = controller;
   }, [urlSessionId, agentId, sessionStatus?.label, beginTurn, handleEvent, abortRef]);
 
-  const currentMessages = activeSessionId ? messages[activeSessionId] || [] : [];
+  const currentMessages = (activeSessionId ? messages[activeSessionId] || [] : [])
+    .filter((item) => !(streaming.isStreaming && run && item.id === run.assistant_message_id));
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
@@ -334,6 +337,7 @@ export default function AgentChatPage() {
           loading={messagesLoading || agentLoading}
           messages={{ messages: currentMessages, streaming, conversationId: activeSessionId, agent, onNewChat: handleNewChat, onEditResend: handleEditResend }}
           status={<>
+            <ChatRunNotice run={run} stopping={stopping} onResume={resume} />
             {error && (
               <div className="mx-auto max-w-3xl w-full px-4 pb-2">
                 <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} />

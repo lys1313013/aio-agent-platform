@@ -21,7 +21,7 @@ type SendFn = (
  * queued locally. `flushNext` (called when a turn completes) auto-sends the
  * head message; `sendNow` interrupts the current turn and sends immediately.
  */
-export function useMessageQueue(send: SendFn, interrupt: () => void) {
+export function useMessageQueue(send: SendFn, interrupt: () => void | boolean | Promise<void | boolean>) {
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const queueRef = useRef<QueuedMessage[]>([]);
   const sendRef = useRef(send);
@@ -67,11 +67,8 @@ export function useMessageQueue(send: SendFn, interrupt: () => void) {
   const sendNow = useCallback(async (id: string) => {
     const item = queueRef.current.find((m) => m.id === id);
     if (!item) return;
+    if (await interruptRef.current() === false) return;
     sync(queueRef.current.filter((m) => m.id !== id));
-    interruptRef.current();
-    // Give the backend a moment to rescue/persist the interrupted turn
-    // before the next request reloads conversation history.
-    await new Promise((r) => setTimeout(r, 400));
     sendRef.current(item.content, item.attachments, item.fileAttachments);
   }, []);
 

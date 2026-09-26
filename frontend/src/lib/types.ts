@@ -220,6 +220,7 @@ export interface WsServerMessage {
 export type MemoryLayer = 'L1' | 'L2' | 'L3';
 
 export interface Memory {
+  version: number;
   agent_id: string | null;
   id: string;
   layer: MemoryLayer;
@@ -235,13 +236,36 @@ export interface MemoryListResponse {
   layer: MemoryLayer | null;
 }
 
-export interface MemorySearchResult {
-  agent_id: string | null;
-  id: string;
-  layer: MemoryLayer;
-  content: string;
+export interface MemorySearchResult extends Memory {
   score: number;
+}
+
+export interface MemorySnapshot extends Memory {
+  exists: boolean;
+}
+export interface MemoryOrganizePreview {
+  id: string;
+  groups: Array<{ id: string; ids: string[]; target_id: string; content: string; reason: string }>;
+  originals: Record<string, MemorySnapshot>;
+  scanned: number;
+  total: number;
+  warnings: string[];
+  next_offset: number | null;
+}
+export interface MemoryChange {
+  id: string;
+  kind: string;
+  before: Record<string, MemorySnapshot>;
+  after: Record<string, MemorySnapshot>;
+  undone_by: string | null;
   created_at: string;
+}
+export interface MemoryHistory {
+  current_version: number | null;
+  versions: Array<{ version: number; kind: string; change_id: string | null; snapshot: MemorySnapshot; created_at: string }>;
+  sources: Array<{ id: string; title: string | null }>;
+  legacy_revisions: Array<{ content: string; updated_at?: string; action?: string }>;
+  has_more: boolean;
 }
 
 export type DailyHighlightType = 'decision' | 'todo' | 'fact' | 'event';

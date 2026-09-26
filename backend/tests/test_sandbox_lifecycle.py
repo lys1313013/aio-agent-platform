@@ -12,7 +12,7 @@ from docker.errors import APIError, NotFound
 
 from aio_agent_platform.core.config import settings
 from aio_agent_platform.sandbox.models import SandboxManager
-from aio_agent_platform.storage.workspace import SyncStats
+from aio_agent_platform.storage.workspace import SyncStats, WorkspaceStorage
 
 
 class Container:
@@ -98,6 +98,23 @@ def setup(monkeypatch, tmp_path):
 
 async def obtain(manager, user="user", workspace="workspace", slug="default"):
     return await manager.get_or_create(user, "session", workspace, slug)
+
+
+async def test_uploaded_file_refreshes_current_workspace_without_starting_container(setup, monkeypatch):
+    daemon, storage = setup
+    manager = SandboxManager(workspace_storage=storage)
+    write = AsyncMock(return_value=True)
+    monkeypatch.setattr(WorkspaceStorage, "write_file_live", write)
+    assert not await manager.inject_uploaded_file("user", "workspace", "default", "uploads/a.pdf", b"pdf")
+    assert not daemon.created
+    sandbox = await obtain(manager)
+    assert await manager.inject_uploaded_file("user", "workspace", "default", "uploads/a.pdf", b"pdf")
+    write.assert_awaited_once_with(manager, sandbox, "uploads/a.pdf", b"pdf", "default")
+    assert len(daemon.created) == 1
+    # A backend restart must also refresh a container recovered from Docker.
+    restarted = SandboxManager(workspace_storage=storage)
+    assert await restarted.inject_uploaded_file("user", "workspace", "default", "uploads/b.pdf", b"new")
+    assert write.await_args.args[2:] == ("uploads/b.pdf", b"new", "default")
 
 
 async def test_result_file_is_synced_before_write_returns(setup, monkeypatch):

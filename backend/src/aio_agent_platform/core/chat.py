@@ -464,6 +464,7 @@ async def load_conversation_history(
     limit: int | None = None,
     provider_type: str = "openai",
     allow_images: bool = True,
+    exclude_message_id: UUID | None = None,
 ) -> tuple[list[LLMMessage], str | None]:
     """Load recent messages from DB as LLMMessage list, plus session context_summary.
 
@@ -480,6 +481,7 @@ async def load_conversation_history(
     result = await db.execute(
         select(Message)
         .where(Message.session_id == session_id)
+        .where(Message.id != exclude_message_id if exclude_message_id else True)
         .order_by(Message.created_at.desc())
         .limit(soft_limit)
     )
@@ -493,6 +495,9 @@ async def load_conversation_history(
     llm_messages: list[LLMMessage] = []
     attachment_storage = ChatAttachmentStorage()
     for msg in messages:
+        # A reserved/background turn may have failed before producing anything.
+        if msg.role == "assistant" and not (msg.content or msg.tool_calls):
+            continue
         if msg.role in ("user", "assistant"):
             if msg.attachments and msg.role == "user":
                 if allow_images:
@@ -538,6 +543,14 @@ async def load_conversation_history(
                             role="tool",
                             content=r_str,
                             tool_call_id=tc.get("id", ""),
+                        ))
+                # Interrupted calls still require a tool message in provider
+                # history. Unknown is not failure and must never imply retry.
+                for tc in stored_tool_calls:
+                    if isinstance(tc, dict) and tc.get("id") in emitted_ids and not tc.get("result"):
+                        llm_messages.append(LLMMessage(
+                            role="tool", tool_call_id=tc["id"],
+                            content="Execution outcome unknown after interruption. Do not repeat this operation; ask the user to verify its external result first.",
                         ))
             else:
                 llm_messages.append(LLMMessage(role=msg.role, content=content))

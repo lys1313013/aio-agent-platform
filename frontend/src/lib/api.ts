@@ -326,6 +326,107 @@ export const sessionsApi = {
 
 // ---- Chat ----
 
+export interface ChatRunInfo {
+  id: string;
+  session_id: string;
+  assistant_message_id: string;
+  status: 'running' | 'completed' | 'interrupted' | 'failed' | 'stopped';
+  last_sequence: number;
+  stop_requested: boolean;
+  can_resume: boolean;
+  uncertain_tools: string[];
+}
+
+function openChatStream(
+  path: string,
+  onEvent: (event: Record<string, unknown>) => void,
+  req?: ChatRequest | Record<string, never>,
+): AbortController {
+  const controller = new AbortController();
+
+  (async () => {
+    // Ensure access token is fresh before opening the stream
+    if (isTokenExpiringSoon(tokenStorage.getAccess())) {
+      const refreshed = await refreshAccessToken();
+      if (!refreshed && tokenStorage.getRefresh()) {
+        onEvent({ type: 'error', message: 'Session expired' });
+        forceLogout();
+        return;
+      }
+    }
+
+    const token = tokenStorage.getAccess() || '';
+    const resp = await fetch(`${API_BASE}${path}`, {
+      method: req ? 'POST' : 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: req ? JSON.stringify(req) : undefined,
+      signal: controller.signal,
+    });
+
+    if (!resp.ok || !resp.body) {
+      let errMsg = resp.statusText;
+      try {
+        const body = await resp.json();
+        // FastAPI validation errors return detail as an array of objects
+        const detail = body.detail;
+        if (Array.isArray(detail)) {
+          errMsg = detail.map((d: Record<string, unknown>) => d.msg || JSON.stringify(d)).join('; ') || errMsg;
+        } else if (typeof detail === 'string') {
+          errMsg = detail;
+        }
+      } catch { /* ignore */ }
+      onEvent({ type: 'error', message: errMsg });
+      onEvent({ type: 'closed' });
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE events are separated by double newlines
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || ''; // keep incomplete chunk
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            onEvent(data);
+          } catch {
+            /* ignore malformed JSON */
+          }
+        }
+      }
+    }
+
+    // Process remaining buffer
+    if (buffer.trim().startsWith('data: ')) {
+      try {
+        const data = JSON.parse(buffer.trim().slice(6));
+        onEvent(data);
+      } catch { /* ignore */ }
+    }
+    onEvent({ type: 'closed' });
+  })().catch((err) => {
+    if (err.name !== 'AbortError') {
+      onEvent({ type: 'transport_error', message: err.message || '网络请求失败' });
+    }
+  });
+
+  return controller;
+}
+
 export const chatApi = {
   send(req: ChatRequest) {
     return request<ChatResponse>('/chat', {
@@ -337,92 +438,26 @@ export const chatApi = {
   /**
    * Streaming chat via SSE (POST /api/chat/stream).
    * Calls `onEvent` for each SSE event, returns an AbortController
-   * so the caller can cancel the request.
+   * so the caller can detach the subscription; stopRun cancels execution.
    */
-  stream(
-    req: ChatRequest,
-    onEvent: (event: Record<string, unknown>) => void,
-  ): AbortController {
-    const controller = new AbortController();
+  stream(req: ChatRequest, onEvent: (event: Record<string, unknown>) => void): AbortController {
+    return openChatStream('/chat/stream', onEvent, req);
+  },
 
-    (async () => {
-      // Ensure access token is fresh before opening the stream
-      if (isTokenExpiringSoon(tokenStorage.getAccess())) {
-        const refreshed = await refreshAccessToken();
-        if (!refreshed && tokenStorage.getRefresh()) {
-          onEvent({ type: 'error', message: 'Session expired' });
-          forceLogout();
-        }
-      }
+  latestRun(sessionId: string) {
+    return request<ChatRunInfo | null>(`/chat/sessions/${sessionId}/run`);
+  },
 
-      const token = tokenStorage.getAccess() || '';
-      const resp = await fetch(`${API_BASE}/chat/stream`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(req),
-        signal: controller.signal,
-      });
+  watchRun(id: string, onEvent: (event: Record<string, unknown>) => void, after = 0) {
+    return openChatStream(`/chat/runs/${id}/events?after=${after}`, onEvent);
+  },
 
-      if (!resp.ok || !resp.body) {
-        let errMsg = resp.statusText;
-        try {
-          const body = await resp.json();
-          // FastAPI validation errors return detail as an array of objects
-          const detail = body.detail;
-          if (Array.isArray(detail)) {
-            errMsg = detail.map((d: Record<string, unknown>) => d.msg || JSON.stringify(d)).join('; ') || errMsg;
-          } else if (typeof detail === 'string') {
-            errMsg = detail;
-          }
-        } catch { /* ignore */ }
-        onEvent({ type: 'error', message: errMsg });
-        return;
-      }
+  stopRun(id: string) {
+    return request<ChatRunInfo>(`/chat/runs/${id}/stop`, { method: 'POST' });
+  },
 
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-
-        // SSE events are separated by double newlines
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || ''; // keep incomplete chunk
-
-        for (const part of parts) {
-          const line = part.trim();
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              onEvent(data);
-            } catch {
-              /* ignore malformed JSON */
-            }
-          }
-        }
-      }
-
-      // Process remaining buffer
-      if (buffer.trim().startsWith('data: ')) {
-        try {
-          const data = JSON.parse(buffer.trim().slice(6));
-          onEvent(data);
-        } catch { /* ignore */ }
-      }
-    })().catch((err) => {
-      if (err.name !== 'AbortError') {
-        onEvent({ type: 'error', message: err.message || '网络请求失败' });
-      }
-    });
-
-    return controller;
+  resumeRun(id: string, onEvent: (event: Record<string, unknown>) => void) {
+    return openChatStream(`/chat/runs/${id}/resume`, onEvent, {});
   },
 
   /**
@@ -1524,6 +1559,34 @@ export const channelBindingsApi = {
 // ---- Memories ----
 
 export const memoriesApi = {
+  previewOrganization(data: { layer: 'L1' | 'L2'; agent_id?: string | null; ids?: string[]; offset?: number }) {
+    return request<import('./types').MemoryOrganizePreview>('/memories/organize/preview', {
+      method: 'POST', body: JSON.stringify(data),
+    });
+  },
+  applyOrganization(id: string, selections: Array<{ id: string; content: string }>) {
+    return request<{ change_id: string; kind: string }>(`/memories/organize/${id}/apply`, {
+      method: 'POST', body: JSON.stringify({ selections }),
+    });
+  },
+  changes(agentId?: string, layer?: string, offset = 0) {
+    const params = new URLSearchParams({ offset: String(offset) });
+    if (agentId) params.set('agent_id', agentId);
+    if (layer) params.set('layer', layer);
+    return request<import('./types').MemoryChange[]>(`/memories/changes?${params}`);
+  },
+  undoChange(id: string) {
+    return request<{ change_id: string; kind: string }>(`/memories/changes/${id}/undo`, { method: 'POST' });
+  },
+  versions(id: string, offset = 0) {
+    return request<import('./types').MemoryHistory>(`/memories/${id}/versions?offset=${offset}`);
+  },
+  restoreVersion(id: string, version: number, expectedVersion: number) {
+    return request<{ change_id: string; kind: string }>(`/memories/${id}/versions/${version}/restore`, {
+      method: 'POST', body: JSON.stringify({ expected_version: expectedVersion }),
+    });
+  },
+
   list(params?: { agent_id?: string; layer?: string; limit?: number; offset?: number }) {
     const searchParams = new URLSearchParams();
     if (params?.agent_id) searchParams.set('agent_id', params.agent_id);
@@ -1547,7 +1610,7 @@ export const memoriesApi = {
 
   update(
     id: string,
-    data: { agent_id?: string | null; content?: string; layer?: MemoryLayer; metadata?: Record<string, unknown> },
+    data: { expected_version?: number; agent_id?: string | null; content?: string; layer?: MemoryLayer; metadata?: Record<string, unknown> },
   ) {
     return request<Memory>(`/memories/${id}`, {
       method: 'PUT',

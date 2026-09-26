@@ -11,14 +11,15 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.dependencies import CurrentUser
-from aio_agent_platform.core import task_event_log, task_registry
+from aio_agent_platform.core import chat_runs, task_event_log, task_registry
 from aio_agent_platform.db import Session
 from aio_agent_platform.db.connection import get_db
+from aio_agent_platform.db.models import ChatRun, ChatRunEvent
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -295,10 +296,21 @@ async def delete_session(
 ) -> None:
     """Delete a session and all its messages."""
     result = await db.execute(
-        select(Session).where(Session.id == session_id, Session.user_id == user.id, Session.source != "room")
+        select(Session).where(Session.id == session_id, Session.user_id == user.id, Session.source != "room").with_for_update()
     )
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    await chat_runs.user_scope(db, user.id)
+    runs = list((await db.scalars(select(ChatRun).where(
+        ChatRun.session_id == session_id, ChatRun.user_id == user.id).with_for_update())).all())
+    for run in runs:
+        await chat_runs.expire_run(db, run)
+        if run.status == "running":
+            raise HTTPException(409, "请先停止后台任务，再删除会话")
+    if runs:
+        await db.execute(delete(ChatRunEvent).where(ChatRunEvent.run_id.in_([run.id for run in runs]),
+                                                  ChatRunEvent.user_id == user.id))
+        await db.execute(delete(ChatRun).where(ChatRun.session_id == session_id, ChatRun.user_id == user.id))
     await db.delete(session)
