@@ -213,6 +213,12 @@ async def test_real_chat_route_disconnect_then_reconnect(factory, monkeypatch):
     from aio_agent_platform.db.models import LLMModel, LLMProvider
     from aio_agent_platform.interface.routes import chat
     from aio_agent_platform.llm import LLMMessage
+    from aio_agent_platform.storage import chat_attachments
+
+    # Both history loading and the current turn construct attachment storage.
+    # Keep the real route/history logic, but isolate this text-only test from MinIO.
+    object_storage = Mock(spec=chat_attachments.ObjectStorage)
+    monkeypatch.setattr(chat_attachments, "ObjectStorage", lambda: object_storage)
 
     async with factory().bind.begin() as conn:
         for model in (LLMProvider, LLMModel):
@@ -275,6 +281,7 @@ async def test_real_chat_route_disconnect_then_reconnect(factory, monkeypatch):
         assistant = next(m for m in messages if m.role == "assistant")
         assert assistant.content == "done"
         assert assistant.tool_calls[0]["result"]["preview"] == "saved"
+    assert object_storage.mock_calls == []
 
 
 async def test_resume_reuses_completed_tool_instead_of_executing_again(monkeypatch):

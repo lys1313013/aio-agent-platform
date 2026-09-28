@@ -1,7 +1,21 @@
 """web_fetch tests — extraction, truncation, error semantics (no real network)."""
 
+import pytest
+
 from aio_agent_platform.core.config import WebSettings
+from aio_agent_platform.tools.web import ssrf
 from aio_agent_platform.tools.web.fetch import WebFetcher
+
+
+@pytest.fixture(autouse=True)
+def public_example_dns(monkeypatch):
+    """Keep mocked fetches independent of local DNS/proxy configuration."""
+    async def resolve(host):
+        assert host == "example.com", f"Unexpected DNS lookup in unit test: {host}"
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(ssrf, "_resolve_host", resolve)
+
 
 ARTICLE_HTML = """
 <html><head><title>Test Article</title></head>

@@ -66,13 +66,9 @@ async def test_model_full_roundtrip(db_session: AsyncSession, model):
     # Database-generated PKs (autoincrement Integer/BigInteger) are left to the DB.
     # All other PKs (UUID with/without default, string, composite) get an explicit
     # sentinel so the insert carries every column.
-    autogen = {
-        col.name
-        for col in model.__table__.primary_key.columns
-        if isinstance(col.type, (Integer, BigInteger))
-    }
+    autogen = model.__table__.autoincrement_column
     for col in model.__table__.columns:
-        if col.key in autogen or col.name in autogen:
+        if col is autogen:
             continue
         setattr(obj, col.key, _sentinel(col))
     db_session.add(obj)
