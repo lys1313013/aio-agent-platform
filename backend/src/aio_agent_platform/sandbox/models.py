@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 import docker
 import structlog
-from docker.errors import NotFound
+from docker.errors import DockerException, NotFound
 
 from aio_agent_platform.core.config import settings
 
@@ -73,7 +73,40 @@ class SandboxManager:
     """
 
     def __init__(self, workspace_storage: "WorkspaceStorage | None" = None):
-        self._client = docker.from_env()
+        try:
+            self._client = docker.from_env()
+        except DockerException as exc:
+            # The SDK wraps socket failures in several HTTP exceptions.
+            # Surface the cause before FastAPI prints its lifespan traceback.
+            cause = exc
+            seen = set()
+            while id(cause) not in seen:
+                seen.add(id(cause))
+                nested = cause.__cause__ or cause.__context__
+                if nested is None or id(nested) in seen:
+                    break
+                cause = nested
+            if isinstance(cause, FileNotFoundError):
+                reason = "Docker 连接所需的 socket 或配置文件不存在"
+            elif isinstance(cause, PermissionError):
+                reason = "当前用户没有访问 Docker socket 或配置文件的权限"
+            elif isinstance(cause, ConnectionRefusedError):
+                reason = "Docker 服务拒绝连接，可能尚未启动或连接地址不正确"
+            elif isinstance(cause, TimeoutError):
+                reason = "连接 Docker 服务超时"
+            else:
+                reason = "Docker 服务不可用或连接配置无效"
+            hint = (
+                "请启动 Docker Desktop / Docker Engine，并运行 `docker info` 确认服务可用；"
+                "若仍失败，请检查后端进程的 DOCKER_HOST、socket 访问权限及 TLS 配置。"
+            )
+            message = f"Docker 沙箱初始化失败，后端停止启动：{reason}。{hint}"
+            logger.error(
+                message, phase="init_sandbox", error_type=type(cause).__name__,
+            )
+            if settings.server.log_level == "DEBUG":
+                logger.debug("sandbox_docker_init_traceback", exc_info=True)
+            raise RuntimeError(message) from None
         # key: "user:{user_id}" — sandbox is user-bound, shared across sessions
         self._active: dict[str, Sandbox] = {}
         self._workspace_storage = workspace_storage
