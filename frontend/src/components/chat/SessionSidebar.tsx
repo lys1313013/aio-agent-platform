@@ -184,8 +184,10 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
   return (
     <div
       ref={sidebarRef}
+      data-panel-open={panelOpen}
       className={cn(
         'flex flex-shrink-0 overflow-hidden transition-all duration-200 ease-in-out',
+        portal && 'portal-session-sidebar',
         portal ? 'border-r border-border/50 bg-card/30' : 'border-r border-border bg-card',
         panelOpen
           // 小屏：抽屉式覆盖在聊天区之上，不挤压内容；sm 及以上恢复为并排布局
@@ -197,6 +199,8 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
       <div className="flex flex-col items-center py-2 w-11 flex-shrink-0 gap-1">
         <Tooltip title="对话历史" placement="right" mouseEnterDelay={0.5}>
           <button
+            aria-label="对话历史"
+            aria-expanded={panelOpen}
             onClick={() => {
               setPanelOpen((prev) => !prev);
               if (!panelOpen) refreshSessions(agentId || undefined);
@@ -257,6 +261,7 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
                 <span className="text-sm font-semibold">对话历史</span>
               </div>
             <button
+              aria-label="关闭对话历史"
               onClick={() => setPanelOpen(false)}
               className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
             >

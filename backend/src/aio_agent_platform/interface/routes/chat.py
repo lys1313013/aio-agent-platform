@@ -1428,15 +1428,14 @@ async def chat_stream(
                     pass
             if root_obs:
                 try:
+                    # end() queues the span for the SDK's background exporter.
+                    # A per-turn flush would block completion/cancellation on
+                    # network I/O; pending data is drained at service shutdown.
                     root_obs.end()
                 except Exception:
                     pass
                 try:
                     set_current_observation(None)
-                except Exception:
-                    pass
-                try:
-                    langfuse_client.flush()
                 except Exception:
                     pass
 

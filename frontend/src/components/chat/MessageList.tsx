@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { PlusOutlined } from '@ant-design/icons';
 import type { Message, StreamingState } from '@/lib/types';
@@ -37,6 +37,22 @@ export default function MessageList<T extends Message>({ messages, streaming, ag
   const firstMessageId = messages[0]?.id;
   const scrollKey = conversationId ?? firstMessageId;
   const lastUserMessageId = [...messages].reverse().find((message) => message.role === 'user')?.id;
+  // A turn is anchored to its user message, which survives the streaming -> saved handoff.
+  const [reasoningChoices, setReasoningChoices] = useState<Record<string, Record<string, boolean>>>({});
+  const reasoningVisibility = (turnId: string | undefined) => {
+    const key = JSON.stringify([conversationId, turnId]);
+    return {
+      values: reasoningChoices[key] ?? {},
+      onChange: (id: string, open: boolean) => setReasoningChoices(previous => ({
+        ...previous, [key]: { ...previous[key], [id]: open },
+      })),
+    };
+  };
+  let turnId: string | undefined;
+  const messageTurns = new Map(messages.map(message => {
+    if (message.role === 'user') turnId = message.id;
+    return [message.id, turnId ?? message.id];
+  }));
   const hasContent = messages.length > 0 || streaming?.isStreaming;
   const activeWorkspaceId = useChatStore((state) => (
     state.sessions.find((session) => session.id === state.activeSessionId)?.workspace_id
@@ -126,14 +142,14 @@ export default function MessageList<T extends Message>({ messages, streaming, ag
     // data-ui-exclude：text_delta 每 token 改 DOM，快照引擎 MutationObserver 排除本区域（docs/22 §2.2a 规则 8）
     <div
       ref={scrollRef}
-      className="min-h-0 flex-1 overflow-y-auto"
+      className="chat-message-scroll min-h-0 flex-1 overflow-y-auto"
       onScroll={() => {
         const el = scrollRef.current;
         if (el) followBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 90;
       }}
       data-ui-exclude
     >
-      <div ref={contentRef} className={compact ? 'px-3 py-4 space-y-4' : 'max-w-4xl mx-auto px-4 py-6 space-y-6'}>
+      <div ref={contentRef} className={`chat-message-list ${compact ? 'px-3 py-4 space-y-4' : 'max-w-4xl mx-auto px-4 py-6 space-y-6'}`}>
         {beforeMessages}
         {messages.map((msg) => renderMessage ? <div key={msg.id}>{renderMessage(msg)}</div> : (
           <ChatMessage
@@ -142,11 +158,13 @@ export default function MessageList<T extends Message>({ messages, streaming, ag
             workspaceId={workspaceId}
             onEditResend={onEditResend}
             compact={compact}
+            reasoningVisibility={reasoningVisibility(messageTurns.get(msg.id))}
           />
         ))}
         {afterMessages}
         {streaming?.isStreaming && (
-          <StreamingMessage streaming={streaming} workspaceId={workspaceId} compact={compact} />
+          <StreamingMessage streaming={streaming} workspaceId={workspaceId} compact={compact}
+            reasoningVisibility={reasoningVisibility(lastUserMessageId)} />
         )}
       </div>
     </div>

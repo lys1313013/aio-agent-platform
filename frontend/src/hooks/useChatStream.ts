@@ -342,7 +342,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           const msgId = (event.message_id as string) || `msg-assistant-${Date.now()}`;
           const toolCalls = event.tool_calls as Record<string, unknown>[] | undefined;
           const fileChanges = event.file_changes as import('@/lib/types').FileChangeInfo[] | undefined;
-          const reasoning = event.reasoning as Array<{ id: string; content: string }> | undefined;
+          const reasoning = event.reasoning as Array<{ id: string; content: string; tool_call_index?: number }> | undefined;
           useChatStore.getState().addMessage(sessionId, {
             id: msgId,
             role: 'assistant',

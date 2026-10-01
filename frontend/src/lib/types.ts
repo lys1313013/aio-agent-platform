@@ -44,7 +44,7 @@ export interface Message {
   attachments?: ChatAttachment[] | null;
   file_attachments?: FileAttachmentRef[] | null;
   file_changes?: FileChangeInfo[] | null;
-  reasoning?: Array<{ id: string; content: string }> | null;
+  reasoning?: Array<{ id: string; content: string; tool_call_index?: number }> | null;
   created_at: string;
 }
 
@@ -91,7 +91,7 @@ export interface ChatResponse {
   content: string;
   tool_calls_count: number;
   done: boolean;
-  reasoning?: Array<{ id: string; content: string }>;
+  reasoning?: Array<{ id: string; content: string; tool_call_index?: number }>;
 }
 
 export interface CommandArgMeta {

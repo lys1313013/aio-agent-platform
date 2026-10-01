@@ -10,16 +10,18 @@ import ToolCallCard from './ToolCallCard';
 import DelegationCard from './DelegationCard';
 import { ConfirmationCard } from '../confirmation';
 import FileChangeList, { resolveToolFileChange } from './FileChangeList';
+import { useReasoningVisibility, type ReasoningVisibility } from './useReasoningVisibility';
 
 interface Props {
   streaming: StreamingState;
   /** 紧凑模式：窄浮窗（宠物对话）下缩小头像与间距 */
   compact?: boolean;
   workspaceId?: string | null;
+  reasoningVisibility?: ReasoningVisibility;
 }
 
-export default function StreamingMessage({ streaming, compact, workspaceId }: Props) {
-  const [thinkingVisibility, setThinkingVisibility] = useState<Record<string, boolean>>({});
+export default function StreamingMessage({ streaming, compact, workspaceId, reasoningVisibility }: Props) {
+  const visibility = useReasoningVisibility(reasoningVisibility);
 
   // Parse <think> blocks from finalText (some LLMs embed thinking inline)
   const { thinking: inlineThinking, content: cleanFinalText } =
@@ -65,14 +67,14 @@ export default function StreamingMessage({ streaming, compact, workspaceId }: Pr
   }
 
   return (
-    <div className={`flex ${compact ? 'gap-2' : 'gap-3'}`}>
+    <div className={`chat-message flex ${compact ? 'gap-2' : 'gap-3'}`} data-role="assistant">
       {/* Avatar */}
-      <div className={`flex flex-shrink-0 items-center justify-center rounded-full bg-muted ${compact ? 'h-7 w-7' : 'h-8 w-8'}`}>
+      <div className={`chat-message-avatar flex flex-shrink-0 items-center justify-center rounded-full bg-muted ${compact ? 'h-7 w-7' : 'h-8 w-8'}`}>
         <span className={`font-medium text-muted-foreground ${compact ? 'text-xs' : 'text-sm'}`}>AI</span>
       </div>
 
       {/* Content */}
-      <div className={`flex-1 ${compact ? 'space-y-2' : 'space-y-3'}`}>
+      <div className={`chat-message-content flex-1 ${compact ? 'space-y-2' : 'space-y-3'}`}>
         {/* Loading indicator — no content yet */}
         {showLoading && (
           <div className="space-y-1 py-1 text-muted-foreground" role="status">
@@ -102,21 +104,18 @@ export default function StreamingMessage({ streaming, compact, workspaceId }: Pr
                   chunkContent = chunk.content;
                 }
 
-                // Current thinking expands automatically; completed thinking defaults to collapsed.
+                // Keep every reasoning block open for the entire turn unless manually toggled.
                 const isCurrentlyStreaming = isLast && streaming.isStreaming && !hasFinalText;
-                const visibilityKey = `${action.id}:${isCurrentlyStreaming ? 'streaming' : 'complete'}`;
-                const isOpen = thinkingVisibility[visibilityKey] ?? isCurrentlyStreaming;
+                const isOpen = visibility.values[action.id] ?? streaming.isStreaming;
 
                 return (
                   <Collapse
+                    className="chat-reasoning"
                     key={action.id}
                     ghost
                     activeKey={isOpen ? ['1'] : []}
                     onChange={(keys) => {
-                      setThinkingVisibility((prev) => ({
-                        ...prev,
-                        [visibilityKey]: keys.includes('1'),
-                      }));
+                      visibility.onChange(action.id, keys.includes('1'));
                     }}
                     items={[
                       {
@@ -181,7 +180,7 @@ export default function StreamingMessage({ streaming, compact, workspaceId }: Pr
 
         {/* Final text (rendered as Markdown) */}
         {hasFinalText && (
-          <div className={`rounded-2xl bg-muted text-foreground ${compact ? 'px-3 py-2' : 'px-4 py-2.5'}`}>
+          <div className={`chat-message-bubble rounded-2xl bg-muted text-foreground ${compact ? 'px-3 py-2' : 'px-4 py-2.5'}`}>
             <div className="prose prose-sm max-w-none dark:prose-invert">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}

@@ -12,6 +12,7 @@ import ArtifactLink from './ArtifactLink';
 import DelegationCard from './DelegationCard';
 import { ConfirmationCard } from '../confirmation';
 import FileChangeList, { resolveToolFileChange } from './FileChangeList';
+import { useReasoningVisibility, type ReasoningVisibility } from './useReasoningVisibility';
 
 interface Props {
   message: Message;
@@ -19,6 +20,7 @@ interface Props {
   /** 紧凑模式：窄浮窗（宠物对话）下缩小头像与间距 */
   compact?: boolean;
   workspaceId?: string | null;
+  reasoningVisibility?: ReasoningVisibility;
 }
 
 /** Compact card for delegate_task entries in saved message history */
@@ -128,7 +130,8 @@ function DelegateTaskCard({ toolCall }: { toolCall: ToolCallInfo }) {
   );
 }
 
-export default function ChatMessage({ message: msg, onEditResend, compact, workspaceId }: Props) {
+export default function ChatMessage({ message: msg, onEditResend, compact, workspaceId, reasoningVisibility }: Props) {
+  const visibility = useReasoningVisibility(reasoningVisibility);
   const { message: msgApi } = App.useApp();
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -147,14 +150,15 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
     delegation: tc.delegation as DelegationInfo | undefined,
     confirmation: tc.confirmation as PersistedConfirmation | undefined,
   }));
-  // AskUserQuestion confirmations are rendered as standalone read-only cards,
-  // not inside the collapsed "tools used" group.
-  const confirmationCalls = allToolCalls.filter(
-    (tc) => tc.name === 'AskUserQuestion' && tc.confirmation,
-  );
-  const nonConfirmationCalls = allToolCalls.filter((tc) => tc.name !== 'AskUserQuestion');
-  const hasToolCalls = nonConfirmationCalls.length > 0;
-  const regularToolCalls = nonConfirmationCalls.filter(tc => tc.name !== 'delegate_task');
+  const reasoning = isUser ? [] : (msg.reasoning || []);
+  const hasOrder = reasoning.every(chunk => Number.isInteger(chunk.tool_call_index)
+    && chunk.tool_call_index! >= 0 && chunk.tool_call_index! <= allToolCalls.length);
+  // Legacy messages without event evidence retain their previous grouping.
+  const actions = [
+    ...reasoning.map((chunk, index) => ({ type: 'thinking' as const, chunk,
+      id: chunk.id || `thinking-${index}`, position: hasOrder ? chunk.tool_call_index! : 0 })),
+    ...allToolCalls.map((tool, index) => ({ type: 'tool' as const, tool, id: tool.id, position: index })),
+  ].sort((a, b) => a.position - b.position || (a.type === b.type ? 0 : a.type === 'thinking' ? -1 : 1));
   // 旧回答未引用网页时，从已持久化的成功工具结果恢复交付入口。
   const deliveredPages = [...new Map(allToolCalls
     .filter((tc) => tc.name === 'create_webpage' && tc.result?.status === 'ok')
@@ -184,7 +188,8 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
 
   return (
     <div
-      className={cn('group flex', compact ? 'gap-2' : 'gap-3')}
+      className={cn('chat-message group flex', compact ? 'gap-2' : 'gap-3')}
+      data-role={msg.role}
       style={
         isUser
           ? { marginLeft: 'auto', flexDirection: 'row-reverse' }
@@ -194,7 +199,7 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
       {/* Avatar */}
       <div
         className={cn(
-          'flex flex-shrink-0 items-center justify-center rounded-full',
+          'chat-message-avatar flex flex-shrink-0 items-center justify-center rounded-full',
           compact ? 'h-7 w-7' : 'h-8 w-8',
           isUser ? 'bg-primary/10' : isSystem ? 'border border-border bg-card' : 'bg-muted',
         )}
@@ -207,7 +212,7 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
       {/* Message content */}
       <div
         className={cn(
-          'space-y-2',
+          'chat-message-content space-y-2',
           isUser ? 'flex min-w-0 max-w-[80%] shrink-0 flex-col items-end' : 'flex-1',
         )}
       >
@@ -229,97 +234,54 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
           </div>
         ) : (
           <>
-            {/* Persisted main-agent reasoning — remains available after done/reload. */}
-            {!isUser && msg.reasoning && msg.reasoning.length > 0 && (
+            {/* Preserve the original reasoning/tool sequence after streaming and reload. */}
+            {actions.length > 0 && (
               <div className="space-y-2">
-                {msg.reasoning.map((chunk, index) => (
-                  <Collapse
-                    key={chunk.id || `thinking-${index}`}
-                    defaultActiveKey={[]}
-                    ghost
-                    items={[
-                      {
+                {actions.map(action => {
+                  if (action.type === 'thinking') {
+                    return <Collapse
+                      className="chat-reasoning"
+                      key={`thinking:${action.id}`}
+                      activeKey={visibility.values[action.id] ? ['1'] : []}
+                      onChange={keys => visibility.onChange(action.id, keys.includes('1'))}
+                      ghost
+                      items={[{
                         key: '1',
-                        label: (
-                          <span className="flex items-center gap-2 text-sm text-muted-foreground">
-                            <BulbOutlined />
-                            推理过程
-                          </span>
-                        ),
-                        children: (
-                          <div className="prose prose-sm max-w-none dark:prose-invert text-muted-foreground">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {chunk.content}
-                            </ReactMarkdown>
-                          </div>
-                        ),
-                      },
-                    ]}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Tool calls (for assistant messages) — rendered in original LLM order */}
-            {hasToolCalls && (
-              <div className="space-y-2">
-                <Collapse
-                  ghost
-                  defaultActiveKey={regularToolCalls.length <= 3 ? ['1'] : []}
-                  items={[
-                    {
-                      key: '1',
-                      label: (
-                        <span className="text-sm text-muted-foreground">
-                          {regularToolCalls.every((tc) => tc.name.startsWith('memory_'))
-                            ? '记忆操作'
-                            : `使用了 ${regularToolCalls.length} 次工具`}
-                        </span>
-                      ),
-                      children: (
-                        <div className="space-y-2">
-                          {nonConfirmationCalls.map((tc) =>
-                            tc.name === 'delegate_task' ? (
-                              tc.delegation ? (
-                                <DelegationCard key={tc.id} delegation={tc.delegation} />
-                              ) : (
-                                <DelegateTaskCard key={tc.id} toolCall={tc} />
-                              )
-                            ) : (
-                              <ToolCallCard
-                                key={tc.id}
-                                toolCall={tc}
-                                fileChange={resolveToolFileChange(tc, msg.file_changes, workspaceId)}
-                              />
-                            )
-                          )}
-                        </div>
-                      ),
-                    },
-                  ]}
-                />
-              </div>
-            )}
-
-            {/* Confirmation cards (AskUserQuestion) — read-only history view */}
-            {confirmationCalls.map((tc) => (
-              <ConfirmationCard
-                key={tc.id}
-                confirmationId={tc.confirmation!.confirmation_id}
-                question={tc.confirmation!.question}
-                mode={tc.confirmation!.mode}
-                options={tc.confirmation!.options}
-                tableSchema={tc.confirmation!.table_schema}
-                context={tc.confirmation!.context}
-                resolved={
-                  tc.confirmation!.resolved ?? {
-                    confirmation_id: tc.confirmation!.confirmation_id,
-                    status: 'timeout',
-                    resolved_at: msg.created_at,
+                        label: <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <BulbOutlined />推理过程
+                        </span>,
+                        children: <div className="prose prose-sm max-w-none dark:prose-invert text-muted-foreground">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{action.chunk.content}</ReactMarkdown>
+                        </div>,
+                      }]}
+                    />;
                   }
-                }
-              />
-            ))}
+                  const tc = action.tool;
+                  if (tc.name === 'AskUserQuestion' && tc.confirmation) {
+                    return <ConfirmationCard
+                      key={`tool:${tc.id}`}
+                      confirmationId={tc.confirmation.confirmation_id}
+                      question={tc.confirmation.question}
+                      mode={tc.confirmation.mode}
+                      options={tc.confirmation.options}
+                      tableSchema={tc.confirmation.table_schema}
+                      context={tc.confirmation.context}
+                      resolved={tc.confirmation.resolved ?? {
+                        confirmation_id: tc.confirmation.confirmation_id,
+                        status: 'timeout', resolved_at: msg.created_at,
+                      }}
+                    />;
+                  }
+                  if (tc.name === 'delegate_task') {
+                    return tc.delegation
+                      ? <DelegationCard key={`tool:${tc.id}`} delegation={tc.delegation} />
+                      : <DelegateTaskCard key={`tool:${tc.id}`} toolCall={tc} />;
+                  }
+                  return <ToolCallCard key={`tool:${tc.id}`} toolCall={tc}
+                    fileChange={resolveToolFileChange(tc, msg.file_changes, workspaceId)} />;
+                })}
+              </div>
+            )}
 
             {!isUser && <FileChangeList files={msg.file_changes} />}
 
@@ -401,7 +363,9 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
                   {/* Thinking block — saved reasoning defaults to collapsed */}
                   {hasThinkContent && (
                     <Collapse
-                      defaultActiveKey={[]}
+                      className="chat-reasoning"
+                      activeKey={visibility.values['thinking-inline'] ? ['1'] : []}
+                      onChange={keys => visibility.onChange('thinking-inline', keys.includes('1'))}
                       ghost
                       items={[
                         {
@@ -428,7 +392,7 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
                   {visibleContent && (
                     <div
                       className={cn(
-                        'inline-block max-w-full rounded-2xl',
+                        'chat-message-bubble inline-block max-w-full rounded-2xl',
                         compact ? 'px-3 py-2' : 'px-4 py-2.5',
                         isUser
                           ? 'bg-primary text-primary-foreground'
@@ -492,7 +456,7 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
             {/* Actions */}
             <div
               className={cn(
-                'flex w-full items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity',
+                'chat-message-actions flex w-full items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity',
                 isUser ? 'flex-row-reverse' : 'justify-end',
               )}
             >

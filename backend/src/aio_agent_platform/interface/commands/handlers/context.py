@@ -164,7 +164,7 @@ async def cmd_export(ctx: CommandContext) -> CommandResult:
     sid = UUID(ctx.session_id)
     messages = (
         await ctx.db.execute(
-            select(Message).where(Message.session_id == sid).order_by(Message.created_at)
+            select(Message).where(Message.session_id == sid).order_by(*Message.chronological_order())
         )
     ).scalars().all()
     if not messages:

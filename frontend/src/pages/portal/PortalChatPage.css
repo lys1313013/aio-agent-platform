@@ -1,0 +1,324 @@
+/* Scope the conversation finish to the portal; shared chat surfaces keep their own layout. */
+.portal-chat-layout { height: 100dvh; }
+
+.portal-chat {
+  background: hsl(var(--muted) / 0.48);
+}
+
+.portal-chat-header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  min-height: 82px;
+  padding: 14px 28px 14px 20px;
+  border-bottom: 1px solid hsl(var(--border) / 0.5);
+  background: hsl(var(--card) / 0.9);
+}
+
+.portal-agent-icon {
+  display: flex;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid hsl(var(--primary) / 0.14);
+  border-radius: 13px;
+  background: hsl(var(--primary) / 0.07);
+  color: hsl(var(--primary));
+  font-size: 23px;
+}
+
+.portal-agent-badge {
+  flex-shrink: 0;
+  border-radius: 5px;
+  padding: 1px 6px;
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.portal-conversation-title {
+  overflow: hidden;
+  margin-top: 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portal-chat .portal-new-chat {
+  height: 36px;
+  border-color: hsl(var(--border) / 0.7);
+  border-radius: 10px;
+  background: hsl(var(--card));
+  box-shadow: 0 2px 3px hsl(var(--foreground) / 0.025);
+  font-size: 12px;
+}
+
+.portal-chat .portal-session-sidebar {
+  background: hsl(var(--card));
+  border-color: hsl(var(--border) / 0.45);
+}
+
+.portal-chat .portal-session-sidebar > div:first-child {
+  padding-top: 16px;
+}
+
+.portal-chat .chat-message-scroll {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.portal-chat .chat-message-list {
+  max-width: 900px;
+  padding: 32px 28px 20px;
+}
+
+.portal-chat .chat-message-list > * + * {
+  margin-top: 28px;
+}
+
+.portal-chat .chat-message-content {
+  min-width: 0;
+}
+
+.portal-chat .chat-message-avatar {
+  border: 1px solid hsl(var(--border) / 0.65);
+  border-radius: 11px;
+  background: hsl(var(--card));
+  box-shadow: 0 2px 4px hsl(var(--foreground) / 0.03);
+}
+
+.portal-chat .chat-message-avatar span {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.portal-chat .chat-message[data-role='user'] .chat-message-avatar {
+  background: hsl(var(--primary) / 0.07);
+  border-color: hsl(var(--primary) / 0.12);
+}
+
+.portal-chat .chat-message-bubble {
+  padding: 15px 20px;
+  border-radius: 16px;
+  line-height: 1.8;
+}
+
+.portal-chat .chat-message[data-role='assistant'] .chat-message-bubble {
+  width: 100%;
+  border: 1px solid hsl(var(--border) / 0.55);
+  border-top-left-radius: 5px;
+  background: hsl(var(--card));
+  box-shadow: 0 3px 14px hsl(var(--foreground) / 0.025);
+}
+
+.portal-chat .chat-message[data-role='user'] .chat-message-bubble {
+  border: 1px solid hsl(var(--primary) / 0.15);
+  border-top-right-radius: 5px;
+  background: hsl(var(--primary) / 0.09);
+  color: hsl(var(--foreground));
+}
+
+.portal-chat .chat-message-bubble .prose {
+  font-size: 14px;
+  line-height: 1.85;
+}
+
+.portal-chat .prose > :first-child { margin-top: 0; }
+.portal-chat .prose > :last-child { margin-bottom: 0; }
+.portal-chat .prose a { overflow-wrap: anywhere; text-underline-offset: 3px; }
+
+.portal-chat .prose table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid hsl(var(--border) / 0.65);
+  border-radius: 10px;
+  border-spacing: 0;
+  border-collapse: separate;
+  font-size: 13px;
+}
+
+.portal-chat .prose th,
+.portal-chat .prose td {
+  min-width: 90px;
+  padding: 11px 13px;
+  border: 0;
+  border-bottom: 1px solid hsl(var(--border) / 0.5);
+  vertical-align: top;
+}
+
+.portal-chat .prose th:first-child, .portal-chat .prose td:first-child { min-width: 180px; }
+
+.portal-chat .prose th { background: hsl(var(--muted) / 0.8); font-size: 12px; }
+.portal-chat .prose tbody tr:last-child td { border-bottom: 0; }
+.portal-chat .prose tbody tr:nth-child(even) { background: hsl(var(--muted) / 0.3); }
+
+.portal-chat .chat-message-content .ant-collapse-header {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  font-size: 12px;
+}
+
+.portal-chat .chat-reasoning > .ant-collapse-item > .ant-collapse-header {
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+.portal-chat .chat-reasoning .ant-collapse-header-text > span { gap: 6px; font-size: 12px; }
+.portal-chat .chat-reasoning .ant-collapse-expand-icon { padding-inline-end: 6px; }
+.portal-chat .chat-reasoning .ant-collapse-body { padding: 4px 8px 8px 28px; }
+.portal-chat .chat-reasoning .ant-collapse-body > p,
+.portal-chat .chat-reasoning .prose { font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+
+.portal-chat .chat-message-actions:focus-within { opacity: 1; }
+.portal-chat button:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 3px; }
+
+/* Tool calls form one quiet execution log, with details disclosed per step. */
+.portal-chat .chat-tool-group {
+  overflow: hidden;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.portal-chat .chat-tool-group > .ant-collapse-item > .ant-collapse-header {
+  align-items: center;
+  padding: 6px 8px;
+}
+
+.portal-chat .chat-tool-group-label { font-size: 12px; font-weight: 500; }
+.portal-chat .chat-tool-group > .ant-collapse-item > .ant-collapse-panel > .ant-collapse-body { padding: 0 8px 8px; }
+.portal-chat .chat-tool-stack { border-top: 0; }
+.portal-chat .chat-tool-stack > * + * { margin-top: 0; border-top: 1px solid hsl(var(--border) / 0.4); }
+
+.portal-chat .tool-call-card {
+  min-width: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.portal-chat .chat-tool-stack > .tool-call-card { border: 0; background: transparent; }
+.portal-chat .tool-call-trigger { min-height: 36px; padding: 7px 8px; gap: 10px; }
+.portal-chat .tool-call-trigger > span:first-child { flex: 1; gap: 8px; }
+.portal-chat .tool-call-trigger > span:last-child { gap: 8px; }
+.portal-chat .tool-call-trigger:hover { background: hsl(var(--muted) / 0.6); }
+.portal-chat .tool-call-trigger:focus-visible { outline-offset: -2px; border-radius: 6px; }
+.portal-chat .tool-call-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 20px;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+}
+
+.portal-chat .tool-call-text { display: flex; align-items: baseline; gap: 10px; }
+.portal-chat .tool-call-name { flex-shrink: 0; max-width: 40%; font-size: 12px; font-weight: 400; line-height: 20px; }
+.portal-chat .tool-call-name:only-child { max-width: 100%; }
+.portal-chat .tool-call-summary { min-width: 0; font-size: 12px; line-height: 20px; }
+.portal-chat .tool-call-status { font-size: 11px; }
+/* Keep the success label accessible without repeating it on every row. */
+.portal-chat .tool-call-card[data-status='success'] .tool-call-status-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.portal-chat .tool-call-card[data-status='success'] .tool-call-status > .anticon { color: hsl(var(--muted-foreground) / 0.65); }
+.portal-chat .tool-call-card[data-status='pending'] .tool-call-icon { color: hsl(var(--primary)); }
+.portal-chat .tool-call-card[data-status='error'] .tool-call-icon { color: hsl(var(--destructive)); }
+.portal-chat .tool-call-details { margin: 0 8px 8px 32px; padding: 0; border-color: hsl(var(--border) / 0.4); }
+.portal-chat .tool-call-identifier { opacity: 0.8; }
+.portal-chat .tool-call-section-label { margin-bottom: 7px; font-size: 11px; }
+.portal-chat .tool-call-code {
+  border: 1px solid hsl(var(--border) / 0.45);
+  border-radius: 9px;
+  padding: 12px;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  overscroll-behavior: contain;
+}
+.portal-chat .tool-call-code:focus-visible { outline: 2px solid hsl(var(--primary) / 0.5); outline-offset: 2px; }
+
+.portal-chat .chat-composer {
+  flex-shrink: 0;
+  padding: 12px 28px 14px;
+  background: linear-gradient(0deg, hsl(var(--muted) / 0.6), transparent);
+}
+
+.portal-chat .chat-composer form {
+  max-width: 844px;
+  padding: 12px;
+  border: 1px solid hsl(var(--border) / 0.8);
+  border-radius: 18px;
+  background: hsl(var(--card));
+  box-shadow: 0 6px 24px hsl(var(--foreground) / 0.045), 0 1px 3px hsl(var(--foreground) / 0.025);
+  transition: border-color 160ms, box-shadow 160ms;
+}
+
+.portal-chat .chat-composer form:focus-within {
+  border-color: hsl(var(--primary) / 0.5);
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.06), 0 6px 24px hsl(var(--foreground) / 0.04);
+}
+
+.portal-chat .chat-composer textarea::placeholder { color: hsl(var(--muted-foreground) / 0.75); }
+.portal-chat .portal-attachment-hint { color: hsl(var(--muted-foreground)); font-size: 11px; }
+.portal-chat .portal-composer-hint { margin-top: 9px; text-align: center; font-size: 10px; color: hsl(var(--muted-foreground) / 0.85); }
+.portal-chat .portal-composer-hint span { margin: 0 8px; opacity: 0.5; }
+
+@media (hover: none) {
+  .portal-chat .chat-message-actions { opacity: 1; }
+}
+
+@media (max-width: 1023px) {
+  .portal-chat .portal-session-sidebar[data-panel-open='true'] {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 20;
+    width: min(340px, 85vw);
+    box-shadow: 12px 0 32px hsl(var(--foreground) / 0.08);
+  }
+}
+
+@media (max-width: 640px) {
+  .portal-chat-layout > header { padding-inline: 12px; gap: 8px; }
+  .portal-chat-layout > header > button h1 { display: none; }
+  .portal-chat-layout > header button { white-space: nowrap; }
+  .portal-chat-layout > header .ant-select { min-width: 80px; max-width: 100px; }
+  .portal-chat-header { gap: 9px; min-height: 72px; padding: 10px 14px 10px 8px; }
+  .portal-agent-icon { width: 36px; height: 36px; font-size: 21px; }
+  .portal-chat .chat-message-list { padding: 20px 12px 12px; }
+  .portal-chat .chat-message { gap: 8px; }
+  .portal-chat .chat-message-avatar { width: 26px; height: 26px; border-radius: 9px; }
+  .portal-chat .chat-message-bubble { padding: 12px; }
+  .portal-chat .chat-message-bubble .prose { font-size: 13px; }
+  .portal-chat .tool-call-trigger { gap: 8px; padding: 7px 8px; }
+  .portal-chat .tool-call-trigger > span:last-child { gap: 8px; }
+  .portal-chat .tool-call-icon { width: 16px; height: 20px; }
+  .portal-chat .tool-call-text { gap: 6px; }
+  .portal-chat .tool-call-details { margin-left: 8px; margin-right: 8px; }
+  .portal-chat .prose th:first-child, .portal-chat .prose td:first-child { min-width: 180px; }
+  .portal-chat .prose th:last-child, .portal-chat .prose td:last-child { min-width: 180px; }
+  .portal-chat .chat-composer { padding: 8px 12px 10px; }
+  .portal-chat .chat-composer form { padding: 8px; border-radius: 14px; }
+  .portal-chat .portal-composer-hint { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .portal-chat *, .portal-chat *::before, .portal-chat *::after { transition: none !important; }
+}

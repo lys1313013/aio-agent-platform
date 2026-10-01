@@ -82,7 +82,7 @@ async def test_entry_paths_store_the_same_history(history_factory, live):
 
     message = await saved_message(history_factory, turn)
     assert message.content == "检查完成"  # No duplicated deltas/final answer.
-    assert message.reasoning == [{"id": "thinking-0", "content": "检查数据"}]
+    assert message.reasoning == [{"id": "thinking-0", "content": "检查数据", "tool_call_index": 0}]
     assert message.tool_calls == [
         {"id": "first", "name": "web_fetch",
          "arguments": {"url": "https://example.com/path?a=1"},
@@ -243,7 +243,7 @@ async def test_channel_pipeline_uses_shared_history(history_factory, monkeypatch
     assistant = next(message for message in messages if message.role == "assistant")
     assert assistant.content == ("检查结果\n\n⏹ 已中断" if outcome == "cancelled" else "检查结果")
     assert assistant.tool_calls[0]["result"] == {"status": "ok", "preview": "ok"}
-    assert assistant.reasoning == [{"id": "thinking-0", "content": "检查数据"}]
+    assert assistant.reasoning == [{"id": "thinking-0", "content": "检查数据", "tool_call_index": 0}]
     assert assistant.file_changes == [file]
     assert current_channel_send_ctx.get() is previous_send_ctx
     pipeline.task_finished.assert_awaited_once_with(user_id, session_id)

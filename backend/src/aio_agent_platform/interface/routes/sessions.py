@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.core import chat_runs, task_event_log, task_registry
+from aio_agent_platform.core.chat_history import restore_reasoning_order
 from aio_agent_platform.db import Session
 from aio_agent_platform.db.connection import get_db
 from aio_agent_platform.db.models import ChatRun, ChatRunEvent
@@ -160,7 +161,7 @@ async def get_session(
     session_id: UUID,
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> Session:
+) -> SessionDetailOut:
     """Get a session with its message history."""
     result = await db.execute(
         select(Session)
@@ -170,7 +171,27 @@ async def get_session(
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    return session
+    detail = SessionDetailOut.model_validate(session)
+    # Enrich the response only; do not rewrite historical message content.
+    legacy = {message.id: message for message in detail.messages
+              if message.reasoning and message.tool_calls
+              and any("tool_call_index" not in chunk for chunk in message.reasoning)}
+    if legacy:
+        rows = await db.execute(
+            select(ChatRun.assistant_message_id, ChatRunEvent.payload)
+            .join(ChatRunEvent, ChatRunEvent.run_id == ChatRun.id)
+            .where(ChatRun.session_id == session_id, ChatRun.user_id == user.id,
+                   ChatRunEvent.user_id == user.id, ChatRun.assistant_message_id.in_(legacy),
+                   ChatRunEvent.payload["type"].as_string().in_(["thinking", "tool_call"]))
+            .order_by(ChatRun.id, ChatRunEvent.sequence)
+        )
+        events_by_message: dict[UUID, list[dict]] = {}
+        for message_id, payload in rows:
+            events_by_message.setdefault(message_id, []).append(payload)
+        for message_id, events in events_by_message.items():
+            message = legacy[message_id]
+            message.reasoning = restore_reasoning_order(message.reasoning, events)
+    return detail
 
 
 @router.get("/{session_id}/status", response_model=SessionStatusOut)

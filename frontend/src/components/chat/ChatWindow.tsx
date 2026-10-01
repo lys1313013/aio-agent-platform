@@ -13,7 +13,7 @@ interface Props<T extends Message> {
 
 /** Shared conversation surface; pages own transport and participant scheduling. */
 export default function ChatWindow<T extends Message>({ messages, input, loading, status }: Props<T>) {
-  return <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+  return <div className="chat-window flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
     {loading && messages.messages.length === 0
       ? <div className="flex flex-1 items-center justify-center"><Spin size="large" /></div>
       : <MessageList {...messages} />}

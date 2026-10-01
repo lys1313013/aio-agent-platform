@@ -482,7 +482,7 @@ async def load_conversation_history(
         select(Message)
         .where(Message.session_id == session_id)
         .where(Message.id != exclude_message_id if exclude_message_id else True)
-        .order_by(Message.created_at.desc())
+        .order_by(*Message.chronological_order(descending=True))
         .limit(soft_limit)
     )
     messages = list(reversed(result.scalars().all()))

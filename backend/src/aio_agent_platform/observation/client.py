@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 
 import structlog
@@ -21,7 +22,7 @@ _current_observation: contextvars.ContextVar[LangfuseSpan | None] = contextvars.
 
 
 def init_langfuse() -> Langfuse | None:
-    """Initialize Langfuse client if configured."""
+    """Initialize Langfuse with the SDK's background batch exporter if configured."""
     global _client
     cfg = settings.langfuse
     if not cfg.enabled or not cfg.secret_key or not cfg.public_key:
@@ -53,17 +54,14 @@ def get_current_observation() -> LangfuseSpan | None:
 
 
 async def shutdown_langfuse() -> None:
-    """Flush and shutdown Langfuse client."""
+    """Drain the SDK's background queues without blocking the event loop."""
     global _client
-    if _client:
+    client, _client = _client, None
+    if client is not None:
         try:
-            _client.flush()
-            logger.info("langfuse_flushed")
-        except Exception:
-            logger.exception("langfuse_flush_failed")
-        try:
-            _client.shutdown()
+            # shutdown() already flushes pending data and joins SDK threads.
+            # Await it only at service shutdown, never at the end of a chat turn.
+            await asyncio.to_thread(client.shutdown)
             logger.info("langfuse_shutdown")
         except Exception:
             logger.exception("langfuse_shutdown_failed")
-        _client = None

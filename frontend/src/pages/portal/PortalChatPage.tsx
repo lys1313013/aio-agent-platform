@@ -7,12 +7,11 @@ import { useChatStream } from '@/hooks/useChatStream';
 import ChatRunNotice from '@/components/chat/ChatRunNotice';
 import ChatWindow from '@/components/chat/ChatWindow';
 import SessionSidebar from '@/components/chat/SessionSidebar';
-import { Alert, App, Typography, Button, Skeleton, Tooltip } from 'antd';
+import { Alert, App, Button, Skeleton } from 'antd';
 import { PlusOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import type { PortalAgent, ChatAttachment } from '@/lib/types';
 import { getAgentIcon } from '@/lib/agent-icons';
-
-const { Text } = Typography;
+import './PortalChatPage.css';
 
 /**
  * 用户端门户对话页：纯净聊天（无斜杠命令 / workspace / 沙箱面板 / 渠道重连 /
@@ -165,15 +164,15 @@ export default function PortalChatPage() {
     .filter((item) => !(streaming.isStreaming && run && item.id === run.assistant_message_id));
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
+    <div className="portal-chat flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Agent header */}
       {agentLoading && (
-        <div className="flex items-center gap-2 border-b border-border/50 bg-card/50 px-5 py-3 sm:px-7">
+        <div className="portal-chat-header">
           <Skeleton.Input active size="small" style={{ width: 180 }} />
         </div>
       )}
       {!agentLoading && agent && (
-        <div className="flex items-center gap-2 border-b border-border/50 bg-card/50 px-5 py-3 sm:px-7">
+        <div className="portal-chat-header">
           <Button
             type="text"
             size="small"
@@ -182,24 +181,24 @@ export default function PortalChatPage() {
             className="!px-1.5 text-muted-foreground"
             aria-label="返回智能体列表"
           />
-          <span className="text-xl">{getAgentIcon(agent.icon)}</span>
-          <Text strong className="truncate">{agent.name}</Text>
-          {agent.description && (
-            <Text type="secondary" className="hidden md:inline text-sm ml-2 truncate">
-              {agent.description}
-            </Text>
-          )}
-          <div className="ml-auto flex items-center gap-1">
-            <Tooltip title="新对话">
+          <span className="portal-agent-icon">{getAgentIcon(agent.icon)}</span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h2 className="truncate text-sm font-semibold">{agent.name}</h2>
+              <span className="portal-agent-badge">智能体</span>
+            </div>
+            <p className="portal-conversation-title" title={sessions.find(s => s.id === activeSessionId)?.title || agent.description || undefined}>
+              {sessions.find(s => s.id === activeSessionId)?.title || agent.description || '开启一段新的对话'}
+            </p>
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-1">
               <Button
-                type="primary"
-                shape="circle"
+                className="portal-new-chat"
                 icon={<PlusOutlined />}
                 onClick={handleNewChat}
                 loading={creatingSession}
                 aria-label="新对话"
-              />
-            </Tooltip>
+              ><span className="hidden sm:inline">新对话</span></Button>
           </div>
         </div>
       )}

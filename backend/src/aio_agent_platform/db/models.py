@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    case,
     event,
     func,
     text,
@@ -643,7 +644,7 @@ class Session(Base):
     )
     messages: Mapped[list["Message"]] = relationship(
         back_populates="session",
-        order_by="Message.created_at",
+        order_by=lambda: Message.chronological_order(),
         cascade="all, delete-orphan",
         primaryjoin="Session.id == Message.session_id",
         foreign_keys="[Message.session_id]",
@@ -691,6 +692,17 @@ class Message(Base):
         comment="主智能体推理过程: [{id, content}]",
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), comment="创建时间")
+
+    @classmethod
+    def chronological_order(cls, *, descending: bool = False):
+        """Break transaction timestamp ties with the prompt before its reply.
+
+        PostgreSQL now() is transaction-scoped: a user message and the reserved
+        assistant message share created_at. Reverse every key for recent-history
+        limits so reversing the returned rows restores the same chronological order.
+        """
+        keys = (cls.created_at, case((cls.role == "user", 0), else_=1), cls.id)
+        return tuple(key.desc() for key in keys) if descending else keys
 
     session: Mapped["Session"] = relationship(
         back_populates="messages",

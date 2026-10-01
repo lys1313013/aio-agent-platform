@@ -457,7 +457,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
 
   return (
     <div
-      className={`${simple ? 'border-t border-border/60 bg-muted/10 p-2.5' : portal ? 'bg-muted/10 px-4 pb-5 pt-3 sm:px-7 sm:pb-7' : 'bg-muted/20 p-3'} ${isDragging ? 'bg-primary/5' : ''}`}
+      className={`chat-composer ${simple ? 'border-t border-border/60 bg-muted/10 p-2.5' : portal ? 'bg-muted/10 px-4 pb-5 pt-3 sm:px-7 sm:pb-7' : 'bg-muted/20 p-3'} ${isDragging ? 'bg-primary/5' : ''}`}
       onDragOver={simple ? undefined : handleDragOver}
       onDragLeave={simple ? undefined : handleDragLeave}
       onDrop={simple ? undefined : handleDrop}
@@ -675,7 +675,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
               ? '输入消息...'
               : isStreaming
                 ? '继续输入，Enter 加入队列'
-                : '输入消息，Enter 发送'
+                : portal ? '输入你的问题，或分享一个想法…' : '输入消息，Enter 发送'
           }
           autoSize={{ minRows: 1, maxRows: simple ? 4 : 6 }}
           disabled={disabled || sending}
@@ -700,6 +700,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
                   aria-label="添加附件"
                 />
               </Tooltip>
+              {portal && <span className="portal-attachment-hint">添加图片</span>}
               {!portal && !fixedWorkspace && (
               <Tooltip title="附件和生成的文件会保存在所选工作区">
                 <div className="flex min-w-0 items-center gap-0.5 text-muted-foreground">
@@ -728,6 +729,7 @@ export default function ChatInput({ onSend, onStop, disabled, isStreaming, sessi
           </div>
         )}
       </form>
+      {portal && !simple && <p className="portal-composer-hint">Enter 发送 <span>·</span> Shift + Enter 换行</p>}
 
       {!simple && isDragging && (
         <div className="fixed inset-0 bg-primary/10 border-2 border-dashed border-primary pointer-events-none z-50 flex items-center justify-center">

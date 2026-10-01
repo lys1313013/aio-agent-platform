@@ -509,7 +509,7 @@ async def _execute_agent_inner(
     history_result = await db.execute(
         select(Message)
         .where(Message.session_id == session.id)
-        .order_by(Message.created_at)
+        .order_by(*Message.chronological_order())
     )
     history_messages = history_result.scalars().all()
     history: list[LLMMessage] = []
@@ -740,7 +740,7 @@ async def sse_chat(
             history_result = await db_session.execute(
                 select(Message)
                 .where(Message.session_id == session_id)
-                .order_by(Message.created_at)
+                .order_by(*Message.chronological_order())
             )
             history_messages = history_result.scalars().all()
             history: list[LLMMessage] = []
@@ -903,7 +903,7 @@ async def get_session_messages(
     msg_result = await db.execute(
         select(Message)
         .where(Message.session_id == session_id)
-        .order_by(Message.created_at)
+        .order_by(*Message.chronological_order())
     )
     messages = msg_result.scalars().all()
 

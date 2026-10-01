@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import {
   CodeOutlined,
   CheckCircleOutlined,
@@ -13,6 +13,9 @@ import {
   EditOutlined,
   MessageOutlined,
   ReadOutlined,
+  GlobalOutlined,
+  FileTextOutlined,
+  FolderOutlined,
 } from '@ant-design/icons';
 import { Tag } from 'antd';
 import { Link } from 'react-router-dom';
@@ -32,6 +35,8 @@ const LAYER_LABELS: Record<string, string> = {
 };
 
 const TOOL_LABELS: Record<string, string> = {
+  web_search: '网页搜索',
+  web_fetch: '读取网页',
   run_shell: 'Shell 命令',
   run_code: '运行代码',
   read_file: '读取文件',
@@ -554,6 +559,7 @@ function KnowledgeRetrievalCard({ toolCall }: Props) {
 /** Default renderer for generic tool calls */
 function DefaultToolCard({ toolCall, fileChange }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const detailId = useId();
 
   const hasResult = !!toolCall.result;
   const isPending = !hasResult;
@@ -561,51 +567,53 @@ function DefaultToolCard({ toolCall, fileChange }: Props) {
   const isError = toolCall.result?.status === 'err';
 
   const toolLabel = TOOL_LABELS[toolCall.name] || toolCall.name;
+  const summary = ['query', 'url', 'path', 'file_path', 'command', 'description']
+    .map(key => toolCall.arguments[key])
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  const toolIcon = toolCall.name === 'web_search' || toolCall.name === 'search_skills' || toolCall.name === 'file_grep'
+    ? <SearchOutlined />
+    : toolCall.name === 'web_fetch' ? <GlobalOutlined />
+    : toolCall.name === 'list_directory' ? <FolderOutlined />
+    : ['read_file', 'read_pdf', 'read_document', 'file_info'].includes(toolCall.name) ? <FileTextOutlined />
+    : ['write_file', 'edit_file'].includes(toolCall.name) ? <EditOutlined />
+    : <CodeOutlined />;
+  const status = isPending ? 'pending' : isError ? 'error' : isSuccess ? 'success' : 'complete';
 
   return (
-    <div className="rounded-lg border border-border overflow-hidden bg-card">
+    <div className="tool-call-card rounded-lg border border-border overflow-hidden bg-card" data-status={status}>
       {/* Header — always visible */}
-      <div
-        className="flex items-center justify-between px-3 py-2.5 cursor-pointer hover:bg-muted/50 transition-colors"
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={expanded ? detailId : undefined}
+        className="tool-call-trigger flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left cursor-pointer hover:bg-muted/50 transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-muted-foreground text-xs flex-shrink-0">
-            {expanded ? <DownOutlined /> : <RightOutlined />}
+        <span className="flex items-center gap-3 min-w-0">
+          <span className="tool-call-icon text-primary flex-shrink-0" aria-hidden="true">{toolIcon}</span>
+          <span className="tool-call-text min-w-0">
+            <span className="tool-call-name block text-sm font-medium truncate" title={toolLabel}>{toolLabel}</span>
+            {summary && <span className="tool-call-summary block truncate text-xs text-muted-foreground" title={summary}>{summary}</span>}
           </span>
-          <CodeOutlined className="text-primary flex-shrink-0" />
-          <span className="text-sm font-medium truncate" title={toolLabel}>
-            {toolLabel}
+        </span>
+        <span className="flex shrink-0 items-center gap-3">
+          <span className={cn('tool-call-status flex items-center gap-1.5 text-xs', isError ? 'text-destructive' : isPending ? 'text-primary' : 'text-muted-foreground')}>
+            {isPending ? <LoadingOutlined spin /> : isError ? <CloseCircleOutlined /> : isSuccess ? <CheckCircleOutlined /> : <ClockCircleOutlined />}
+            <span className="tool-call-status-label">{isPending ? '执行中' : isError ? '失败' : isSuccess ? '完成' : '已返回'}</span>
           </span>
-        </div>
-
-        <div className="flex-shrink-0 ml-2">
-          {isPending && (
-            <Tag icon={<LoadingOutlined />} color="processing">
-              执行中
-            </Tag>
-          )}
-          {isSuccess && (
-            <Tag icon={<CheckCircleOutlined />} color="success">
-              成功
-            </Tag>
-          )}
-          {isError && (
-            <Tag icon={<CloseCircleOutlined />} color="error">
-              失败
-            </Tag>
-          )}
-        </div>
-      </div>
+          <RightOutlined aria-hidden="true" className={cn('tool-call-chevron text-[10px] text-muted-foreground transition-transform', expanded && 'rotate-90')} />
+        </span>
+      </button>
 
       {/* Expanded content */}
       {expanded && (
-        <div className="px-3 pb-3 space-y-2 border-t border-border">
+        <div id={detailId} className="tool-call-details px-3 pb-3 space-y-3 border-t border-border">
+          <div className="tool-call-identifier pt-3 text-[11px] font-mono text-muted-foreground break-all">{toolCall.name}</div>
           {/* Arguments */}
           {Object.keys(toolCall.arguments).length > 0 && (
-            <div className="pt-2">
-              <div className="text-xs font-medium text-muted-foreground mb-1">输入参数</div>
-              <pre className="text-xs bg-muted p-2 rounded overflow-x-auto whitespace-pre-wrap break-all">
+            <div>
+              <div className="tool-call-section-label text-xs font-medium text-muted-foreground mb-1">输入参数</div>
+              <pre className="tool-call-code text-xs bg-muted p-2 rounded max-h-60 overflow-auto whitespace-pre-wrap break-all" tabIndex={0} aria-label="输入参数">
                 {JSON.stringify(toolCall.arguments, null, 2)}
               </pre>
             </div>
@@ -614,7 +622,7 @@ function DefaultToolCard({ toolCall, fileChange }: Props) {
           {/* Result */}
           {hasResult && (
             <div>
-              <div className="text-xs font-medium text-muted-foreground mb-1">执行结果</div>
+              <div className="tool-call-section-label text-xs font-medium text-muted-foreground mb-1">执行结果</div>
               {fileChange && isSuccess ? (
                 <FileChangeResult
                   file={fileChange}
@@ -623,11 +631,13 @@ function DefaultToolCard({ toolCall, fileChange }: Props) {
               ) : (
                 <pre
                   className={cn(
-                    'text-xs p-2 rounded overflow-x-auto max-h-80 whitespace-pre-wrap break-all',
+                    'tool-call-code text-xs p-2 rounded overflow-auto max-h-80 whitespace-pre-wrap break-all',
                     isError
                       ? 'bg-red-50 dark:bg-red-950/20 text-red-900 dark:text-red-100'
-                      : 'bg-green-50 dark:bg-green-950/20',
+                      : 'bg-muted/50',
                   )}
+                  tabIndex={0}
+                  aria-label="执行结果"
                 >
                   {toolCall.result?.preview || '无输出'}
                 </pre>

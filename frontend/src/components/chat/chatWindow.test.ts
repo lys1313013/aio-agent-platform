@@ -147,6 +147,8 @@ it('renders room snapshots through the same live renderer and preserves room con
   expect(container.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')).toBe('true');
   await act(async () => render({ ...roomMessage, content: '回答已到达', reasoning: [{ id: '0', content: '正在分析条件' }] }));
   expect(container.textContent).toContain('回答已到达');
+  expect(container.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')).toBe('true');
+  await act(async () => render({ ...roomMessage, status: 'completed', content: '回答已到达', reasoning: [{ id: '0', content: '正在分析条件' }] }));
   expect(container.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
   expect(container.textContent).toContain('成员确认');
 });

@@ -46,8 +46,9 @@ def snapshot_event(snapshot: dict, event: dict) -> dict:
     kind = event.get("type")
     if kind == "thinking":
         chunks = state.setdefault("reasoning", [])
-        if not chunks or state.get("last_type") != "thinking":
-            chunks.append({"id": f"thinking-{len(chunks)}", "content": ""})
+        tool_count = len(state.get("tool_calls", []))
+        if not chunks or chunks[-1].get("tool_call_index") != tool_count:
+            chunks.append({"id": f"thinking-{len(chunks)}", "content": "", "tool_call_index": tool_count})
         chunks[-1]["content"] += event.get("content", "")
     elif kind == "text_delta":
         state["content"] = state.get("content", "") + event.get("content", "")
@@ -99,7 +100,12 @@ def snapshot_event(snapshot: dict, event: dict) -> dict:
     elif kind == "done":
         state["completed"] = True
         for key in ("content", "tool_calls", "reasoning", "file_changes"):
-            state[key] = event.get(key) or ([] if key != "content" else "")
+            incoming = event.get(key) or ([] if key != "content" else "")
+            if key == "reasoning" and isinstance(incoming, list) and incoming and any("tool_call_index" not in c for c in incoming):
+                recorded = state.get("reasoning", [])
+                if "".join(c["content"] for c in recorded) == "".join(c["content"] for c in incoming):
+                    incoming = recorded
+            state[key] = incoming
     if kind not in {"ui_action_heartbeat", "delegation_heartbeat"}:
         state["last_type"] = kind
     return state

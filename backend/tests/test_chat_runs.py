@@ -204,7 +204,10 @@ async def test_generation_error_marks_failed_and_keeps_partial_text(factory):
     assert runtime.describe(row)["can_resume"]
 
 
-async def test_real_chat_route_disconnect_then_reconnect(factory, monkeypatch):
+@pytest.mark.parametrize("langfuse_enabled", [False, True])
+@pytest.mark.parametrize("stop_run", [False, True])
+async def test_real_chat_route_disconnect_then_reconnect(factory, monkeypatch, langfuse_enabled, stop_run):
+    from contextlib import nullcontext
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, Mock
 
@@ -246,7 +249,9 @@ async def test_real_chat_route_disconnect_then_reconnect(factory, monkeypatch):
 
     monkeypatch.setattr(chat, "get_session_factory", lambda: factory)
     monkeypatch.setattr(connection, "get_session_factory", lambda: factory)
-    monkeypatch.setattr(chat, "get_langfuse_client", lambda: None)
+    langfuse = Mock()
+    monkeypatch.setattr(chat, "get_langfuse_client", lambda: langfuse if langfuse_enabled else None)
+    monkeypatch.setattr(chat, "propagate_attributes", lambda **kwargs: nullcontext())
     for name, value in {
         "_load_agent": None, "generate_session_title": "", "load_pet_chat_context": None,
         "refresh_mcp_tools_for_agent": None, "_build_system_prompt_with_memories": "system",
@@ -267,19 +272,33 @@ async def test_real_chat_route_disconnect_then_reconnect(factory, monkeypatch):
     async with factory() as db:
         info = await chat.latest_chat_run(sid, user, db)
     assert info["status"] == "running"
-    release.set()
     run_id = next(iter(runtime._workers))
-    await runtime._workers[run_id]
+    worker = runtime._workers[run_id]
+    if stop_run:
+        async with factory() as db:
+            stopped = await chat.stop_chat_run(run_id, user, db)
+        assert stopped["status"] == "stopped"
+    else:
+        release.set()
+    await worker
+    if langfuse_enabled:
+        langfuse.start_observation.return_value.end.assert_called_once_with()
+    langfuse.flush.assert_not_called()
+    langfuse.shutdown.assert_not_called()
     async with factory() as db:
         final = await chat.watch_chat_run(run_id, user, db, after=0)
     replay = events(await collect(final.body_iterator))
     assert len(calls) == 1
-    assert next(e for e in replay if e["type"] == "done")["content"] == "done"
+    if stop_run:
+        assert replay[-1]["type"] == "run_status"
+        assert replay[-1]["status"] == "stopped"
+    else:
+        assert next(e for e in replay if e["type"] == "done")["content"] == "done"
     async with factory() as db:
         messages = list((await db.scalars(select(Message).where(Message.session_id == sid))).all())
         assert [m.role for m in messages].count("user") == 1
         assistant = next(m for m in messages if m.role == "assistant")
-        assert assistant.content == "done"
+        assert assistant.content == ("" if stop_run else "done")
         assert assistant.tool_calls[0]["result"]["preview"] == "saved"
     assert object_storage.mock_calls == []
 
@@ -343,3 +362,30 @@ async def test_completed_event_survives_crash_before_terminal_commit(factory):
         restored = await runtime.latest(db, run.user_id, run.session_id)
         assert restored.status == "completed"
         assert not runtime.describe(restored)["can_resume"]
+
+
+async def test_session_history_recovers_legacy_action_order_without_rewriting_messages(factory):
+    from types import SimpleNamespace
+
+    from aio_agent_platform.interface.routes.sessions import get_session
+
+    run = await reserve(factory)
+    old = [{"id": "thinking-0", "content": "先搜索"}, {"id": "thinking-1", "content": "再读取"}]
+    async with factory() as db:
+        message = await db.get(Message, run.assistant_message_id)
+        message.reasoning = old
+        message.tool_calls = [{"id": "a", "name": "web_search", "arguments": {}}]
+        for sequence, payload in enumerate([
+            {"type": "thinking", "content": "先搜索"},
+            {"type": "tool_call", "id": "a", "name": "web_search", "arguments": {}},
+            {"type": "thinking", "content": "再读取"},
+        ], 1):
+            db.add(ChatRunEvent(run_id=run.id, user_id=run.user_id, sequence=sequence, payload=payload))
+        await db.commit()
+    async with factory() as db:
+        detail = await get_session(run.session_id, SimpleNamespace(id=run.user_id), db)
+        assert [c['tool_call_index'] for c in detail.messages[0].reasoning] == [0, 1]
+        assert not db.dirty
+    async with factory() as db:
+        message = await db.get(Message, run.assistant_message_id)
+        assert message.reasoning == old

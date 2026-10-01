@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Outlet, useNavigate } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import {
   LogoutOutlined,
@@ -21,6 +21,8 @@ import BrandLogo from '@/components/BrandLogo';
 export default function PortalLayout() {
   const { logout, username, tenantName } = useAuthStore();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const isAgentChat = /^\/portal\/agents\/[^/]+\/chat(?:\/|$)/.test(pathname);
   const [skinOpen, setSkinOpen] = useState(false);
   const [tenantOptions, setTenantOptions] = useState<Array<{
     id: string;
@@ -58,9 +60,10 @@ export default function PortalLayout() {
   ];
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background">
+    <div className={`flex h-screen flex-col overflow-hidden bg-background ${isAgentChat ? 'portal-chat-layout' : ''}`}>
       <header className="relative z-10 flex h-14 flex-shrink-0 items-center justify-between border-b border-border/40 bg-card/90 px-4 shadow-[0_1px_12px_rgba(15,23,42,0.04)] backdrop-blur-sm sm:px-6">
         <button
+          aria-label="智能体平台"
           onClick={() => navigate('/portal')}
           className="flex items-center gap-2.5 cursor-pointer"
         >

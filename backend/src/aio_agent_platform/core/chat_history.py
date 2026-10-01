@@ -14,10 +14,30 @@ from aio_agent_platform.db.models import Message
 from aio_agent_platform.db.sanitize import sanitize_pg_text
 
 
-def _append_reasoning_chunk(chunks: list[dict], content: str) -> None:
+def _append_reasoning_chunk(chunks: list[dict], content: str, tool_call_index: int | None = None) -> None:
     """Keep each ReAct reasoning step independently renderable after reload."""
     if content:
-        chunks.append({"id": f"thinking-{len(chunks)}", "content": content})
+        chunk = {"id": f"thinking-{len(chunks)}", "content": content}
+        if tool_call_index is not None:
+            chunk["tool_call_index"] = tool_call_index
+        chunks.append(chunk)
+
+
+def restore_reasoning_order(reasoning: list[dict], events: list[dict]) -> list[dict]:
+    """Recover old reasoning positions only when the retained event text matches."""
+    chunks: list[dict] = []
+    tool_count = 0
+    for event in events:
+        if event.get("type") == "tool_call":
+            tool_count += 1
+        elif event.get("type") == "thinking" and event.get("content"):
+            if chunks and chunks[-1]["tool_call_index"] == tool_count:
+                chunks[-1]["content"] += event["content"]
+            else:
+                _append_reasoning_chunk(chunks, event["content"], tool_count)
+    if chunks and "".join(c["content"] for c in chunks) == "".join(c.get("content", "") for c in reasoning):
+        return chunks
+    return reasoning
 
 
 def _merge_file_changes(current: list[dict], incoming: list[dict]) -> list[dict]:
@@ -69,7 +89,7 @@ class ChatTurnRecorder:
         if event.startswith("reasoning_delta:"):
             return {"type": "thinking", "content": event[len("reasoning_delta:"):]}
         if event.startswith("reasoning:"):
-            _append_reasoning_chunk(self.reasoning, event[len("reasoning:"):])
+            _append_reasoning_chunk(self.reasoning, event[len("reasoning:"):], len(self.tool_calls))
         elif event.startswith("tool_call:"):
             parts = event.split(":", 3)
             call_id = parts[1] if len(parts) > 1 else ""
