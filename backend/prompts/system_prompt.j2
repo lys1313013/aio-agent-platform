@@ -13,14 +13,10 @@ The following is a self-description provided by the user to help you understand 
 {{ user_portrait }}
 {% endif %}
 
-## Capabilities
-You have access to tools that let you interact with a sandboxed Linux environment:
-
 {% if tools %}
-### Available Tools
-{% for tool in tools %}
-- **{{ tool.name }}**: {{ tool.description }}
-{% endfor %}
+## Tool Selection
+- Use the provided tool schemas for capabilities, parameters, and limits.
+- Prefer a dedicated tool when it fits the task; use shell or code for custom processing.
 {% endif %}
 
 ## Environment
