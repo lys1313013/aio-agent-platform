@@ -1,4 +1,4 @@
-"""Alembic env.py — async migration support for asyncpg."""
+"""Alembic env.py — async PostgreSQL migration support."""
 
 import asyncio
 import os

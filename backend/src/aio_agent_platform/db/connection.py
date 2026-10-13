@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from pathlib import Path
 
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -27,6 +28,9 @@ def get_engine() -> AsyncEngine:
     """Get or create the async engine singleton."""
     global _engine
     if _engine is None:
+        # asyncpg 和 psycopg 使用不同的连接超时参数。
+        driver = make_url(settings.db.url).get_driver_name()
+        connect_args = {"connect_timeout": 8} if driver == "psycopg" else {"timeout": 8}
         _engine = create_async_engine(
             settings.db.url,
             echo=settings.server.log_level == "DEBUG",
@@ -34,7 +38,7 @@ def get_engine() -> AsyncEngine:
             max_overflow=10,
             pool_pre_ping=True,
             # 外部 DB 不可达时快速失败而非无限挂起：连接 + 连接池 checkout 各 8s 上限
-            connect_args={"timeout": 8},
+            connect_args=connect_args,
             pool_timeout=8,
         )
     return _engine
@@ -58,15 +62,16 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     FastAPI dependency: get a database session.
 
     Also sets the PostgreSQL session variable for RLS:
-    SET LOCAL app.current_user_id = '<user_id>'
+    set_config('app.current_user_id', user_id, true), scoped to this transaction.
     """
     factory = get_session_factory()
     async with factory() as session:
         user_id = current_user_id.get(None)
         if user_id:
-            # SET LOCAL only affects the current transaction, auto-cleared on commit
+            # SET does not accept bind parameters. The true flag gives set_config
+            # the same transaction-local scope as SET LOCAL (commit or rollback).
             await session.execute(
-                text("SET LOCAL app.current_user_id = :uid"),
+                text("SELECT set_config('app.current_user_id', :uid, true)"),
                 {"uid": user_id},
             )
         try:
