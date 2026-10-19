@@ -72,7 +72,7 @@ async def cmd_whoami(ctx: CommandContext) -> CommandResult:
             f"**当前用户**：{ctx.user.username}\n"
             f"**用户 ID**：`{ctx.user_id}`\n"
             f"**角色**：{ctx.user.role}\n"
-            f"**租户 ID**：`{ctx.user.tenant_id}`\n"
+            f"**租户 ID**：`{ctx.tenant_id}`\n"
             f"**会话数**：{session_count or 0}\n"
             f"**长期记忆数**：{memory_count or 0}"
         )

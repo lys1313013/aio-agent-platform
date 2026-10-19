@@ -65,7 +65,7 @@ PET_ACTION_TOOL = {
 }
 
 # 宠物闲聊工具白名单：记忆类 + 动作触发，禁用沙箱/网页抓取等高成本工具
-PET_CHAT_WHITELIST = {"memory_read", "memory_write", "pet_action"}
+PET_CHAT_WHITELIST = {"memory_read", "memory_write", "memory_update", "memory_delete", "pet_action"}
 
 
 def pet_action_tool_schema() -> dict:

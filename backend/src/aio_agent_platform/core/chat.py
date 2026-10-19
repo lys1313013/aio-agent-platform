@@ -15,6 +15,7 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,12 @@ from aio_agent_platform.core.context import (
 )
 from aio_agent_platform.core.context import (
     estimate_messages_tokens as _est_tokens,
+)
+from aio_agent_platform.core.execution_scope import (
+    ExecutionAccessError,
+    execution_tenant_id,
+    require_agent_tenant,
+    require_execution_user,
 )
 from aio_agent_platform.core.prompt import build_system_prompt
 from aio_agent_platform.db import Message, Session
@@ -67,13 +74,14 @@ async def load_agent(
 ) -> Agent | None:
     """Load an Agent with eager-loaded relationships.
 
-    Visibility is scoped by either ``user`` (tenant + creator) or ``tenant_id``
-    alone (for system callers like cron jobs and channel adapters).
+    Explicit ``tenant_id`` pins the execution tenant. When ``user`` is also
+    provided, ownership and knowledge-base visibility checks still apply.
+    Background callers must validate membership before overriding the tenant.
     """
     if not agent_id:
         return None
 
-    effective_tenant = user.tenant_id if user else tenant_id
+    effective_tenant = tenant_id if tenant_id is not None else (user.tenant_id if user else None)
     if effective_tenant is None:
         return None
 
@@ -98,7 +106,7 @@ async def load_agent(
         stmt = stmt.options(
             with_loader_criteria(
                 KnowledgeBase,
-                (KnowledgeBase.tenant_id == user.tenant_id)
+                (KnowledgeBase.tenant_id == effective_tenant)
                 & or_(
                     KnowledgeBase.visibility == "tenant",
                     KnowledgeBase.created_by == user.id,
@@ -107,7 +115,7 @@ async def load_agent(
             ),
             with_loader_criteria(
                 GraphKnowledgeBase,
-                (GraphKnowledgeBase.tenant_id == user.tenant_id)
+                (GraphKnowledgeBase.tenant_id == effective_tenant)
                 & or_(
                     GraphKnowledgeBase.visibility == "tenant",
                     GraphKnowledgeBase.created_by == user.id,
@@ -120,6 +128,35 @@ async def load_agent(
 
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def load_execution_agent(db: AsyncSession, agent_id: UUID | None, user: User) -> Agent | None:
+    if agent_id is None:
+        return None
+    try:
+        tenant_id = await require_agent_tenant(db, user.id, agent_id)
+    except ExecutionAccessError:
+        return None
+    return await load_agent(db, agent_id, user=user, tenant_id=tenant_id)
+
+
+async def load_chat_agent(db: AsyncSession, agent_id: UUID | None, session_id: UUID | None, user: User):
+    if session_id is not None:
+        session = await db.scalar(select(Session).where(
+            Session.id == session_id, Session.user_id == user.id, Session.source != "room",
+        ))
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        agent_id = agent_id or session.agent_id
+    if agent_id is None:
+        try:
+            await require_execution_user(db, user.id, user.tenant_id)
+        except ExecutionAccessError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+    agent = await load_execution_agent(db, agent_id, user)
+    if agent_id is not None and agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found or inaccessible")
+    return agent
 
 
 # ---------------------------------------------------------------------------
@@ -301,11 +338,9 @@ async def build_system_prompt_with_memories(
         db, user_id, user_message, top_k=3, bound_skills=agent.skills if agent else None
     )
 
-    # Resolve tenant_id if not provided
+    tenant_id = tenant_id or execution_tenant_id(user_id) or (agent.tenant_id if agent else None)
     if tenant_id is None:
-        from aio_agent_platform.db.models import User
-        result = await db.execute(select(User.tenant_id).where(User.id == user_id))
-        tenant_id = result.scalar_one_or_none()
+        raise ValueError("System prompt requires an explicit execution tenant")
 
     result = await db.execute(
         select(UserProfile).where(
@@ -413,6 +448,7 @@ async def build_agent_loop(
     )
 
     return AgentLoop(
+        execution_tenant_id=tenant_id,
         provider=provider,
         tool_executor=tool_executor,
         system_prompt=system_prompt,
@@ -616,6 +652,8 @@ def fire_memory_extraction(
     user_message: str,
     assistant_output: str,
     enable: bool = True,
+    tenant_id: UUID | None = None,
+    agent_id: UUID | None = None,
 ) -> None:
     """Fire-and-forget memory extraction as a background task."""
     if not enable:
@@ -636,6 +674,8 @@ def fire_memory_extraction(
             user_id=user_id,
             session_id=session_id,
             messages=messages,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
         )
         # 实时追加:把本次会话的 L3 摘要合并进今天的每日记忆(凌晨 cron 会再精修)
         l3_memory = next((m for m in created if m.layer == "L3"), None)
@@ -643,7 +683,8 @@ def fire_memory_extraction(
             from aio_agent_platform.memory.daily import DailyMemoryService
 
             await DailyMemoryService.append_session_summary(
-                user_id, session_id, l3_memory.content, agent_id=l3_memory.agent_id
+                user_id, session_id, l3_memory.content, agent_id=l3_memory.agent_id,
+                tenant_id=tenant_id
             )
 
     task = asyncio.create_task(_extract_and_merge_daily())

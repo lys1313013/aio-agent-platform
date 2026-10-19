@@ -17,6 +17,8 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     registry.register(LIST_DIRECTORY)
     registry.register(MEMORY_READ)
     registry.register(MEMORY_WRITE)
+    registry.register(MEMORY_UPDATE)
+    registry.register(MEMORY_DELETE)
     registry.register(SEARCH_SKILLS)
     registry.register(VIEW_SKILL)
     registry.register(CREATE_SKILL)
@@ -220,7 +222,8 @@ MEMORY_READ = Tool(
         "Search your memory for relevant information. "
         "Use this when the user asks about past conversations, preferences, "
         "or when you need context about the user's project or history. "
-        "Returns memories ranked by relevance."
+        "Returns memories ranked by relevance, including id, version, layer and scope. "
+        "Use query '*' to list accessible memories before editing or deleting."
     ),
     parameters={
         "type": "object",
@@ -256,6 +259,7 @@ MEMORY_WRITE = Tool(
         "L1 = always-loaded context (preferences, rules). "
         "L2 = durable facts and decisions; do not store current exercises, homework or transient progress here. "
         "Write one independent fact per call. Existing facts are skipped, merged or updated automatically. "
+        "For an explicit request to edit or replace a specific entry, use memory_update instead. "
         "L3 = episodic memory (conversation summaries)."
     ),
     parameters={
@@ -286,6 +290,52 @@ MEMORY_WRITE = Tool(
     requires_sandbox=False,
     permission_level="write",
     timeout=45,
+)
+
+
+MEMORY_UPDATE = Tool(
+    name="memory_update",
+    description=(
+        "Modify a specific memory when the user explicitly asks to correct or replace it. "
+        "Use its exact id and current version from the prompt or memory_read. "
+        "Replaces content in place, preserving layer and scope; never creates a new entry. "
+        "Only current-agent and user-shared memories are accessible."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string", "description": "Exact memory UUID"},
+            "expected_version": {"type": "integer", "minimum": 1, "description": "Current version read from memory"},
+            "content": {"type": "string", "minLength": 1, "description": "Complete replacement content"},
+        },
+        "required": ["memory_id", "expected_version", "content"],
+        "additionalProperties": False,
+    },
+    requires_sandbox=False,
+    permission_level="write",
+    timeout=30,
+)
+
+MEMORY_DELETE = Tool(
+    name="memory_delete",
+    description=(
+        "Delete a specific memory when the user explicitly asks to remove or forget it. "
+        "Use its exact id and current version from the prompt or memory_read. "
+        "Only current-agent and user-shared memories are accessible. "
+        "The deletion is recorded in memory history and can be undone there."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string", "description": "Exact memory UUID"},
+            "expected_version": {"type": "integer", "minimum": 1, "description": "Current version read from memory"},
+        },
+        "required": ["memory_id", "expected_version"],
+        "additionalProperties": False,
+    },
+    requires_sandbox=False,
+    permission_level="write",
+    timeout=30,
 )
 
 
@@ -939,10 +989,19 @@ CREATE_CRON_JOB = Tool(
                 "type": "string",
                 "description": "The message to send to the agent when the task fires.",
             },
+            "request_id": {
+                "type": "string",
+                "description": "Optional UUID idempotency key. Reuse the same UUID when retrying the same creation request.",
+            },
+            "allow_duplicate": {
+                "type": "boolean",
+                "description": "Allow a same-name task with different settings only when the user explicitly wants both. Identical tasks are reused.",
+            },
             "cron_expr": {
                 "type": "string",
                 "description": (
                     "Standard 5-field cron expression (minute hour day month weekday). "
+                    "Weekday: 0/7=Sunday, 1=Monday; prefer names sun or mon-fri. "
                     "Times are in Beijing time (UTC+8), write them directly — no UTC conversion needed. "
                     "Example: '0 16 * * *' for daily at 4:00 PM Beijing time. "
                     "Leave empty if this is a one-time task using run_at."

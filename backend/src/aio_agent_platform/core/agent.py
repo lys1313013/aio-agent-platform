@@ -17,8 +17,10 @@ from aio_agent_platform.core.confirmation import confirmation_manager
 from aio_agent_platform.core.context import (
     ContextBudget,
     compress_early_tool_results,
+    current_agent_id,
     estimate_messages_tokens,
 )
+from aio_agent_platform.core.execution_scope import bind_execution_scope, execution_tenant_id
 from aio_agent_platform.core.prompt import build_current_time_context
 from aio_agent_platform.core.task_scope import call_key, completed_calls, track_task
 from aio_agent_platform.core.ui_action import (
@@ -28,7 +30,6 @@ from aio_agent_platform.core.ui_action import (
 from aio_agent_platform.core.usage import record_llm_usage
 from aio_agent_platform.db.connection import get_session_factory
 from aio_agent_platform.db.models import Session as ChatSession
-from aio_agent_platform.db.models import User
 from aio_agent_platform.hooks import get_hook_manager
 from aio_agent_platform.llm import (
     LLMMessage,
@@ -47,9 +48,6 @@ from aio_agent_platform.tools.executor import ToolExecutor, ToolResult
 
 logger = structlog.get_logger(__name__)
 
-# user_id -> tenant_id 的进程内缓存，避免每次 Agent.run 重复查库
-_tenant_cache: dict[str, UUID | None] = {}
-
 # 流式断连重试：仅当本次迭代零产出（连接刚建立就断）时安全重试，
 # 已产出文本/工具调用则上抛，避免前端收到重复内容。
 _STREAM_RETRY_MAX = 2  # 最多重试 2 次（共 3 次尝试）
@@ -57,19 +55,8 @@ _STREAM_RETRY_BASE_DELAY = 1.0  # 秒，线性退避: 1s → 2s
 
 
 async def _resolve_tenant_id(user_id: UUID) -> UUID | None:
-    """Resolve a user's tenant_id (cached per process)."""
-    key = str(user_id)
-    if key in _tenant_cache:
-        return _tenant_cache[key]
-    try:
-        factory = get_session_factory()
-        async with factory() as db:
-            row = await db.execute(select(User.tenant_id).where(User.id == user_id))
-            tid = row.scalar_one_or_none()
-    except Exception:
-        tid = None
-    _tenant_cache[key] = tid
-    return tid
+    """Compatibility helper: execution scope only; never query/cache UI state."""
+    return execution_tenant_id(user_id)
 
 
 async def _resolve_agent_id(session_id: UUID) -> UUID | None:
@@ -95,6 +82,7 @@ class DelegationContext:
     event_queue: asyncio.Queue | None = None
     workspace_id: UUID | None = None
     workspace_slug: str | None = None
+    tenant_id: UUID | None = None
 
 
 @dataclass
@@ -243,6 +231,7 @@ class AgentLoop:
         workspace_id: UUID | None = None,
         workspace_slug: str | None = None,
         allowed_tools: set[str] | None = None,
+        execution_tenant_id: UUID | None = None,
     ):
         self.provider = provider
         self.tool_executor = tool_executor
@@ -263,10 +252,35 @@ class AgentLoop:
         self.allowed_tools = allowed_tools
         # Room members share a Session but retain their own observation identity.
         self.execution_agent_id: UUID | None = None
-        self.execution_tenant_id: UUID | None = None
+        self.execution_tenant_id: UUID | None = execution_tenant_id
         self.stop_reason: str | None = None
 
     async def run(
+        self,
+        user_input: str | list[dict] | None,
+        user_id: UUID,
+        session_id: UUID,
+        conversation_history: list[LLMMessage],
+        tools: list[dict],
+    ) -> AsyncIterator[AgentStep | str]:
+        tenant_id = self.execution_tenant_id or execution_tenant_id(user_id)
+        if tenant_id is None:
+            raise ValueError("AgentLoop requires an explicit execution tenant")
+        agent_id = self.execution_agent_id or await _resolve_agent_id(session_id)
+        if self.delegation is not None:
+            if self.delegation.tenant_id not in (None, tenant_id):
+                raise ValueError("Delegation tenant does not match execution tenant")
+            self.delegation.tenant_id = tenant_id
+        # ContextVar isolation also covers parallel tool tasks and cancellation.
+        with bind_execution_scope(user_id, tenant_id, agent_id=agent_id):
+            events = self._run(user_input, user_id, session_id, conversation_history, tools)
+            try:
+                async for event in events:
+                    yield event
+            finally:
+                await events.aclose()
+
+    async def _run(
         self,
         user_input: str | list[dict] | None,
         user_id: UUID,
@@ -293,7 +307,8 @@ class AgentLoop:
         # ---- Observation: open a trace for this execution ----
         trace_id = uuid4()
         tenant_id = self.execution_tenant_id or await _resolve_tenant_id(user_id)
-        agent_id = self.execution_agent_id or await _resolve_agent_id(session_id)
+        bound_agent_id = current_agent_id.get()
+        agent_id = UUID(bound_agent_id) if bound_agent_id else None
         set_obs_context(
             ObsContext(
                 trace_id=trace_id,
@@ -788,6 +803,13 @@ class AgentLoop:
 
             # Inject tool results as messages
             for tr in step.tool_results:
+                if tr.success and tr.name in {"memory_write", "memory_update", "memory_delete"}:
+                    from aio_agent_platform.memory.presentation import refresh_memory_prompt
+
+                    self.system_prompt = refresh_memory_prompt(self.system_prompt, tr.output)
+                    for message in messages:
+                        if message.role == "system" and isinstance(message.content, str):
+                            message.content = refresh_memory_prompt(message.content, tr.output)
                 role_content = tr.output if tr.success else f"Error: {tr.error}"
                 messages.append(
                     LLMMessage(

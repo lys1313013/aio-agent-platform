@@ -22,6 +22,7 @@ import { Link } from 'react-router-dom';
 import type { FileChangeInfo, ToolCallInfo } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { FileChangeResult } from './FileChangeList';
+import { memoryMutationView } from './memoryResult';
 
 interface Props {
   toolCall: ToolCallInfo;
@@ -45,6 +46,8 @@ const TOOL_LABELS: Record<string, string> = {
   list_directory: '列出目录',
   memory_read: '读取记忆',
   memory_write: '写入记忆',
+  memory_update: '修改记忆',
+  memory_delete: '删除记忆',
   search_skills: '搜索技能',
   view_skill: '查看技能',
   create_skill: '创建技能',
@@ -73,11 +76,10 @@ const LAYER_COLORS: Record<string, string> = {
   L3: 'green',
 };
 
-/** Custom renderer for memory_write tool calls */
+/** Memory mutations show the confirmed result, including edits and deletions. */
 function MemoryWriteCard({ toolCall }: Props) {
   const [expanded, setExpanded] = useState(false);
-  const content = toolCall.arguments.content as string | undefined;
-  const layer = toolCall.arguments.layer as string | undefined;
+  const { title, content, layer, scope, before } = memoryMutationView(toolCall);
   const tags = toolCall.arguments.tags as string[] | undefined;
   const hasResult = !!toolCall.result;
   const isPending = !hasResult;
@@ -93,12 +95,13 @@ function MemoryWriteCard({ toolCall }: Props) {
       >
         <div className="flex items-center gap-2 min-w-0">
           <BulbOutlined className="text-blue-500 flex-shrink-0" />
-          <span className="text-sm font-medium text-blue-900 dark:text-blue-100">已记住</span>
+          <span className="text-sm font-medium text-blue-900 dark:text-blue-100">{title}</span>
           {layer && (
             <Tag color={LAYER_COLORS[layer]} className="text-xs">
               {LAYER_LABELS[layer] || layer}
             </Tag>
           )}
+          {scope && <Tag className="text-xs">{scope === 'user' ? '用户共享' : '智能体专属'}</Tag>}
         </div>
         <div className="flex-shrink-0 ml-2 flex items-center gap-2">
           {isPending && <LoadingOutlined className="text-blue-400" />}
@@ -113,6 +116,7 @@ function MemoryWriteCard({ toolCall }: Props) {
       {/* Content preview (always visible) */}
       {content && (
         <div className="px-3 pb-2">
+          {before && <p className="text-xs text-muted-foreground mb-1 line-through">{before}</p>}
           <p className="text-sm text-foreground leading-relaxed">{content}</p>
           {tags && tags.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-1.5">
@@ -727,7 +731,7 @@ export default function ToolCallCard({ toolCall, fileChange }: Props) {
     return <SkillMutationCard toolCall={toolCall} />;
   }
   // Delegate to custom renderers for specific tools
-  if (toolCall.name === 'memory_write') {
+  if (['memory_write', 'memory_update', 'memory_delete'].includes(toolCall.name)) {
     return <MemoryWriteCard toolCall={toolCall} />;
   }
   if (toolCall.name === 'memory_read') {

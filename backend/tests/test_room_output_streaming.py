@@ -22,7 +22,7 @@ async def test_room_exposes_reasoning_before_answer_without_forcing_each_save():
         yield LLMChunk(type="done")
 
     provider.stream = stream
-    loop = AgentLoop(provider, MagicMock(), system_prompt="test", max_iterations=1)
+    loop = AgentLoop(provider, MagicMock(), execution_tenant_id=uuid4(), system_prompt="test", max_iterations=1)
     async for event in loop.run("hello", user_id=uuid4(), session_id=uuid4(), conversation_history=[], tools=[]):
         force = output.consume(event)
         if isinstance(event, str) and event.startswith("reasoning_delta:"):

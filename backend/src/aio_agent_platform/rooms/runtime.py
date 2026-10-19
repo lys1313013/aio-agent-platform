@@ -24,6 +24,7 @@ from aio_agent_platform.core.context import (
     estimate_messages_tokens,
     generate_summary,
 )
+from aio_agent_platform.core.execution_scope import ExecutionAccessError, require_execution_user
 from aio_agent_platform.core.prompt import build_system_prompt
 from aio_agent_platform.core.usage import record_llm_usage
 from aio_agent_platform.db.connection import get_session_factory
@@ -33,7 +34,6 @@ from aio_agent_platform.db.models import (
     ChatRoomMessage,
     ChatRoomRun,
     ChatRoomTask,
-    User,
     Workspace,
 )
 from aio_agent_platform.db.sanitize import sanitize_pg_text
@@ -239,8 +239,9 @@ async def _monitor(room_id: UUID, run_id: UUID) -> str:
                 room = await db.scalar(select(ChatRoom).where(ChatRoom.id == room_id).with_for_update())
                 if room is None:
                     return "interrupted"
-                user = await db.get(User, room.user_id)
-                if not user or not user.is_active or user.tenant_id != room.tenant_id:
+                try:
+                    await require_execution_user(db, room.user_id, room.tenant_id)
+                except ExecutionAccessError:
                     return "interrupted"
                 # Only update the lease. Do not overwrite a concurrent stop request.
                 run.heartbeat_at = now()
@@ -362,10 +363,8 @@ async def _execute_task(app, room_id, run_id, task_id):
                 raise asyncio.CancelledError
             task = await db.get(ChatRoomTask, task_id)
             member = await db.get(ChatRoomMember, task.member_id)
-            user = await db.get(User, room.user_id)
-            if not user or not user.is_active or user.tenant_id != room.tenant_id:
-                raise RoomExecutionError("当前用户或租户已不可用")
-            agent = await load_agent(db, member.agent_id, user) if member and member.is_active else None
+            user = await require_execution_user(db, room.user_id, room.tenant_id)
+            agent = await load_agent(db, member.agent_id, user, tenant_id=room.tenant_id) if member and member.is_active else None
             if not agent:
                 raise RoomExecutionError("该成员已停用、被移除或无权使用")
             workspace = await db.scalar(select(Workspace).where(

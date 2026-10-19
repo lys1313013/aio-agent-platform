@@ -15,6 +15,7 @@ import structlog
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aio_agent_platform.core.execution_scope import bind_execution_scope, resolve_background_tenant
 from aio_agent_platform.db.models import DailyMemory, Memory, Session
 from aio_agent_platform.memory.service import (
     MemoryService,
@@ -259,6 +260,7 @@ class DailyMemoryService:
         session_id: UUID,
         summary: str,
         agent_id: UUID | None = None,
+        tenant_id: UUID | None = None,
     ) -> DailyMemory | None:
         """
         Incrementally merge a finished session's L3 summary into today's record.
@@ -266,70 +268,81 @@ class DailyMemoryService:
         Creates its own DB session. Errors are logged, never propagated.
         """
         try:
-            from aio_agent_platform.core.prompt import _env
-            from aio_agent_platform.db.connection import current_user_id, get_session_factory
+            from aio_agent_platform.db.connection import get_session_factory
 
-            summary = summary.strip()
-            if not summary:
-                return None
-
-            day = local_today()
-            factory = get_session_factory()
-            async with factory() as db:
-                current_user_id.set(str(user_id))
-                await db.execute(
-                    select(func.set_config("app.current_user_id", str(user_id), True))
+            async with get_session_factory()() as scope_db:
+                if agent_id is None:
+                    agent_id = await scope_db.scalar(select(Session.agent_id).where(
+                        Session.id == session_id, Session.user_id == user_id,
+                    ))
+                tenant_id = await resolve_background_tenant(
+                    scope_db, user_id, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
                 )
-                existing = await DailyMemoryService.get_by_date(db, user_id, day, agent_id=agent_id)
-                existing_content = existing.content if existing else None
-                existing_session_ids = list(existing.source_session_ids or []) if existing else []
+            with bind_execution_scope(user_id, tenant_id, agent_id=agent_id):
+                from aio_agent_platform.core.prompt import _env
+                from aio_agent_platform.db.connection import current_user_id, get_session_factory
 
-            if existing_content is not None:
-                template = _env.get_template("daily_memory_merge.j2")
-                prompt_text = template.render(
-                    date=day.isoformat(),
-                    existing_content=existing_content,
-                    new_summary=summary,
+                summary = summary.strip()
+                if not summary:
+                    return None
+
+                day = local_today()
+                factory = get_session_factory()
+                async with factory() as db:
+                    current_user_id.set(str(user_id))
+                    await db.execute(
+                        select(func.set_config("app.current_user_id", str(user_id), True))
+                    )
+                    existing = await DailyMemoryService.get_by_date(db, user_id, day, agent_id=agent_id)
+                    existing_content = existing.content if existing else None
+                    existing_session_ids = list(existing.source_session_ids or []) if existing else []
+
+                if existing_content is not None:
+                    template = _env.get_template("daily_memory_merge.j2")
+                    prompt_text = template.render(
+                        date=day.isoformat(),
+                        existing_content=existing_content,
+                        new_summary=summary,
+                    )
+                else:
+                    template = _env.get_template("daily_memory_writer.j2")
+                    prompt_text = template.render(
+                        date=day.isoformat(),
+                        summaries=[summary],
+                        session_count=1,
+                    )
+
+                result = await DailyMemoryService._run_writer(user_id, prompt_text)
+                if result is None:
+                    return None
+                content, highlights = result
+
+                if str(session_id) not in existing_session_ids:
+                    existing_session_ids.append(str(session_id))
+
+                async with factory() as db:
+                    current_user_id.set(str(user_id))
+                    await db.execute(
+                        select(func.set_config("app.current_user_id", str(user_id), True))
+                    )
+                    memory = await DailyMemoryService.upsert(
+                        db,
+                        user_id,
+                        day,
+                        content=content,
+                        highlights=highlights,
+                        source_session_ids=existing_session_ids,
+                        agent_id=agent_id,
+                    )
+                    await db.commit()
+
+                logger.info(
+                    "daily_memory_appended",
+                    user_id=str(user_id),
+                    day=str(day),
+                    session_id=str(session_id),
                 )
-            else:
-                template = _env.get_template("daily_memory_writer.j2")
-                prompt_text = template.render(
-                    date=day.isoformat(),
-                    summaries=[summary],
-                    session_count=1,
-                )
-
-            result = await DailyMemoryService._run_writer(user_id, prompt_text)
-            if result is None:
-                return None
-            content, highlights = result
-
-            if str(session_id) not in existing_session_ids:
-                existing_session_ids.append(str(session_id))
-
-            async with factory() as db:
-                current_user_id.set(str(user_id))
-                await db.execute(
-                    select(func.set_config("app.current_user_id", str(user_id), True))
-                )
-                memory = await DailyMemoryService.upsert(
-                    db,
-                    user_id,
-                    day,
-                    content=content,
-                    highlights=highlights,
-                    source_session_ids=existing_session_ids,
-                    agent_id=agent_id,
-                )
-                await db.commit()
-
-            logger.info(
-                "daily_memory_appended",
-                user_id=str(user_id),
-                day=str(day),
-                session_id=str(session_id),
-            )
-            return memory
+                return memory
 
         except Exception as e:
             logger.error(
@@ -342,7 +355,7 @@ class DailyMemoryService:
             return None
 
     @staticmethod
-    async def consolidate_day(user_id: UUID, day: date, agent_id: UUID | None = None) -> DailyMemory | None:
+    async def consolidate_day(user_id: UUID, day: date, agent_id: UUID | None = None, tenant_id: UUID | None = None) -> DailyMemory | None:
         """
         Consolidate one day's sessions + L3 summaries into a daily memory via LLM.
 
@@ -350,88 +363,95 @@ class DailyMemoryService:
         the LLM produced nothing substantial. Errors are logged, never propagated.
         """
         try:
-            from aio_agent_platform.core.prompt import _env
-            from aio_agent_platform.db.connection import current_user_id, get_session_factory
+            from aio_agent_platform.db.connection import get_session_factory
 
-            start, end = day_range_utc(day)
-            factory = get_session_factory()
-
-            async with factory() as db:
-                current_user_id.set(str(user_id))
-                await db.execute(
-                    select(func.set_config("app.current_user_id", str(user_id), True))
+            async with get_session_factory()() as scope_db:
+                tenant_id = await resolve_background_tenant(
+                    scope_db, user_id, tenant_id=tenant_id, agent_id=agent_id,
                 )
+            with bind_execution_scope(user_id, tenant_id, agent_id=agent_id):
+                from aio_agent_platform.core.prompt import _env
+                from aio_agent_platform.db.connection import current_user_id, get_session_factory
 
-                sessions_result = await db.execute(
-                    select(Session.id, Session.title)
-                    .where(
-                        Session.user_id == user_id,
-                        Session.agent_id == agent_id,
-                        Session.updated_at >= start,
-                        Session.updated_at < end,
+                start, end = day_range_utc(day)
+                factory = get_session_factory()
+
+                async with factory() as db:
+                    current_user_id.set(str(user_id))
+                    await db.execute(
+                        select(func.set_config("app.current_user_id", str(user_id), True))
                     )
-                    .order_by(Session.updated_at)
-                )
-                sessions = sessions_result.all()
 
-                l3_result = await db.execute(
-                    select(Memory)
-                    .where(
-                        Memory.user_id == user_id,
-                        Memory.layer == "L3",
-                        memory_scope(Memory, agent_id),
-                        Memory.created_at >= start,
-                        Memory.created_at < end,
+                    sessions_result = await db.execute(
+                        select(Session.id, Session.title)
+                        .where(
+                            Session.user_id == user_id,
+                            Session.agent_id == agent_id,
+                            Session.updated_at >= start,
+                            Session.updated_at < end,
+                        )
+                        .order_by(Session.updated_at)
                     )
-                    .order_by(Memory.created_at)
-                )
-                l3_summaries = [m.content for m in l3_result.scalars().all()]
+                    sessions = sessions_result.all()
 
-            if not sessions:
+                    l3_result = await db.execute(
+                        select(Memory)
+                        .where(
+                            Memory.user_id == user_id,
+                            Memory.layer == "L3",
+                            memory_scope(Memory, agent_id),
+                            Memory.created_at >= start,
+                            Memory.created_at < end,
+                        )
+                        .order_by(Memory.created_at)
+                    )
+                    l3_summaries = [m.content for m in l3_result.scalars().all()]
+
+                if not sessions:
+                    logger.info(
+                        "daily_memory_skip_no_sessions",
+                        user_id=str(user_id),
+                        day=str(day),
+                    )
+                    return None
+
+                template = _env.get_template("daily_memory_writer.j2")
+                prompt_text = template.render(
+                    date=day.isoformat(),
+                    summaries=l3_summaries,
+                    session_count=len(sessions),
+                )
+
+                result = await DailyMemoryService._run_writer(user_id, prompt_text)
+                if result is None:
+                    return None
+                content, highlights = result
+
+                session_ids = [str(row.id) for row in sessions]
+
+                async with factory() as db:
+                    current_user_id.set(str(user_id))
+                    await db.execute(
+                        select(func.set_config("app.current_user_id", str(user_id), True))
+                    )
+                    memory = await DailyMemoryService.upsert(
+                        db,
+                        user_id,
+                        day,
+                        content=content,
+                        highlights=highlights,
+                        source_session_ids=session_ids,
+                        agent_id=agent_id,
+                    )
+                    await db.commit()
+
                 logger.info(
-                    "daily_memory_skip_no_sessions",
+                    "daily_memory_consolidated",
                     user_id=str(user_id),
                     day=str(day),
+                    sessions=len(session_ids),
                 )
-                return None
-
-            template = _env.get_template("daily_memory_writer.j2")
-            prompt_text = template.render(
-                date=day.isoformat(),
-                summaries=l3_summaries,
-                session_count=len(sessions),
-            )
-
-            result = await DailyMemoryService._run_writer(user_id, prompt_text)
-            if result is None:
-                return None
-            content, highlights = result
-
-            session_ids = [str(row.id) for row in sessions]
-
-            async with factory() as db:
-                current_user_id.set(str(user_id))
-                await db.execute(
-                    select(func.set_config("app.current_user_id", str(user_id), True))
-                )
-                memory = await DailyMemoryService.upsert(
-                    db,
-                    user_id,
-                    day,
-                    content=content,
-                    highlights=highlights,
-                    source_session_ids=session_ids,
-                    agent_id=agent_id,
-                )
-                await db.commit()
-
-            logger.info(
-                "daily_memory_consolidated",
-                user_id=str(user_id),
-                day=str(day),
-                sessions=len(session_ids),
-            )
-            return memory
+                return memory
 
         except Exception as e:
             logger.error(

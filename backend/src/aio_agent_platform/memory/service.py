@@ -12,7 +12,12 @@ import structlog
 from sqlalchemy import func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.db.models import DEFAULT_TENANT_ID, Memory, User
+from aio_agent_platform.core.execution_scope import (
+    bind_execution_scope,
+    resolve_background_tenant,
+    resolve_execution_tenant,
+)
+from aio_agent_platform.db.models import DEFAULT_TENANT_ID, Memory
 from aio_agent_platform.memory.history import record_change, snapshot
 
 logger = structlog.get_logger()
@@ -51,7 +56,7 @@ def _merge_meta(old: dict, new: dict) -> dict:
 
 async def resolve_tenant_id(db: AsyncSession, user_id: UUID) -> UUID:
     """查询用户所属租户;用户不存在时回退默认租户(与历史数据回填策略一致)。"""
-    tenant_id = await db.scalar(select(User.tenant_id).where(User.id == user_id))
+    tenant_id = await resolve_execution_tenant(db, user_id)
     return tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
 
 
@@ -66,13 +71,12 @@ async def create_default_provider_for_user(user_id: UUID, temperature: float | N
     from sqlalchemy.orm import selectinload
 
     from aio_agent_platform.db.connection import get_session_factory
-    from aio_agent_platform.db.models import LLMModel, User
+    from aio_agent_platform.db.models import LLMModel
     from aio_agent_platform.llm import create_provider
 
     factory = get_session_factory()
     async with factory() as db:
-        user_result = await db.execute(select(User.tenant_id).where(User.id == user_id))
-        tenant_id = user_result.scalar_one_or_none()
+        tenant_id = await resolve_execution_tenant(db, user_id)
         if tenant_id is None:
             logger.warning("用户不存在,无法解析默认模型", user_id=str(user_id))
             return None
@@ -470,6 +474,7 @@ class MemoryService:
         session_id: UUID,
         messages: list[dict],
         agent_id: UUID | None = None,
+        tenant_id: UUID | None = None,
     ) -> list[Memory]:
         """
         Background task: use LLM to extract noteworthy info from a conversation.
@@ -478,112 +483,118 @@ class MemoryService:
         Errors are logged but never propagated.
         """
         try:
-            from aio_agent_platform.db.connection import current_user_id, get_session_factory
-            from aio_agent_platform.memory.reconciliation import reconcile_memory
+            from aio_agent_platform.db.connection import get_session_factory
+            from aio_agent_platform.db.models import Session
 
-            factory = get_session_factory()
-            async with factory() as db:
-                current_user_id.set(str(user_id))
-                await db.execute(select(func.set_config("app.current_user_id", str(user_id), True)))
+            async with get_session_factory()() as scope_db:
                 if agent_id is None:
-                    from aio_agent_platform.db.models import Session
-
-                    agent_id = await db.scalar(select(Session.agent_id).where(
+                    agent_id = await scope_db.scalar(select(Session.agent_id).where(
                         Session.id == session_id, Session.user_id == user_id,
                     ))
-                existing = await db.scalars(select(Memory).where(
-                    Memory.user_id == user_id,
-                    memory_scope(Memory, agent_id),
-                    Memory.layer.in_(["L1", "L2"]),
-                ).order_by(Memory.updated_at.desc()).limit(40))
-                existing_contents = [m.content for m in existing.all()]
+                tenant_id = await resolve_background_tenant(
+                    scope_db, user_id, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
+                )
+            with bind_execution_scope(user_id, tenant_id, agent_id=agent_id):
+                from aio_agent_platform.db.connection import current_user_id, get_session_factory
+                from aio_agent_platform.memory.reconciliation import reconcile_memory
 
-            # 1. Render extraction prompt
-            from aio_agent_platform.core.prompt import _env
+                factory = get_session_factory()
+                async with factory() as db:
+                    current_user_id.set(str(user_id))
+                    await db.execute(select(func.set_config("app.current_user_id", str(user_id), True)))
+                    existing = await db.scalars(select(Memory).where(
+                        Memory.user_id == user_id,
+                        memory_scope(Memory, agent_id),
+                        Memory.layer.in_(["L1", "L2"]),
+                    ).order_by(Memory.updated_at.desc()).limit(40))
+                    existing_contents = [m.content for m in existing.all()]
 
-            template = _env.get_template("memory_writer.j2")
-            prompt_text = template.render(messages=messages, existing_memories=existing_contents)
+                # 1. Render extraction prompt
+                from aio_agent_platform.core.prompt import _env
 
-            # 2. Call LLM (non-streaming; temperature 不传，避免网关拒绝)
-            from aio_agent_platform.llm import LLMMessage
+                template = _env.get_template("memory_writer.j2")
+                prompt_text = template.render(messages=messages, existing_memories=existing_contents)
 
-            provider = await create_default_provider_for_user(user_id)
-            if provider is None:
-                logger.warning("没有可用的默认模型，跳过记忆提取")
-                return []
+                # 2. Call LLM (non-streaming; temperature 不传，避免网关拒绝)
+                from aio_agent_platform.llm import LLMMessage
 
-            response = await provider.complete(
-                messages=[LLMMessage(role="user", content=prompt_text)],
-                max_tokens=2000,
-            )
+                provider = await create_default_provider_for_user(user_id)
+                if provider is None:
+                    logger.warning("没有可用的默认模型，跳过记忆提取")
+                    return []
 
-            # 3. Parse structured output (JSON)
-            raw_content = response.content or ""
-            # Strip markdown code fences if LLM includes them
-            raw_content = re.sub(r"^```(?:json)?\s*", "", raw_content.strip())
-            raw_content = re.sub(r"\s*```$", "", raw_content.strip())
-
-            extracted = json.loads(raw_content)
-
-            # 4. Reconcile against current DB state, not the extraction snapshot.
-            async with factory() as db:
-                # Set RLS context for background task (set_config supports parameterized queries)
-                current_user_id.set(str(user_id))
-                await db.execute(
-                    select(func.set_config("app.current_user_id", str(user_id), True))
+                response = await provider.complete(
+                    messages=[LLMMessage(role="user", content=prompt_text)],
+                    max_tokens=2000,
                 )
 
-                created: list[Memory] = []
+                # 3. Parse structured output (JSON)
+                raw_content = response.content or ""
+                # Strip markdown code fences if LLM includes them
+                raw_content = re.sub(r"^```(?:json)?\s*", "", raw_content.strip())
+                raw_content = re.sub(r"\s*```$", "", raw_content.strip())
 
-                for item in extracted.get("l2_memories", [])[:5]:
-                    content = item.get("content", "").strip()
-                    if not content:
-                        continue
-                    mem, action = await reconcile_memory(
-                        db,
-                        user_id,
-                        "L2",
-                        content=content,
-                        agent_id=agent_id,
-                        meta={
-                            "tags": item.get("tags", []),
-                            "source_session": str(session_id),
-                        },
+                extracted = json.loads(raw_content)
+
+                # 4. Reconcile against current DB state, not the extraction snapshot.
+                async with factory() as db:
+                    # Set RLS context for background task (set_config supports parameterized queries)
+                    current_user_id.set(str(user_id))
+                    await db.execute(
+                        select(func.set_config("app.current_user_id", str(user_id), True))
                     )
-                    await db.commit()  # Release the scope lock before the next model call.
-                    created.append(mem)
-                    if action in {"updated", "merged", "skipped"}:
-                        logger.info(
-                            "memory_extraction_deduped",
-                            layer="L2",
-                            memory_id=str(mem.id),
-                        )
 
-                summary = extracted.get("l3_summary", "").strip()
-                if summary:
-                    mem, action = await reconcile_memory(
-                        db,
-                        user_id,
-                        "L3",
-                        content=summary,
-                        agent_id=agent_id,
-                        meta={"source_session": str(session_id)},
+                    created: list[Memory] = []
+
+                    for item in extracted.get("l2_memories", [])[:5]:
+                        content = item.get("content", "").strip()
+                        if not content:
+                            continue
+                        mem, action = await reconcile_memory(
+                            db,
+                            user_id,
+                            "L2",
+                            content=content,
+                            agent_id=agent_id,
+                            meta={
+                                "tags": item.get("tags", []),
+                                "source_session": str(session_id),
+                            },
+                        )
+                        await db.commit()  # Release the scope lock before the next model call.
+                        created.append(mem)
+                        if action in {"updated", "merged", "skipped"}:
+                            logger.info(
+                                "memory_extraction_deduped",
+                                layer="L2",
+                                memory_id=str(mem.id),
+                            )
+
+                    summary = extracted.get("l3_summary", "").strip()
+                    if summary:
+                        mem, action = await reconcile_memory(
+                            db,
+                            user_id,
+                            "L3",
+                            content=summary,
+                            agent_id=agent_id,
+                            meta={"source_session": str(session_id)},
+                        )
+                        created.append(mem)
+                        if action in {"updated", "merged", "skipped"}:
+                            logger.info(
+                                "memory_extraction_deduped",
+                                layer="L3",
+                                memory_id=str(mem.id),
+                            )
+
+                    await db.commit()
+                    logger.info(
+                        "memory_extraction_complete",
+                        count=len(created),
+                        session_id=str(session_id),
                     )
-                    created.append(mem)
-                    if action in {"updated", "merged", "skipped"}:
-                        logger.info(
-                            "memory_extraction_deduped",
-                            layer="L3",
-                            memory_id=str(mem.id),
-                        )
-
-                await db.commit()
-                logger.info(
-                    "memory_extraction_complete",
-                    count=len(created),
-                    session_id=str(session_id),
-                )
-                return created
+                    return created
 
         except Exception as e:
             logger.error(

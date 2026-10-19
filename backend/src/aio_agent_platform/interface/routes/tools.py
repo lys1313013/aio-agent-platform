@@ -19,6 +19,8 @@ TOOL_META: dict[str, dict] = {
     "list_directory": {"label": "列出目录", "category": "sandbox"},
     "memory_read": {"label": "读取记忆", "category": "memory"},
     "memory_write": {"label": "写入记忆", "category": "memory"},
+    "memory_update": {"label": "修改记忆", "category": "memory"},
+    "memory_delete": {"label": "删除记忆", "category": "memory"},
     "search_skills": {"label": "搜索技能", "category": "skills"},
     "view_skill": {"label": "查看技能", "category": "skills"},
     "create_skill": {"label": "创建技能", "category": "skills"},

@@ -14,7 +14,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser, DbSession
+from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser, DbSession, ExecutionUser
 from aio_agent_platform.core import task_registry
 from aio_agent_platform.core.task_events import broker
 from aio_agent_platform.db.models import PetPackage, Session, UserPet
@@ -425,7 +425,7 @@ async def set_pet_actions(
 
 
 @router.post("/{user_pet_id}/bubble")
-async def pet_bubble(user_pet_id: UUID, user: CurrentUser, db: DbSession):
+async def pet_bubble(user_pet_id: UUID, user: ExecutionUser, db: DbSession):
     """智能气泡：绑定 Agent 时流式返回 pet_action + text_delta 事件；未绑定/失败/超限回退 JSON。"""
     svc = PetService(db)
     pet = await db.get(UserPet, user_pet_id)
@@ -467,7 +467,7 @@ async def pet_bubble(user_pet_id: UUID, user: CurrentUser, db: DbSession):
 @router.post("/{user_pet_id}/chat", response_model=PetChatOut)
 async def pet_chat(
     user_pet_id: UUID,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: DbSession,
     force_new: bool = False,
 ) -> PetChatOut:
@@ -540,7 +540,7 @@ async def list_my_pets(user: CurrentUser, db: DbSession) -> list[UserPetOut]:
 
 
 @router.get("/active", response_model=UserPetOut | None)
-async def get_active_pet(user: CurrentUser, db: DbSession) -> UserPetOut | None:
+async def get_active_pet(user: ExecutionUser, db: DbSession) -> UserPetOut | None:
     svc = PetService(db)
     pair = await svc.get_active(user)
     if pair is None:
@@ -550,7 +550,7 @@ async def get_active_pet(user: CurrentUser, db: DbSession) -> UserPetOut | None:
 
 
 @router.get("/active-tasks", response_model=list[ActiveTaskOut])
-async def list_active_tasks(user: CurrentUser) -> list[ActiveTaskOut]:
+async def list_active_tasks(user: ExecutionUser) -> list[ActiveTaskOut]:
     """当前用户的在跑任务（渠道触发，如飞书）。调试/回退用，前端已改走 SSE。"""
     return [
         ActiveTaskOut(
@@ -567,7 +567,7 @@ async def list_active_tasks(user: CurrentUser) -> list[ActiveTaskOut]:
 
 
 @router.get("/tasks/events")
-async def task_events_stream(user: CurrentUser) -> StreamingResponse:
+async def task_events_stream(user: ExecutionUser) -> StreamingResponse:
     """用户级 SSE：渠道任务生命周期实时推送（连接即快照，再收增量 + 心跳）。"""
 
     async def event_generator():

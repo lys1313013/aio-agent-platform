@@ -10,10 +10,11 @@ from uuid import UUID
 from sqlalchemy import func, select
 
 from aio_agent_platform.channels.file_send import current_channel_send_ctx
+from aio_agent_platform.core.execution_scope import execution_tenant_id, resolve_execution_tenant
 from aio_agent_platform.cron_jobs.scheduler import CRON_TIMEZONE, get_global_scheduler
 from aio_agent_platform.cron_jobs.service import CronJobService
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
-from aio_agent_platform.db.models import Session, User
+from aio_agent_platform.db.models import Session
 
 
 async def _set_rls_context(db, user_id: str) -> None:
@@ -23,8 +24,7 @@ async def _set_rls_context(db, user_id: str) -> None:
 
 async def _get_tenant_id(db, user_id: UUID) -> UUID | None:
     """Resolve the tenant a job operation belongs to (handlers receive no tenant)."""
-    result = await db.execute(select(User.tenant_id).where(User.id == user_id))
-    return result.scalar_one_or_none()
+    return await resolve_execution_tenant(db, user_id)
 
 
 async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str, **kwargs) -> str:
@@ -75,7 +75,7 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
             factory = get_session_factory()
             async with factory() as lookup_db:
                 result = await lookup_db.execute(
-                    select(Session.agent_id).where(Session.id == sid)
+                    select(Session.agent_id).where(Session.id == sid, Session.user_id == uid)
                 )
                 row = result.scalar_one_or_none()
                 if row:
@@ -87,13 +87,13 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
     async with factory() as db:
         current_user_id.set(user_id)
         await _set_rls_context(db, user_id)
-        # 租户由 create_job 解析：优先任务对应智能体的租户，其次用户租户，
-        # 绝不回退默认租户。这里仅校验用户存在，避免解析失败时产生误导性错误。
+        # 租户由执行上下文或已授权的智能体解析，不能回退用户界面租户。
+        # 这里只检查调用用户存在；实际归属和权限由服务统一验证。
         if await _get_tenant_id(db, uid) is None:
             return f"Error: user {uid} not found"
         job = await CronJobService.create_job(
             db=db,
-            tenant_id=None,
+            tenant_id=execution_tenant_id(uid),
             user_id=uid,
             name=name,
             agent_id=agent_id,
@@ -102,6 +102,8 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
             run_at=parsed_run_at,
             task_config=task_config,
             channel_id=channel_id,
+            request_id=UUID(arguments["request_id"]) if arguments.get("request_id") else None,
+            allow_duplicate=bool(arguments.get("allow_duplicate", False)),
         )
         await db.commit()
 

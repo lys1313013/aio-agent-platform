@@ -175,6 +175,7 @@ async def test_channel_pipeline_uses_shared_history(history_factory, monkeypatch
         tool_blacklist=[], enable_streaming=False,
     )
     agent = SimpleNamespace(
+        id=channel.agent_id,
         model_id=None, temperature=None, max_iterations=5, enable_retry=True,
         tenant_id=channel.tenant_id, enable_auto_title=False, enable_memory_extraction=False,
     )
@@ -187,6 +188,7 @@ async def test_channel_pipeline_uses_shared_history(history_factory, monkeypatch
     monkeypatch.setattr(pipe, "_resolve_vision_capability", AsyncMock(return_value=(False, "openai")))
     monkeypatch.setattr("aio_agent_platform.db.connection.get_session_factory", lambda: history_factory)
     monkeypatch.setattr(pipeline, "load_agent", AsyncMock(return_value=agent))
+    monkeypatch.setattr(pipeline, "require_execution_user", AsyncMock(return_value=SimpleNamespace()))
     monkeypatch.setattr(pipeline, "refresh_mcp_tools_for_agent", AsyncMock())
     monkeypatch.setattr(pipeline, "filter_tools_by_agent", Mock(return_value=([], [])))
     monkeypatch.setattr(pipeline, "build_system_prompt_with_memories", AsyncMock(return_value="test"))

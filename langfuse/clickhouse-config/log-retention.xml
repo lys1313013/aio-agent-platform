@@ -1,0 +1,10 @@
+<clickhouse>
+    <!-- Diagnostic logs only; Langfuse application tables are unaffected. -->
+    <trace_log>
+        <ttl>event_time + INTERVAL 1 DAY</ttl>
+    </trace_log>
+    <text_log>
+        <level>warning</level>
+        <ttl>event_time + INTERVAL 7 DAY</ttl>
+    </text_log>
+</clickhouse>

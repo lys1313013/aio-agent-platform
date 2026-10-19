@@ -76,7 +76,7 @@ async def cmd_compact(ctx: CommandContext) -> CommandResult:
         return CommandResult(content="会话还没有可压缩的内容。")
     before = estimate_messages_tokens(history)
 
-    model = await resolve_model(ctx.db, await _session_model_id(ctx))
+    model = await resolve_model(ctx.db, tenant_id=ctx.tenant_id, model_id=await _session_model_id(ctx))
     provider = create_provider(
         provider=model.provider.provider_type,
         model=model.model_name,

@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from aio_agent_platform.core.context import current_agent_id
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
-from aio_agent_platform.db.models import Session
+from aio_agent_platform.db.models import Memory, Session
+from aio_agent_platform.memory.presentation import format_memory, memory_reference
 from aio_agent_platform.memory.reconciliation import reconcile_memory
-from aio_agent_platform.memory.service import MemoryService
-
-_LAYER_LABELS = {"L1": "常驻上下文", "L2": "长期记忆", "L3": "情景记忆"}
+from aio_agent_platform.memory.service import MemoryService, memory_scope
 
 
 async def _set_rls_context(db, user_id: str) -> None:
@@ -57,14 +58,8 @@ async def handle_memory_read(arguments: dict, user_id: str, session_id: str, **k
         return "No relevant memories found."
 
     parts = [f"Found {len(results)} relevant memories:\n"]
-    for i, (mem, score) in enumerate(results, 1):
-        layer_label = _LAYER_LABELS.get(mem.layer, mem.layer)
-        created = mem.created_at.strftime("%Y-%m-%d") if mem.created_at else "unknown"
-        parts.append(
-            f"{i}. [{mem.layer}/{layer_label}] (relevance: {score:.2f})\n"
-            f"   {mem.content}\n"
-            f"   Created: {created}"
-        )
+    for mem, _score in results:
+        parts.append("- " + format_memory(mem))
     return "\n\n".join(parts)
 
 
@@ -75,14 +70,14 @@ async def handle_memory_write(arguments: dict, user_id: str, session_id: str, **
     tags = arguments.get("tags", [])
 
     if not layer or layer not in ("L1", "L2", "L3"):
-        return "Error: layer must be L1, L2, or L3"
+        raise ValueError("layer must be L1, L2, or L3")
     if not content:
-        return "Error: content is required"
+        raise ValueError("content is required")
 
     uid = UUID(user_id)
     scope = arguments.get("scope", "agent")
     if scope not in ("agent", "user"):
-        return "Error: scope must be agent or user"
+        raise ValueError("scope must be agent or user")
     meta = {"tags": tags, "source": "agent_tool", "source_session": session_id}
 
     factory = get_session_factory()
@@ -95,17 +90,69 @@ async def handle_memory_write(arguments: dict, user_id: str, session_id: str, **
         )
         await db.commit()
 
-    layer_label = _LAYER_LABELS.get(layer, layer)
-    if action in {"updated", "merged", "skipped"}:
-        return (
-            f"Memory {action}: existing {layer} ({layer_label}) entry reused "
-            f"(same fact already present), id: {memory.id}"
+    return json.dumps({"action": action, "memory": memory_reference(memory)}, ensure_ascii=False)
+
+
+async def _mutate_memory(arguments: dict, user_id: str, session_id: str, *, delete: bool) -> str:
+    try:
+        memory_id = UUID(arguments.get("memory_id", ""))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("memory_id must be an exact UUID from memory_read or the prompt") from exc
+    version = arguments.get("expected_version")
+    if type(version) is not int or version < 1:
+        raise ValueError("expected_version must be a positive integer from the current memory")
+    content = arguments.get("content")
+    if not delete and (not isinstance(content, str) or not content.strip()):
+        raise ValueError("content must be non-empty; use memory_delete to remove an entry")
+
+    uid = UUID(user_id)
+    factory = get_session_factory()
+    async with factory() as db:
+        current_user_id.set(user_id)
+        await _set_rls_context(db, user_id)
+        agent_id = await _active_agent(db, uid, session_id)
+        # Serialize check and mutation, including ownership/scope changes.
+        memory = await db.scalar(
+            select(Memory).where(
+                Memory.id == memory_id,
+                Memory.user_id == uid,
+                memory_scope(Memory, agent_id, include_shared=True),
+            ).with_for_update().execution_options(populate_existing=True)
         )
-    return f"Memory saved to {layer} ({layer_label}), id: {memory.id}"
+        if memory is None:
+            raise ValueError("Memory not found or outside the current user's/agent's scope")
+        if memory.version != version:
+            raise ValueError("Memory version conflict; reread with memory_read before retrying")
+        before = memory_reference(memory)
+        try:
+            if delete:
+                await MemoryService.delete_memory(db, memory_id, uid)
+                result = {"action": "deleted", "memory": before}
+            elif memory.content == content.strip():
+                result = {"action": "skipped", "memory": before}
+            else:
+                memory = await MemoryService.update_memory(
+                    db, memory_id, uid, content=content.strip(), expected_version=version,
+                )
+                result = {"action": "updated", "memory": memory_reference(memory), "before": before}
+            await db.commit()
+        except HTTPException as exc:
+            raise ValueError(str(exc.detail)) from exc
+    return json.dumps(result, ensure_ascii=False)
+
+
+async def handle_memory_update(arguments: dict, user_id: str, session_id: str, **kwargs) -> str:
+    return await _mutate_memory(arguments, user_id, session_id, delete=False)
+
+
+async def handle_memory_delete(arguments: dict, user_id: str, session_id: str, **kwargs) -> str:
+    return await _mutate_memory(arguments, user_id, session_id, delete=True)
 
 
 # Registry mapping tool_name -> handler function
 MEMORY_HANDLERS: dict[str, Callable] = {
     "memory_read": handle_memory_read,
     "memory_write": handle_memory_write,
+    "memory_update": handle_memory_update,
+    "memory_delete": handle_memory_delete,
 }

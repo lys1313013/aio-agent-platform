@@ -12,7 +12,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import CurrentUser
-from aio_agent_platform.cron_jobs.service import CronJobService
+from aio_agent_platform.core.execution_scope import ExecutionAccessError
+from aio_agent_platform.cron_jobs.service import CronJobConflict, CronJobService
 from aio_agent_platform.db.connection import get_db
 from aio_agent_platform.db.models import ChannelConfig, CronJob, CronJobRun
 
@@ -65,6 +66,8 @@ class CronJobOut(BaseModel):
 
 
 class CronJobCreate(BaseModel):
+    request_id: UUID | None = None
+    allow_duplicate: bool = False
     name: str = Field(..., min_length=1, max_length=256)
     agent_id: UUID | None = None
     cron_expr: str | None = Field(default=None, max_length=128)
@@ -153,19 +156,27 @@ async def create_cron_job(
     if req.channel_id is not None:
         await _validate_channel(db, req.channel_id, user.tenant_id)
 
-    job = await CronJobService.create_job(
-        db=db,
-        tenant_id=user.tenant_id,
-        user_id=user.id,
-        name=req.name,
-        agent_id=req.agent_id,
-        message=req.message,
-        cron_expr=req.cron_expr,
-        run_at=req.run_at,
-        task_config=req.task_config,
-        channel_id=req.channel_id,
-        is_active=req.is_active,
-    )
+    try:
+        job = await CronJobService.create_job(
+            db=db,
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+            name=req.name,
+            agent_id=req.agent_id,
+            message=req.message,
+            cron_expr=req.cron_expr,
+            run_at=req.run_at,
+            task_config=req.task_config,
+            channel_id=req.channel_id,
+            is_active=req.is_active,
+            request_id=req.request_id, allow_duplicate=req.allow_duplicate,
+        )
+    except ExecutionAccessError as error:
+        raise HTTPException(403, str(error)) from error
+    except CronJobConflict as error:
+        raise HTTPException(409, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     await db.commit()
 
     scheduler = getattr(request.app.state, "scheduler", None)
@@ -252,20 +263,27 @@ async def update_cron_job(
     """Update a cron job."""
     if req.channel_id is not None:
         await _validate_channel(db, req.channel_id, user.tenant_id)
-    job = await CronJobService.update_job(
-        db=db,
-        job_id=job_id,
-        tenant_id=user.tenant_id,
-        name=req.name,
-        agent_id=req.agent_id,
-        message=req.message,
-        cron_expr=req.cron_expr,
-        run_at=req.run_at,
-        task_config=req.task_config,
-        channel_id=req.channel_id,
-        clear_channel="channel_id" in req.model_fields_set and req.channel_id is None,
-        is_active=req.is_active,
-    )
+    try:
+        job = await CronJobService.update_job(
+            db=db,
+            job_id=job_id,
+            tenant_id=user.tenant_id,
+            name=req.name,
+            agent_id=req.agent_id,
+            message=req.message,
+            cron_expr=req.cron_expr,
+            run_at=req.run_at,
+            task_config=req.task_config,
+            channel_id=req.channel_id,
+            clear_channel="channel_id" in req.model_fields_set and req.channel_id is None,
+            is_active=req.is_active,
+        )
+    except ExecutionAccessError as error:
+        raise HTTPException(403, str(error)) from error
+    except CronJobConflict as error:
+        raise HTTPException(409, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     if not job:
         raise HTTPException(status_code=404, detail="Cron job not found")
     await db.commit()

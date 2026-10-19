@@ -9,11 +9,11 @@ import structlog
 from sqlalchemy import or_, select
 
 from aio_agent_platform.core.context import current_agent_id
+from aio_agent_platform.core.execution_scope import resolve_execution_tenant
 from aio_agent_platform.db.connection import get_session_factory
 from aio_agent_platform.db.models import (
     AgentGraphKnowledgeBase,
     GraphKnowledgeBase,
-    User,
 )
 from aio_agent_platform.graph_knowledge.retrieval import retrieve_subgraph
 
@@ -36,7 +36,7 @@ async def handle_graph_retrieval(
 
     factory = get_session_factory()
     async with factory() as db:
-        tenant_id = await db.scalar(select(User.tenant_id).where(User.id == UUID(user_id)))
+        tenant_id = await resolve_execution_tenant(db, UUID(user_id))
         if not tenant_id:
             return "Error: user tenant not found"
 

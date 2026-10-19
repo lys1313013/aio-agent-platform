@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   ClockCircleOutlined,
   PlusOutlined,
@@ -31,6 +31,7 @@ import type { CronJob, Agent, Channel, CronJobRun } from '@/lib/types';
 import { useAuthStore } from '@/stores/authStore';
 import { Navigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
+import { cronToLabel, storedCronForEditing } from '@/lib/cron';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -57,7 +58,9 @@ const toBeijingLocalInput = (iso: string): string => {
 };
 
 export default function CronJobsPage() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
+  const creation = useRef<{ payload: string; id: string } | null>(null);
+  const saveInFlight = useRef(false);
   const role = useAuthStore((s) => s.role);
   const isAdmin = role === 'admin' || role === 'superadmin';
 
@@ -108,12 +111,13 @@ export default function CronJobsPage() {
   }, [fetchData]);
 
   const openModal = (job?: CronJob) => {
+    creation.current = null;
     if (job) {
       setEditingJob(job);
       form.setFieldsValue({
         name: job.name,
         agent_id: job.agent_id || undefined,
-        cron_expr: job.cron_expr || '',
+        cron_expr: job.cron_expr ? storedCronForEditing(job.cron_expr) : '',
         run_at: job.run_at ? toBeijingLocalInput(job.run_at) : '',
         message: job.message || '',
         task_config_json: job.task_config && Object.keys(job.task_config).length > 0
@@ -131,6 +135,8 @@ export default function CronJobsPage() {
   };
 
   const handleSave = async () => {
+    if (saveInFlight.current) return;
+    saveInFlight.current = true;
     try {
       const values = await form.validateFields();
       let taskConfig: Record<string, unknown> = {};
@@ -159,7 +165,21 @@ export default function CronJobsPage() {
         await cronJobsApi.update(editingJob.id, payload);
         message.success('任务已更新');
       } else {
-        await cronJobsApi.create(payload);
+        let allowDuplicate = false;
+        if (jobs.some(j => j.name === payload.name && j.is_active === payload.is_active)) {
+          allowDuplicate = await new Promise<boolean>(resolve => modal.confirm({
+            title: '已存在同名任务',
+            content: '配置完全相同的任务会被拒绝重复创建。若配置不同，是否仍需保留两条任务？',
+            okText: '保留两条不同配置的任务', cancelText: '返回修改',
+            onOk: () => { resolve(true); }, onCancel: () => { resolve(false); },
+          }));
+          if (!allowDuplicate) return;
+        }
+        const signature = JSON.stringify(payload);
+        if (creation.current?.payload !== signature) {
+          creation.current = { payload: signature, id: crypto.randomUUID() };
+        }
+        await cronJobsApi.create({ ...payload, request_id: creation.current.id, allow_duplicate: allowDuplicate });
         message.success('任务已创建');
       }
       setModalOpen(false);
@@ -168,6 +188,7 @@ export default function CronJobsPage() {
       if (err?.errorFields) return;
       message.error(err.message || '操作失败');
     } finally {
+      saveInFlight.current = false;
       setSaving(false);
     }
   };
@@ -250,31 +271,6 @@ export default function CronJobsPage() {
     if (!channelId) return '';
     const channel = channels.find((c) => c.id === channelId);
     return channel ? channel.name : channelId.slice(0, 8) + '...';
-  };
-
-  const cronToLabel = (expr: string | null | undefined): string => {
-    if (!expr) return '';
-    const parts = expr.trim().split(/\s+/);
-    if (parts.length !== 5) return expr;
-    const [min, hour, day, month, dow] = parts;
-    if (min === '*' && hour === '*' && day === '*' && month === '*' && dow === '*') {
-      return '每分钟';
-    }
-    if (hour === '*' && day === '*' && month === '*' && dow === '*') {
-      return `每 ${min} 分钟`;
-    }
-    if (day === '*' && month === '*' && dow === '*') {
-      return `每天 ${hour}:${min.padStart(2, '0')}`;
-    }
-    if (month === '*' && dow === '*') {
-      return `每月 ${day} 日 ${hour}:${min.padStart(2, '0')}`;
-    }
-    if (dow !== '*') {
-      const days = ['日', '一', '二', '三', '四', '五', '六'];
-      const dows = dow.split(',').map((d: string) => days[parseInt(d)] || d).join(',');
-      return `每周${dows} ${hour}:${min.padStart(2, '0')}`;
-    }
-    return expr;
   };
 
   const formatTime = (t: string | null): string => {
@@ -535,7 +531,7 @@ export default function CronJobsPage() {
           <Form.Item
             name="cron_expr"
             label="Cron 表达式"
-            tooltip="标准 5 字段 cron: 分 时 日 月 周。时间为北京时间 (UTC+8)，直接填写，无需换算。留空则使用单次执行时间。"
+            tooltip="标准 5 字段 cron: 分 时 日 月 周。0/7=周日，1=周一；推荐 sun、mon-fri。北京时间 (UTC+8)。留空则使用单次执行时间。"
           >
             <Input placeholder="0 16 * * * (每天北京时间 16:00)" />
           </Form.Item>

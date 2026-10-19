@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from jinja2 import Environment, FileSystemLoader
 
 from aio_agent_platform.core.context import ContextBudget, estimate_tokens
+from aio_agent_platform.memory.presentation import format_memory
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ _env = Environment(
     trim_blocks=True,
     lstrip_blocks=True,
 )
+_env.filters["memory_record"] = format_memory
 
 # Max L1 memories to include when under budget pressure
 _MAX_L1_MEMORIES = 10
@@ -81,7 +83,7 @@ def build_system_prompt(
     """
     if agent_prompt:
         # Use agent's custom prompt as base, then append memories/skills context
-        parts = [agent_prompt, _env.get_template("artifact_delivery.j2").render(), _env.get_template("skill_authoring.j2").render()]
+        parts = [agent_prompt, _env.get_template("artifact_delivery.j2").render(), _env.get_template("skill_authoring.j2").render(), _env.get_template("memory_usage.j2").render()]
 
         if user_portrait:
             parts.append("\n## 用户画像 (User Portrait)")
@@ -92,13 +94,13 @@ def build_system_prompt(
             persistent_memories = _trim_memories(persistent_memories)
             parts.append("\n## User Context (from memory)")
             for memory in persistent_memories:
-                parts.append(f"- {memory.content}")
+                parts.append(f"- {format_memory(memory)}")
 
         if relevant_memories:
             relevant_memories = _trim_relevant_memories(relevant_memories)
             parts.append("\n## Relevant Memories")
             for memory in relevant_memories:
-                parts.append(f"- [{memory.layer}] {memory.content}")
+                parts.append(f"- {format_memory(memory)}")
 
         if daily_memories:
             parts.append(_build_daily_section(_trim_daily_memories(daily_memories)))

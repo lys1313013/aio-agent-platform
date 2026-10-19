@@ -60,6 +60,7 @@ from aio_agent_platform.core.chat import (
 )
 from aio_agent_platform.core.chat_history import ChatTurnRecorder
 from aio_agent_platform.core.context import prepare_context
+from aio_agent_platform.core.execution_scope import bind_execution_scope, require_execution_user
 from aio_agent_platform.core.task_event_log import log_event
 from aio_agent_platform.core.task_registry import task_finished, task_started, task_tool
 from aio_agent_platform.db import Message
@@ -632,8 +633,9 @@ class ChannelInboundPipeline:
             # 渠道配置实时从 DB 读取，不缓存进程内存：管理后台更换 agent 等
             # 变更会立即生效，避免使用启动时缓存的过期配置。
             fresh_channel = await db.get(ChannelConfig, self.channel.id)
-            if fresh_channel is not None:
-                self.channel = fresh_channel
+            if fresh_channel is None or fresh_channel.status != "enabled":
+                return
+            self.channel = fresh_channel
             ctx = await self._resolve_context(db, event)
             text = event.text.strip()
 
@@ -646,29 +648,31 @@ class ChannelInboundPipeline:
                     await self._handle_unbound_guide(event)
                 return
 
-            # Set RLS context for the rest of the request.
-            current_user_id.set(str(ctx.user_id))
+            await require_execution_user(db, ctx.user_id, self.channel.tenant_id)
+            with bind_execution_scope(ctx.user_id, self.channel.tenant_id, agent_id=self.channel.agent_id):
+                # Set RLS context for the rest of the request.
+                current_user_id.set(str(ctx.user_id))
 
-            # 5. Command interception.
-            if text == "/bind":
-                await self._handle_bind(db, event, ctx)
-                return
-            if text in ("/new", "/reset", "/clear"):
-                await self._handle_new(db, event, ctx)
-                return
-            if text == "/help":
-                await self._handle_help(db, event, ctx)
-                return
-            if text.startswith("/") and await self._handle_unified_command(db, event, ctx, text):
-                return
+                # 5. Command interception.
+                if text == "/bind":
+                    await self._handle_bind(db, event, ctx)
+                    return
+                if text in ("/new", "/reset", "/clear"):
+                    await self._handle_new(db, event, ctx)
+                    return
+                if text == "/help":
+                    await self._handle_help(db, event, ctx)
+                    return
+                if text.startswith("/") and await self._handle_unified_command(db, event, ctx, text):
+                    return
 
-            # 6. File/image message: download + store, wait for next text message.
-            if event.attachment is not None:
-                await self._handle_attachment(db, event, ctx)
-                return
+                # 6. File/image message: download + store, wait for next text message.
+                if event.attachment is not None:
+                    await self._handle_attachment(db, event, ctx)
+                    return
 
-            # 7. Drive AgentLoop.
-            await self._drive_agent(db, event, ctx)
+                # 7. Drive AgentLoop.
+                await self._drive_agent(db, event, ctx)
 
     # --- Context resolution ---
 
@@ -791,7 +795,7 @@ class ChannelInboundPipeline:
         from aio_agent_platform.interface.commands.dispatcher import dynamic_commands
         from aio_agent_platform.interface.commands.registry import registry
 
-        user = await db.get(User, UUID(ctx.user_id))
+        user = await db.get(User, UUID(str(ctx.user_id)))
         cmds = registry.list_for(user) if user else registry.all()
         dyn = await dynamic_commands(db, ctx.user_id)
         known = {c.name for c in cmds}
@@ -839,14 +843,15 @@ class ChannelInboundPipeline:
         ):
             return False  # unknown command → let the agent handle it
 
-        user = await db.get(User, UUID(ctx.user_id))
+        user = await db.get(User, UUID(str(ctx.user_id)))
         if user is None:
             return False
         session = await db.get(ChatSession, ctx.session_id)
 
         cmd_ctx = CommandContext(
             user=user,
-            user_id=ctx.user_id,
+            execution_tenant_id=self.channel.tenant_id,
+            user_id=str(ctx.user_id),
             db=db,
             raw=text,
             session_id=str(ctx.session_id),
@@ -859,6 +864,19 @@ class ChannelInboundPipeline:
         # session (the /switch handler already validated ownership).
         switch_session_id = (result.data or {}).get("switch_session_id")
         if switch_session_id:
+            from aio_agent_platform.core.execution_scope import (
+                ExecutionAccessError,
+                resolve_background_tenant,
+            )
+
+            try:
+                await resolve_background_tenant(
+                    db, UUID(str(ctx.user_id)), session_id=UUID(switch_session_id),
+                    tenant_id=self.channel.tenant_id,
+                )
+            except ExecutionAccessError:
+                await self.adapter.send(event, "无法切换：目标会话不属于渠道租户或已无访问权限。")
+                return True
             await db.execute(
                 update(ChannelSessionMapping)
                 .where(
@@ -979,7 +997,8 @@ class ChannelInboundPipeline:
             if pending_refs else event.text
         )
 
-        agent = await load_agent(db, self.channel.agent_id, tenant_id=self.channel.tenant_id)
+        user = await require_execution_user(db, ctx.user_id, self.channel.tenant_id)
+        agent = await load_agent(db, self.channel.agent_id, user=user, tenant_id=self.channel.tenant_id)
         if agent is None:
             await self.adapter.send(event, "⚠️ 渠道绑定的智能体不可用，请联系管理员。")
             return
@@ -1032,7 +1051,7 @@ class ChannelInboundPipeline:
 
         system_prompt = await build_system_prompt_with_memories(
             db, ctx.user_id, user_message_for_llm, tools_list, agent=agent,
-            workspace_files=pending_refs or None,
+            workspace_files=pending_refs or None, tenant_id=self.channel.tenant_id,
         )
 
         history, context_summary = await load_conversation_history(db, ctx.session_id)
@@ -1053,6 +1072,7 @@ class ChannelInboundPipeline:
             workspace_id=workspace_id,
             workspace_slug=workspace_slug,
         )
+        agent_loop.execution_agent_id = agent.id
 
         prepared_messages, _ = await prepare_context(
             system_prompt=system_prompt,
@@ -1207,6 +1227,8 @@ class ChannelInboundPipeline:
             event.text,
             final_output,
             enable=agent.enable_memory_extraction if agent else True,
+            tenant_id=self.channel.tenant_id,
+            agent_id=agent.id,
         )
         summary_task = asyncio.create_task(
             update_context_summary(

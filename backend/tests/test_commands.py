@@ -10,7 +10,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.auth.dependencies import get_current_user
+from aio_agent_platform.auth.dependencies import get_current_user, get_execution_user
 from aio_agent_platform.core.chat import load_conversation_history
 from aio_agent_platform.db import Session
 from aio_agent_platform.db.models import (
@@ -20,6 +20,8 @@ from aio_agent_platform.db.models import (
     Memory,
     Message,
     Skill,
+    Tenant,
+    TenantMembership,
     User,
 )
 from aio_agent_platform.interface.api import app
@@ -89,13 +91,16 @@ async def command_user(client: AsyncClient, db_session: AsyncSession):
         role="user",
         is_active=True,
     )
-    db_session.add(user)
+    tenant = Tenant(id=uuid4(), name="commands", slug=str(uuid4()))
+    user.tenant_id = tenant.id
+    db_session.add_all([tenant, user, TenantMembership(user_id=user.id, tenant_id=tenant.id)])
     await db_session.flush()
 
     async def override_current_user():
         return user
 
     app.dependency_overrides[get_current_user] = override_current_user
+    app.dependency_overrides[get_execution_user] = override_current_user
     try:
         yield client, db_session, user
     finally:
@@ -122,13 +127,13 @@ async def test_api_commands_includes_dynamic_skill(command_user):
 
 
 async def test_api_commands_only_active_models(command_user):
-    client, db_session, _user = command_user
-    provider = LLMProvider(name="p", provider_type="openai")
+    client, db_session, user = command_user
+    provider = LLMProvider(name="p", provider_type="openai", tenant_id=user.tenant_id)
     db_session.add(provider)
     await db_session.flush()
     db_session.add_all([
-        LLMModel(provider_id=provider.id, name="active-model", model_name="a", is_active=True, is_default=True),
-        LLMModel(provider_id=provider.id, name="inactive-model", model_name="b", is_active=False),
+        LLMModel(provider_id=provider.id, tenant_id=user.tenant_id, name="active-model", model_name="a", is_active=True, is_default=True),
+        LLMModel(provider_id=provider.id, tenant_id=user.tenant_id, name="inactive-model", model_name="b", is_active=False),
     ])
     await db_session.flush()
     resp = await client.get("/api/models")
@@ -256,6 +261,7 @@ async def admin_user(client: AsyncClient, db_session: AsyncSession):
         return user
 
     app.dependency_overrides[get_current_user] = override_current_user
+    app.dependency_overrides[get_execution_user] = override_current_user
     try:
         yield client, db_session, user
     finally:
@@ -319,10 +325,10 @@ async def test_forget_by_uuid_still_works(command_user):
 
 async def test_model_switch_sets_session_model(command_user):
     _client, db, user = command_user
-    provider = LLMProvider(name="p", provider_type="openai")
+    provider = LLMProvider(name="p", provider_type="openai", tenant_id=user.tenant_id)
     db.add(provider)
     await db.flush()
-    model = LLMModel(provider_id=provider.id, name="m1", model_name="m1", is_active=True)
+    model = LLMModel(provider_id=provider.id, tenant_id=user.tenant_id, name="m1", model_name="m1", is_active=True)
     db.add(model)
     await db.flush()
     session = Session(user_id=user.id, title="s")

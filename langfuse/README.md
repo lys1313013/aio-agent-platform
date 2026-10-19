@@ -58,6 +58,21 @@ LANGFUSE_SECRET_KEY=填写本目录.env中的LANGFUSE_INIT_PROJECT_SECRET_KEY
 
 ## 查看状态与停止
 
+### ClickHouse 诊断日志保留
+
+`clickhouse-config/log-retention.xml` 以只读方式挂载：`system.trace_log` 保留 1 天，`system.text_log` 保留 7 天且仅记录 warning 及以上级别。TTL 通过后台合并清理过期数据，不保证到期立即释放磁盘。这些设置不影响 Langfuse 业务表。
+
+已有部署首次启用或修改保留期限时，还需同步现有表的 TTL（不要对业务表执行）：
+
+```sql
+ALTER TABLE system.trace_log MODIFY TTL event_time + INTERVAL 1 DAY;
+ALTER TABLE system.text_log MODIFY TTL event_time + INTERVAL 7 DAY;
+```
+
+随后执行 `docker compose -f docker-compose-langfuse.yml up -d --no-deps clickhouse` 应用配置挂载。操作会短暂重启 ClickHouse，原数据卷保留；不会自动清空已有日志。
+
+### 容器管理
+
 ```bash
 docker compose -f docker-compose-langfuse.yml ps
 docker compose -f docker-compose-langfuse.yml logs --tail=100 -f langfuse-web langfuse-worker

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from uuid import UUID
 
 ArgKind = Literal["str", "int", "cron", "uuid", "select"]
 
@@ -57,6 +58,11 @@ class CommandContext:
     session: Any | None = None
     args: dict[str, Any] = field(default_factory=dict)
     tool_executor: Any | None = None
+    execution_tenant_id: UUID | None = None
+
+    @property
+    def tenant_id(self) -> UUID:
+        return self.execution_tenant_id or self.user.tenant_id
 
 
 @dataclass

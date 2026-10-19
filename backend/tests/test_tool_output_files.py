@@ -203,7 +203,7 @@ async def test_loop_and_history_keep_preview_and_file_reference(setup, size):
             yield LLMChunk(type="text_delta", content="done")
         yield LLMChunk(type="done", usage={})
 
-    loop = AgentLoop(
+    loop = AgentLoop(execution_tenant_id=uuid4(),
         provider=SimpleNamespace(model="test", stream=stream), tool_executor=executor,
         system_prompt="test", max_iterations=2, trust_level="auto_all",
         workspace_id=uuid4(), workspace_slug="project",

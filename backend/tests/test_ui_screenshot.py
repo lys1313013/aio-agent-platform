@@ -12,6 +12,7 @@ Covers:
 import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 from aio_agent_platform.core.agent import AgentLoop
 from aio_agent_platform.core.context import (
@@ -189,7 +190,7 @@ def _make_screenshot_loop(queue, vision=True):
     ))
     executor = MagicMock()
     executor.registry = registry
-    return AgentLoop(provider=provider, tool_executor=executor, event_queue=queue)
+    return AgentLoop(execution_tenant_id=uuid4(), provider=provider, tool_executor=executor, event_queue=queue)
 
 
 async def _aiter(items):

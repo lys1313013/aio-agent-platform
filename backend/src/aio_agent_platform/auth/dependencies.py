@@ -5,18 +5,17 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import exists, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
 
 from aio_agent_platform.auth.jwt_handler import TokenExpiredError, TokenPayload, decode_token
-from aio_agent_platform.db import TenantMembership, User
+from aio_agent_platform.db import User
 from aio_agent_platform.db.connection import current_user_id, get_db
 
 security = HTTPBearer()
 
 
-async def get_current_user(
+async def get_execution_user(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
@@ -45,46 +44,28 @@ async def get_current_user(
     # Set RLS context variable
     current_user_id.set(payload.sub)
 
-    # Fetch user from DB. Fold tenant load + membership check into a single
-    # round trip (remote DB: each query costs a full RTT).
+    # Identity authentication is independent of the mutable UI tenant.
     try:
         user_id = UUID(payload.sub)
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-        ) from e
-
-    result = await db.execute(
-        select(
-            User,
-            exists().where(
-                TenantMembership.user_id == User.id,
-                TenantMembership.tenant_id == User.tenant_id,
-            ).label("has_membership"),
-        )
-        .options(joinedload(User.tenant))
-        .where(User.id == user_id)
-    )
-    row = result.one_or_none()
-    if not row:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive",
-        )
-    user, has_membership = row
-    if not user.is_active or not user.tenant.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive",
-        )
-    if not has_membership:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Active tenant membership not found",
-        )
-
+        raise HTTPException(status_code=401, detail="Invalid token") from e
+    user = await db.scalar(select(User).where(User.id == user_id, User.is_active))
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
     return user
+
+
+async def get_current_user(
+    user: Annotated[User, Depends(get_execution_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> User:
+    """Management/new-object entry points additionally require the selected tenant."""
+    from aio_agent_platform.core.execution_scope import ExecutionAccessError, require_execution_user
+
+    try:
+        return await require_execution_user(db, user.id, user.tenant_id)
+    except ExecutionAccessError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
 
 
 async def require_admin(
@@ -116,3 +97,6 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 AdminUser = Annotated[User, Depends(require_admin)]
 SuperAdminUser = Annotated[User, Depends(require_superadmin)]
 DbSession = Annotated[AsyncSession, Depends(get_db)]
+
+# Object execution callers must validate membership against the object itself.
+ExecutionUser = Annotated[User, Depends(get_execution_user)]

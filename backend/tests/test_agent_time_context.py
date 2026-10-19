@@ -46,7 +46,7 @@ async def test_clock_refreshes_after_tools_retries_and_new_turns(monkeypatch, us
     executor.execute = AsyncMock(return_value=ToolResult(
         tool_call_id="call-1", name="lookup", arguments={}, output="查询结果", success=True,
     ))
-    loop = agent_module.AgentLoop(
+    loop = agent_module.AgentLoop(execution_tenant_id=uuid4(),
         provider=Mock(model="test-model", stream=stream),
         tool_executor=executor,
         system_prompt="Existing custom prompt with an older clock",

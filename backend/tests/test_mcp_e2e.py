@@ -469,7 +469,7 @@ class TestLLMSeesMCPTools:
         ]
         provider = _ScriptedLLMProvider(scripted_tool_calls=scripted)
 
-        loop = AgentLoop(
+        loop = AgentLoop(execution_tenant_id=uuid.uuid4(),
             provider=provider,
             tool_executor=executor,
             system_prompt="You are a test agent.",

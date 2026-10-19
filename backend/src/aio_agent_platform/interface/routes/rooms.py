@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.auth.dependencies import CurrentUser
+from aio_agent_platform.auth.dependencies import CurrentUser, ExecutionUser
 from aio_agent_platform.db.connection import get_db, get_session_factory
 from aio_agent_platform.db.models import (
     ChatRoom,
@@ -51,21 +51,21 @@ async def create_room(req: RoomCreate, user: CurrentUser, db: Db):
 
 
 @router.get("/{room_id}")
-async def get_room(room_id: UUID, user: CurrentUser, db: Db, before: int | None = Query(None, ge=1)):
+async def get_room(room_id: UUID, user: ExecutionUser, db: Db, before: int | None = Query(None, ge=1)):
     room = await service.owned_room(db, room_id, user, lock=True)
     await service.expire_stale_run(db, room)
     return await service.room_detail(db, room, user, before)
 
 
 @router.patch("/{room_id}")
-async def update_room(room_id: UUID, req: RoomUpdate, user: CurrentUser, db: Db):
+async def update_room(room_id: UUID, req: RoomUpdate, user: ExecutionUser, db: Db):
     room = await service.owned_room(db, room_id, user, lock=True)
     await service.update_room(db, room, user, req)
     return await service.room_detail(db, room, user)
 
 
 @router.get("/{room_id}/messages/{message_id}")
-async def get_message(room_id: UUID, message_id: UUID, user: CurrentUser, db: Db):
+async def get_message(room_id: UUID, message_id: UUID, user: ExecutionUser, db: Db):
     from aio_agent_platform.db.models import ChatRoomMessage
     await service.owned_room(db, room_id, user)
     message = await db.scalar(select(ChatRoomMessage).where(
@@ -77,13 +77,13 @@ async def get_message(room_id: UUID, message_id: UUID, user: CurrentUser, db: Db
 
 
 @router.delete("/{room_id}", status_code=204)
-async def delete_room(room_id: UUID, user: CurrentUser, db: Db):
+async def delete_room(room_id: UUID, user: ExecutionUser, db: Db):
     room = await service.owned_room(db, room_id, user, lock=True)
     await service.delete_room(db, room)
 
 
 @router.post("/{room_id}/runs", status_code=202)
-async def send_message(room_id: UUID, req: RoomSend, request: Request, user: CurrentUser, db: Db):
+async def send_message(room_id: UUID, req: RoomSend, request: Request, user: ExecutionUser, db: Db):
     room = await service.owned_room(db, room_id, user, lock=True)
     run, created = await service.submit_run(db, room, user, req)
     await db.commit()  # Worker never sees an uncommitted queue.
@@ -93,7 +93,7 @@ async def send_message(room_id: UUID, req: RoomSend, request: Request, user: Cur
 
 
 @router.post("/{room_id}/tasks/{task_id}/retry", status_code=202)
-async def retry_member(room_id: UUID, task_id: UUID, req: RoomRetry, request: Request, user: CurrentUser, db: Db):
+async def retry_member(room_id: UUID, task_id: UUID, req: RoomRetry, request: Request, user: ExecutionUser, db: Db):
     room = await service.owned_room(db, room_id, user, lock=True)
     run, created = await service.retry_task(db, room, user, task_id, req)
     await db.commit()
@@ -103,7 +103,7 @@ async def retry_member(room_id: UUID, task_id: UUID, req: RoomRetry, request: Re
 
 
 @router.post("/{room_id}/runs/{run_id}/stop")
-async def stop_run(room_id: UUID, run_id: UUID, user: CurrentUser, db: Db):
+async def stop_run(room_id: UUID, run_id: UUID, user: ExecutionUser, db: Db):
     room = await service.owned_room(db, room_id, user, lock=True)
     run = await db.scalar(select(ChatRoomRun).where(ChatRoomRun.id == run_id, ChatRoomRun.room_id == room.id))
     if not run:
@@ -129,7 +129,7 @@ async def store_confirmation(db, room, task, req):
 
 
 @router.post("/{room_id}/tasks/{task_id}/respond")
-async def respond(room_id: UUID, task_id: UUID, req: RoomConfirmation, user: CurrentUser, db: Db):
+async def respond(room_id: UUID, task_id: UUID, req: RoomConfirmation, user: ExecutionUser, db: Db):
     room = await service.owned_room(db, room_id, user, lock=True)
     task = await db.scalar(select(ChatRoomTask).where(ChatRoomTask.id == task_id, ChatRoomTask.room_id == room.id))
     if not task:
@@ -138,10 +138,10 @@ async def respond(room_id: UUID, task_id: UUID, req: RoomConfirmation, user: Cur
 
 
 @router.get("/{room_id}/events")
-async def events(room_id: UUID, request: Request, user: CurrentUser, db: Db,
+async def events(room_id: UUID, request: Request, user: ExecutionUser, db: Db,
                  after_revision: int = Query(-1, ge=-1)):
-    await service.owned_room(db, room_id, user)
-    user_id, tenant_id = user.id, user.tenant_id
+    room = await service.owned_room(db, room_id, user)
+    user_id, tenant_id = user.id, room.tenant_id
     await db.commit()
 
     async def stream():
@@ -155,7 +155,7 @@ async def events(room_id: UUID, request: Request, user: CurrentUser, db: Db,
                 membership = await stream_db.scalar(select(TenantMembership.user_id).where(
                     TenantMembership.user_id == user_id, TenantMembership.tenant_id == tenant_id,
                 ))
-                if (not current or not current.is_active or current.tenant_id != tenant_id
+                if (not current or not current.is_active
                         or not tenant or not tenant.is_active or not membership):
                     yield 'data: {"type":"access_revoked"}\n\n'
                     return

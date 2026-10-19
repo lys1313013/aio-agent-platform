@@ -11,13 +11,14 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import structlog
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.core.agent import AgentLoop, AgentStep, DelegationContext
 from aio_agent_platform.core.config import settings
 from aio_agent_platform.core.context import current_agent_id
+from aio_agent_platform.core.execution_scope import execution_tenant_id, require_execution_user
 from aio_agent_platform.core.prompt import build_system_prompt
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
 from aio_agent_platform.db.models import (
@@ -26,7 +27,6 @@ from aio_agent_platform.db.models import (
     Delegation,
     LLMModel,
     Session,
-    User,
 )
 from aio_agent_platform.llm import create_provider
 from aio_agent_platform.memory.service import MemoryService
@@ -47,6 +47,7 @@ class DynamicSubAgent:
 
     id: UUID
     name: str
+    tenant_id: UUID
     description: str | None = None
     icon: str = "rocket"
     system_prompt: str | None = None
@@ -61,11 +62,12 @@ class DynamicSubAgent:
     children: list = field(default_factory=list)
 
 
-def _build_dynamic_agent(child_id: UUID, name: str, role_description: str) -> DynamicSubAgent:
+def _build_dynamic_agent(child_id: UUID, name: str, role_description: str, tenant_id: UUID) -> DynamicSubAgent:
     """Build an in-memory temporary sub-agent from a role description."""
     return DynamicSubAgent(
         id=child_id,
         name=name,
+        tenant_id=tenant_id,
         description=role_description or None,
     )
 
@@ -128,6 +130,11 @@ async def handle_delegate_task(
         current_user_id.set(user_id)
         await _set_rls_context(db, user_id)
 
+        tenant_id = execution_tenant_id(UUID(user_id)) or delegation.tenant_id
+        if tenant_id is None:
+            return "Error: delegation execution tenant is missing"
+        await require_execution_user(db, UUID(user_id), tenant_id)
+
         # 1. Resolve child agent: existing associated agent or dynamic temp agent
         is_dynamic = False
         if child_agent_id:
@@ -135,7 +142,7 @@ async def handle_delegate_task(
                 child_uuid = UUID(child_agent_id)
             except ValueError:
                 return f"Error: invalid child_agent_id format: {child_agent_id}"
-            child_agent = await _load_child_agent(db, child_uuid, parent_agent_id, UUID(user_id))
+            child_agent = await _load_child_agent(db, child_uuid, parent_agent_id, UUID(user_id), tenant_id)
             if not child_agent:
                 return f"Error: child agent {child_agent_id} not found or not related to parent"
             if not child_agent.is_active:
@@ -144,7 +151,7 @@ async def handle_delegate_task(
             is_dynamic = True
             child_uuid = uuid4()
             child_name = role_name or (role_description[:24] if role_description else "临时子智能体")
-            child_agent = _build_dynamic_agent(child_uuid, child_name, role_description)
+            child_agent = _build_dynamic_agent(child_uuid, child_name, role_description, tenant_id)
 
         # 2. Create delegation record
         delegation_record = Delegation(
@@ -228,6 +235,7 @@ async def handle_delegate_task(
             # 4. Create child AgentLoop (propagate workspace_id for nested delegation)
             child_delegation = DelegationContext(
                 parent_agent_id=child_uuid,
+                tenant_id=tenant_id,
                 delegation_depth=new_depth,
                 max_depth=max_depth,
                 event_queue=event_queue,
@@ -236,6 +244,7 @@ async def handle_delegate_task(
             )
 
             child_loop = AgentLoop(
+                execution_tenant_id=tenant_id,
                 provider=child_provider,
                 tool_executor=tool_executor,
                 system_prompt=child_system_prompt,
@@ -247,6 +256,8 @@ async def handle_delegate_task(
                 workspace_slug=workspace_slug,
                 allowed_tools={t.name for t in child_tools_list},
             )
+
+            child_loop.execution_agent_id = child_uuid
 
             # 5. Execute child agent
             user_input = task
@@ -329,7 +340,7 @@ async def handle_delegate_task(
 
 
 async def _load_child_agent(
-    db: AsyncSession, child_id: UUID, parent_id: UUID, user_id: UUID
+    db: AsyncSession, child_id: UUID, parent_id: UUID, user_id: UUID, tenant_id: UUID | None = None
 ) -> Agent | None:
     """Load child agent and validate the parent-child relationship."""
     # Check relationship exists
@@ -342,26 +353,14 @@ async def _load_child_agent(
     if not rel_result.scalar_one_or_none():
         return None
 
-    tenant_id = await db.scalar(select(User.tenant_id).where(User.id == user_id))
-    if not tenant_id:
-        return None
+    from aio_agent_platform.core.chat import load_agent
 
-    # Load child agent with relationships
-    result = await db.execute(
-        select(Agent)
-        .options(
-            selectinload(Agent.skills),
-            selectinload(Agent.model),
-            selectinload(Agent.children),
-            selectinload(Agent.knowledge_bases),
-        )
-        .where(
-            Agent.id == child_id,
-            Agent.tenant_id == tenant_id,
-            or_(Agent.visibility == "tenant", Agent.created_by == user_id),
-        )
-    )
-    return result.scalar_one_or_none()
+    tenant_id = tenant_id or execution_tenant_id(user_id)
+    if tenant_id is None:
+        return None
+    user = await require_execution_user(db, user_id, tenant_id)
+    return await load_agent(db, child_id, user=user, tenant_id=tenant_id)
+
 
 
 def _build_child_tools(
@@ -449,9 +448,7 @@ async def _build_child_system_prompt(
 
     # Load user portrait
     from aio_agent_platform.db import UserProfile
-    from aio_agent_platform.db.models import User
-    tenant_result = await db.execute(select(User.tenant_id).where(User.id == user_id))
-    tenant_id = tenant_result.scalar_one_or_none()
+    tenant_id = child_agent.tenant_id
     result = await db.execute(
         select(UserProfile).where(
             UserProfile.user_id == user_id,

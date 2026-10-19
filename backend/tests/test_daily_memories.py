@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.db.models import Memory, Session
+from aio_agent_platform.db.models import Memory, Session, Tenant, TenantMembership, User
 from aio_agent_platform.memory import daily as daily_module
 from aio_agent_platform.memory.daily import (
     DailyMemoryService,
@@ -19,6 +19,17 @@ from aio_agent_platform.memory.daily import (
 )
 
 TODAY = date(2026, 8, 10)
+
+
+async def _seed_scope(db, user_id, session_id=None):
+    tenant = Tenant(id=uuid4(), name="memory-test", slug=str(uuid4()))
+    db.add_all([tenant, User(id=user_id, username=str(user_id), email=f"{user_id}@test.local",
+                            password_hash="test", tenant_id=tenant.id),
+                TenantMembership(user_id=user_id, tenant_id=tenant.id)])
+    if session_id is not None:
+        db.add(Session(id=session_id, user_id=user_id))
+    await db.commit()
+    return tenant.id
 
 
 class TestExtractDates:
@@ -207,6 +218,7 @@ class TestConsolidateDay:
         user_id = uuid4()
         day = date(2026, 8, 9)
         session = await self._seed_day_activity(db_session, user_id, day)
+        tenant_id = await _seed_scope(db_session, user_id)
 
         payload = {
             "content": "- 完成了每日记忆功能的设计讨论",
@@ -218,7 +230,7 @@ class TestConsolidateDay:
             _fake_provider(payload),
         )
 
-        result = await DailyMemoryService.consolidate_day(user_id, day)
+        result = await DailyMemoryService.consolidate_day(user_id, day, tenant_id=tenant_id)
         assert result is not None
         assert result.date == day
         assert "每日记忆" in result.content
@@ -242,13 +254,14 @@ class TestConsolidateDay:
         user_id = uuid4()
         day = date(2026, 8, 9)
         await self._seed_day_activity(db_session, user_id, day)
+        tenant_id = await _seed_scope(db_session, user_id)
 
         monkeypatch.setattr(
             daily_module,
             "create_default_provider_for_user",
             _fake_provider({"content": "", "highlights": []}),
         )
-        result = await DailyMemoryService.consolidate_day(user_id, day)
+        result = await DailyMemoryService.consolidate_day(user_id, day, tenant_id=tenant_id)
         assert result is None
         assert await DailyMemoryService.get_by_date(db_session, user_id, day) is None
 
@@ -260,6 +273,7 @@ class TestAppendSessionSummary:
     ):
         user_id = uuid4()
         session_id = uuid4()
+        tenant_id = await _seed_scope(db_session, user_id, session_id)
         monkeypatch.setattr(
             daily_module,
             "create_default_provider_for_user",
@@ -272,7 +286,7 @@ class TestAppendSessionSummary:
         )
 
         result = await DailyMemoryService.append_session_summary(
-            user_id, session_id, "用户讨论了每日记忆方案设计"
+            user_id, session_id, "用户讨论了每日记忆方案设计", tenant_id=tenant_id
         )
         assert result is not None
         assert result.date == local_today()
@@ -302,8 +316,9 @@ class TestAppendSessionSummary:
         )
 
         new_session = uuid4()
+        tenant_id = await _seed_scope(db_session, user_id, new_session)
         result = await DailyMemoryService.append_session_summary(
-            user_id, new_session, "用户又聊了新内容"
+            user_id, new_session, "用户又聊了新内容", tenant_id=tenant_id
         )
         assert result is not None
         assert result.id == existing.id

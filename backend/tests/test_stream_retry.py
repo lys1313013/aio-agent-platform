@@ -8,6 +8,7 @@ was already streamed, the error propagates to avoid duplicate client output.
 import asyncio
 import uuid
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 import pytest
 
@@ -42,7 +43,7 @@ def _make_loop(stream_side_effects: list) -> AgentLoop:
 
     provider.stream = stream
 
-    return AgentLoop(
+    return AgentLoop(execution_tenant_id=uuid4(),
         provider=provider,
         tool_executor=MagicMock(),
         system_prompt="test",
@@ -104,7 +105,7 @@ class TestStreamDisconnectRetry:
             yield _done_chunk()
 
         provider.stream = stream
-        loop = AgentLoop(
+        loop = AgentLoop(execution_tenant_id=uuid4(),
             provider=provider,
             tool_executor=MagicMock(),
             system_prompt="test",
@@ -139,7 +140,7 @@ class TestStreamDisconnectRetry:
             yield _done_chunk()
 
         provider.stream = stream
-        loop = AgentLoop(
+        loop = AgentLoop(execution_tenant_id=uuid4(),
             provider=provider,
             tool_executor=MagicMock(),
             system_prompt="test",
@@ -218,7 +219,7 @@ class TestStreamDisconnectRetry:
 
         provider.stream = stream
 
-        loop = AgentLoop(
+        loop = AgentLoop(execution_tenant_id=uuid4(),
             provider=provider,
             tool_executor=MagicMock(),
             system_prompt="test",
@@ -252,7 +253,7 @@ class TestStreamDisconnectRetry:
 
         provider.stream = stream
 
-        loop = AgentLoop(
+        loop = AgentLoop(execution_tenant_id=uuid4(),
             provider=provider,
             tool_executor=MagicMock(),
             system_prompt="test",

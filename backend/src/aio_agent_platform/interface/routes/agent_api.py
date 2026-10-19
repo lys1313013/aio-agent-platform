@@ -15,11 +15,11 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload, with_loader_criteria
+from sqlalchemy.orm import selectinload
 
-from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser
+from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser, ExecutionUser
 from aio_agent_platform.core.agent import AgentLoop, AgentStep
 from aio_agent_platform.core.config import settings
 from aio_agent_platform.core.context import (
@@ -31,7 +31,7 @@ from aio_agent_platform.core.context import (
 from aio_agent_platform.core.prompt import build_system_prompt
 from aio_agent_platform.db import Message, Session
 from aio_agent_platform.db.connection import get_db
-from aio_agent_platform.db.models import Agent, AgentVersion, KnowledgeBase, LLMModel, User
+from aio_agent_platform.db.models import Agent, AgentVersion, LLMModel, User
 from aio_agent_platform.llm import LLMMessage, create_provider
 from aio_agent_platform.memory.service import MemoryService
 from aio_agent_platform.skills.service import SkillService
@@ -108,32 +108,10 @@ class AgentApiDoc(BaseModel):
 async def _load_agent_with_relations(
     db: AsyncSession, agent_id: UUID, user: User
 ) -> Agent | None:
-    """Load agent with skills, model, children, knowledge_bases."""
-    result = await db.execute(
-        select(Agent)
-        .options(
-            selectinload(Agent.skills),
-            selectinload(Agent.model),
-            selectinload(Agent.children),
-            selectinload(Agent.knowledge_bases),
-            with_loader_criteria(
-                KnowledgeBase,
-                (KnowledgeBase.tenant_id == user.tenant_id)
-                & or_(
-                    KnowledgeBase.visibility == "tenant",
-                    KnowledgeBase.created_by == user.id,
-                ),
-                include_aliases=True,
-            ),
-        )
-        .where(
-            Agent.id == agent_id,
-            Agent.is_active,
-            Agent.tenant_id == user.tenant_id,
-            or_(Agent.visibility == "tenant", Agent.created_by == user.id),
-        )
-    )
-    return result.scalar_one_or_none()
+    """Execution is scoped to the published agent, with membership and visibility checks."""
+    from aio_agent_platform.core.chat import load_execution_agent
+
+    return await load_execution_agent(db, agent_id, user)
 
 
 async def _get_active_version(db: AsyncSession, agent_id: UUID) -> AgentVersion | None:
@@ -201,6 +179,7 @@ async def _build_agent_loop_for_version(
     )
 
     return AgentLoop(
+        execution_tenant_id=tenant_id,
         provider=provider,
         tool_executor=tool_executor,
         system_prompt=system_prompt,
@@ -436,7 +415,7 @@ async def execute_agent(
     agent_id: UUID,
     req: ExecuteRequest,
     request: Request,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ExecuteResponse:
     """Synchronous one-shot execution of an agent.
@@ -531,7 +510,7 @@ async def _execute_agent_inner(
     profile_result = await db.execute(
         select(UserProfile).where(
             UserProfile.user_id == user.id,
-            UserProfile.tenant_id == user.tenant_id,
+            UserProfile.tenant_id == agent.tenant_id,
         )
     )
     user_profile = profile_result.scalar_one_or_none()
@@ -557,11 +536,13 @@ async def _execute_agent_inner(
     # Build agent loop
     agent_loop = await _build_agent_loop_for_version(
         tool_executor, system_prompt, db, config_snapshot,
-        tenant_id=user.tenant_id,
+        tenant_id=agent.tenant_id,
         workspace_id=workspace_id,
         workspace_slug=workspace_slug,
         allowed_tools={s["function"]["name"] for s in tools_schema},
     )
+
+    agent_loop.execution_agent_id = agent.id
 
     # Prepare context
     prepared_messages, _ = await prepare_context(
@@ -645,7 +626,7 @@ async def _execute_agent_inner(
 async def create_external_session(
     agent_id: UUID,
     req: CreateSessionRequest,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CreateSessionResponse:
     """Create a new session for external API calls (SSE streaming)."""
@@ -693,7 +674,7 @@ async def sse_chat(
     session_id: UUID,
     req: SseChatRequest,
     request: Request,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StreamingResponse:
     """SSE streaming chat for external API sessions.
@@ -761,7 +742,7 @@ async def sse_chat(
             profile_result = await db_session.execute(
                 select(UserProfile).where(
                     UserProfile.user_id == user.id,
-                    UserProfile.tenant_id == user.tenant_id,
+                    UserProfile.tenant_id == agent.tenant_id,
                 )
             )
             user_profile = profile_result.scalar_one_or_none()
@@ -787,11 +768,13 @@ async def sse_chat(
             # Build agent loop
             agent_loop = await _build_agent_loop_for_version(
                 tool_executor, system_prompt, db_session, config_snapshot,
-                tenant_id=user.tenant_id,
+                tenant_id=agent.tenant_id,
                 workspace_id=workspace_id,
                 workspace_slug=workspace_slug,
                 allowed_tools={s["function"]["name"] for s in tools_schema},
             )
+
+            agent_loop.execution_agent_id = agent.id
 
             # Prepare context
             prepared_messages, _ = await prepare_context(

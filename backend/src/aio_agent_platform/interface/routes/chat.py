@@ -28,7 +28,7 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from aio_agent_platform.auth.dependencies import CurrentUser
+from aio_agent_platform.auth.dependencies import CurrentUser, ExecutionUser
 from aio_agent_platform.auth.jwt_handler import TokenExpiredError, decode_token
 from aio_agent_platform.core import chat_runs
 from aio_agent_platform.core.agent import AgentStep, DelegationContext
@@ -41,20 +41,26 @@ from aio_agent_platform.core.chat import (
     _filter_tools_by_agent,
     _fire_memory_extraction,
     _inject_file_refs_into_message,
-    _load_agent,
     _load_conversation_history,
     _resolve_provider_type,
     _resolve_workspace,
     _update_context_summary,
+    load_chat_agent,
+    load_execution_agent,
     refresh_mcp_tools_for_agent,
 )
 from aio_agent_platform.core.chat_history import ChatTurnRecorder
 from aio_agent_platform.core.config import settings
 from aio_agent_platform.core.context import (
-    current_agent_id,
     emergency_compress,
     is_context_overflow_error,
     prepare_context,
+)
+from aio_agent_platform.core.execution_scope import (
+    ExecutionAccessError,
+    bind_execution_scope,
+    require_agent_tenant,
+    require_execution_user,
 )
 from aio_agent_platform.db import Message, Session
 from aio_agent_platform.db.connection import current_user_id, get_db, get_session_factory
@@ -471,18 +477,17 @@ async def upload_workspace_file(
 async def chat(
     req: ChatRequest,
     request: Request,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ChatResponse:
     """Non-streaming chat endpoint."""
     tool_executor: ToolExecutor = request.app.state.tool_executor
 
     # Load agent
-    agent = await _load_agent(db, req.agent_id, user)
+    agent = await load_chat_agent(db, req.agent_id, req.session_id, user)
+    execution_tenant = agent.tenant_id if agent else user.tenant_id
     if req.agent_id and not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    if agent:
-        current_agent_id.set(str(agent.id))
 
     # Get or create session
     session = None
@@ -510,7 +515,7 @@ async def chat(
     if agent_model_id:
         model_result = await db.execute(
             select(LLMModel).options(selectinload(LLMModel.provider)).where(
-                LLMModel.id == agent_model_id, LLMModel.tenant_id == user.tenant_id
+                LLMModel.id == agent_model_id, LLMModel.tenant_id == execution_tenant
             )
         )
         _resolved_model = model_result.scalar_one_or_none()
@@ -518,7 +523,7 @@ async def chat(
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == user.tenant_id)
+            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == execution_tenant)
             .limit(1)
         )
         _resolved_model = result.scalar_one_or_none()
@@ -540,7 +545,7 @@ async def chat(
         tool_executor, agent, extra_blacklist=set(FRONTEND_TOOL_NAMES)
     )
     system_prompt = await _build_system_prompt_with_memories(
-        db, user.id, req.message, tools_list, agent=agent,
+        db, user.id, req.message, tools_list, agent=agent, tenant_id=execution_tenant,
         workspace_files=_file_refs_to_dicts(req.file_attachments),
     )
 
@@ -562,7 +567,7 @@ async def chat(
         agent_temperature=agent_temperature,
         agent_max_iterations=agent_max_iterations,
         agent_enable_retry=agent_enable_retry,
-        tenant_id=user.tenant_id,
+        tenant_id=execution_tenant,
         delegation=delegation,
         workspace_id=workspace_id,
         workspace_slug=workspace_slug,
@@ -589,6 +594,8 @@ async def chat(
     else:
         refs = build_image_url_refs(_attachments_data)
         user_content = f"{user_message_for_llm}\n\n{refs}" if refs else user_message_for_llm
+
+    agent_loop.execution_agent_id = agent.id if agent else None
 
     # Prepare context with compression
     prepared_messages, _summary_generated = await prepare_context(
@@ -623,7 +630,7 @@ async def chat(
         )
     )
     if not prior_msg_count and (agent.enable_auto_title if agent else True):
-        title_task = asyncio.create_task(generate_session_title(req.message, user.tenant_id))
+        title_task = asyncio.create_task(generate_session_title(req.message, execution_tenant))
 
     # Shared event collection and persistence; REST only owns retry/response handling.
     turn = ChatTurnRecorder(session.id, user.id)
@@ -660,7 +667,8 @@ async def chat(
     # Fire-and-forget memory extraction
     _fire_memory_extraction(
         user.id, session.id, history, req.message, final_output,
-        enable=agent.enable_memory_extraction if agent else True,
+        enable=agent.enable_memory_extraction if agent else True, tenant_id=execution_tenant,
+        agent_id=agent.id if agent else None,
     )
 
     # Fire-and-forget context summary update
@@ -736,6 +744,15 @@ async def _handle_command_stream(
         await db.flush()
     session_id = session.id
 
+    try:
+        command_tenant = (
+            await require_agent_tenant(db, user.id, session.agent_id)
+            if session.agent_id else user.tenant_id
+        )
+        await require_execution_user(db, user.id, command_tenant)
+    except ExecutionAccessError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
     # Persist the user's command message (same shape as a normal chat message).
     _attachments_data = (
         [a.model_dump() for a in req.attachments] if req.attachments else None
@@ -753,6 +770,7 @@ async def _handle_command_stream(
 
     ctx = CommandContext(
         user=user,
+        execution_tenant_id=command_tenant,
         user_id=str(user.id),
         db=db,
         raw=req.message.strip(),
@@ -760,7 +778,8 @@ async def _handle_command_stream(
         session=session,
         tool_executor=getattr(request.app.state, "tool_executor", None),
     )
-    result = await dispatch(ctx)
+    with bind_execution_scope(user.id, command_tenant, agent_id=session.agent_id):
+        result = await dispatch(ctx)
 
     target_session_id = result.session_id or str(session_id)
     sys_msg = Message(
@@ -811,7 +830,7 @@ async def _handle_command_stream(
 async def chat_stream(
     req: ChatRequest,
     request: Request,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StreamingResponse:
     """Streaming chat via Server-Sent Events."""
@@ -833,11 +852,10 @@ async def chat_stream(
     )
 
     # Load agent
-    agent = await _load_agent(db, req.agent_id, user)
+    agent = await load_chat_agent(db, req.agent_id, req.session_id, user)
+    execution_tenant = agent.tenant_id if agent else user.tenant_id
     if req.agent_id and not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    if agent:
-        current_agent_id.set(str(agent.id))
     logger.debug(
         "stream_agent_loaded",
         agent_id=str(agent.id) if agent else None,
@@ -886,7 +904,7 @@ async def chat_stream(
     if agent_model_id:
         model_result = await db.execute(
             select(LLMModel).options(selectinload(LLMModel.provider)).where(
-                LLMModel.id == agent_model_id, LLMModel.tenant_id == user.tenant_id
+                LLMModel.id == agent_model_id, LLMModel.tenant_id == execution_tenant
             )
         )
         _resolved_model = model_result.scalar_one_or_none()
@@ -894,7 +912,7 @@ async def chat_stream(
         result = await db.execute(
             select(LLMModel)
             .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == user.tenant_id)
+            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == execution_tenant)
             .limit(1)
         )
         _resolved_model = result.scalar_one_or_none()
@@ -926,7 +944,7 @@ async def chat_stream(
         )
     )
     if not prior_msg_count and (agent.enable_auto_title if agent else True):
-        title_task = asyncio.create_task(generate_session_title(req.message, user.tenant_id))
+        title_task = asyncio.create_task(generate_session_title(req.message, execution_tenant))
 
     async def event_generator():
         # Langfuse trace: wrap the entire chat flow
@@ -997,7 +1015,7 @@ async def chat_stream(
                     await refresh_mcp_tools_for_agent(tool_executor, agent)
                     tools_list, tools_schema = _filter_tools_by_agent(tool_executor, agent)
                     system_prompt = await _build_system_prompt_with_memories(
-                        gen_db, user.id, req.message, tools_list, agent=agent,
+                        gen_db, user.id, req.message, tools_list, agent=agent, tenant_id=execution_tenant,
                         workspace_files=_file_refs_to_dicts(req.file_attachments),
                     )
                 # ui_screenshot 仅视觉模型注入（§2.2 视觉能力维度）；AgentLoop 内仍有运行时门控兜底
@@ -1058,13 +1076,14 @@ async def chat_stream(
                     agent_temperature=agent_temperature,
                     agent_max_iterations=agent_max_iterations,
                     agent_enable_retry=agent_enable_retry,
-                    tenant_id=user.tenant_id,
+                    tenant_id=execution_tenant,
                     delegation=delegation,
                     event_queue=event_queue,
                     workspace_id=workspace_id,
                     workspace_slug=workspace_slug,
                     allowed_tools={s["function"]["name"] for s in tools_schema},
                 )
+                agent_loop.execution_agent_id = agent.id if agent else None
                 logger.info(
                     "stream_agent_loop_ready",
                     session_id=str(session_id),
@@ -1304,7 +1323,8 @@ async def chat_stream(
                 logger.debug("stream_triggering_memory_extraction", session_id=str(session_id))
                 _fire_memory_extraction(
                     user.id, session_id, history, req.message, final_output,
-                    enable=agent.enable_memory_extraction if agent else True,
+                    enable=agent.enable_memory_extraction if agent else True, tenant_id=execution_tenant,
+                    agent_id=agent.id if agent else None,
                 )
 
                 # Fire-and-forget context summary update
@@ -1454,7 +1474,7 @@ async def chat_stream(
 
 @router.get("/sessions/{session_id}/run")
 async def latest_chat_run(
-    session_id: UUID, user: CurrentUser,
+    session_id: UUID, user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict | None:
     run = await chat_runs.latest(db, user.id, session_id)
@@ -1463,7 +1483,7 @@ async def latest_chat_run(
 
 @router.get("/runs/{run_id}/events")
 async def watch_chat_run(
-    run_id: UUID, user: CurrentUser,
+    run_id: UUID, user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     after: int = Query(default=0, ge=0),
 ) -> StreamingResponse:
@@ -1476,7 +1496,7 @@ async def watch_chat_run(
 
 @router.post("/runs/{run_id}/stop")
 async def stop_chat_run(
-    run_id: UUID, user: CurrentUser,
+    run_id: UUID, user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     return await chat_runs.stop(db, user.id, run_id)
@@ -1484,7 +1504,7 @@ async def stop_chat_run(
 
 @router.post("/runs/{run_id}/resume")
 async def resume_chat_run(
-    run_id: UUID, request: Request, user: CurrentUser,
+    run_id: UUID, request: Request, user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StreamingResponse:
     prior = await chat_runs.owned(db, user.id, run_id)
@@ -1545,7 +1565,9 @@ async def chat_websocket(
             return
 
         # Load agent
-        agent = await _load_agent(db, session.agent_id, websocket_user)
+        agent = await load_execution_agent(db, session.agent_id, websocket_user)
+        execution_tenant = agent.tenant_id if agent else websocket_user.tenant_id
+        await require_execution_user(db, user_id, execution_tenant)
         if session.agent_id and not agent:
             await websocket.send_json({"type": "error", "message": "Agent not found"})
             await websocket.close(code=4004)
@@ -1569,13 +1591,18 @@ async def chat_websocket(
                 history, context_summary = await _load_conversation_history(db, session_id)
                 logger.info(f"加载了 {len(history)} 条历史消息")
 
+                await require_execution_user(db, user_id, execution_tenant)
+                if agent is not None:
+                    agent = await load_execution_agent(db, session.agent_id, websocket_user)
+                    if agent is None or agent.tenant_id != execution_tenant:
+                        raise HTTPException(status_code=403, detail="Agent no longer accessible")
                 # Build system prompt with memories (per-message for freshness)
                 await refresh_mcp_tools_for_agent(tool_executor, agent)
                 tools_list, tools_schema = _filter_tools_by_agent(
                     tool_executor, agent, extra_blacklist=set(FRONTEND_TOOL_NAMES)
                 )
                 system_prompt = await _build_system_prompt_with_memories(
-                    db, user_id, user_message, tools_list, agent=agent,
+                    db, user_id, user_message, tools_list, agent=agent, tenant_id=execution_tenant,
                     workspace_files=None,  # WebSocket doesn't support file attachments
                 )
 
@@ -1611,12 +1638,13 @@ async def chat_websocket(
                     agent_temperature=agent_temperature,
                     agent_max_iterations=agent_max_iterations,
                     agent_enable_retry=agent_enable_retry,
-                    tenant_id=websocket_user.tenant_id,
+                    tenant_id=execution_tenant,
                     delegation=delegation,
                     workspace_id=workspace_id,
                     workspace_slug=workspace_slug,
                     allowed_tools={s["function"]["name"] for s in tools_schema},
                 )
+                agent_loop.execution_agent_id = agent.id if agent else None
                 logger.info("Agent loop 已创建，开始处理...")
 
                 # Prepare context with compression
@@ -1672,7 +1700,8 @@ async def chat_websocket(
 
                 # Fire-and-forget memory extraction
                 _fire_memory_extraction(
-                    user_id, session_id, history, user_message, final_output
+                    user_id, session_id, history, user_message, final_output, tenant_id=execution_tenant,
+                    agent_id=agent.id if agent else None,
                 )
 
                 # Done signal

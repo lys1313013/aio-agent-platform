@@ -215,10 +215,15 @@ async def test_revisions_bounded(db_session, model):
 
 @pytest.mark.asyncio
 async def test_tool_and_extraction_share_semantic_policy(db_session, engine, model, monkeypatch):
-    from aio_agent_platform.db.models import Session
+    from aio_agent_platform.db.models import Agent, Session, Tenant, TenantMembership, User
     from aio_agent_platform.memory.handlers import handle_memory_write
 
     uid, agent = uuid4(), uuid4()
+    tenant = Tenant(id=uuid4(), name="reconciliation", slug=str(uuid4()))
+    db_session.add_all([tenant, User(id=uid, username="scope", email="scope@test.local",
+                                    password_hash="test", tenant_id=tenant.id),
+                        TenantMembership(user_id=uid, tenant_id=tenant.id),
+                        Agent(id=agent, name="a", created_by=uid, tenant_id=tenant.id)])
     session = Session(user_id=uid, agent_id=agent, title="英语学习")
     db_session.add(session)
     old = await MemoryService.create_memory(

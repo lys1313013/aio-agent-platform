@@ -156,17 +156,10 @@ async def cmd_knowledge(ctx: CommandContext) -> CommandResult:
 
 @command("portrait", group="知识", desc="查看 Agent 对当前用户的画像摘要")
 async def cmd_portrait(ctx: CommandContext) -> CommandResult:
-    tenant_id = getattr(ctx.user, 'tenant_id', None)
-    if tenant_id:
-        profile = await ctx.db.scalar(
-            select(UserProfile).where(
-                UserProfile.user_id == UUID(ctx.user_id),
-                UserProfile.tenant_id == tenant_id,
-            )
+    profile = await ctx.db.scalar(
+        select(UserProfile).where(
+            UserProfile.user_id == UUID(ctx.user_id), UserProfile.tenant_id == ctx.tenant_id,
         )
-    else:
-        profile = await ctx.db.scalar(
-            select(UserProfile).where(UserProfile.user_id == UUID(ctx.user_id))
-        )
+    )
     portrait = (profile.personal_portrait if profile else None) or "暂无画像数据。"
     return CommandResult(content=portrait)

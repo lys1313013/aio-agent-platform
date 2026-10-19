@@ -47,6 +47,8 @@ async def _run(ctx: CommandContext, cmd: Command) -> CommandResult:
 
     try:
         return await cmd.handler(ctx)
+    except ValueError as error:
+        return CommandResult(content=str(error))
     except Exception:
         logger.exception("command_handler_failed", command=cmd.name, user_id=ctx.user_id)
         return CommandResult(content=f"执行 `/{cmd.name}` 时出错，请稍后重试。")

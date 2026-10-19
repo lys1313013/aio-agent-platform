@@ -182,6 +182,10 @@ async def _auto_upgrade_schema(engine: AsyncEngine, heads: set[str]) -> None:
             # Another instance may have completed the migration while this one waited.
             if await _db_schema_state(lock_conn, heads) == "current":
                 return
+            await _guard_legacy_tenant_upgrade(lock_conn)
+            # Release preflight read locks before Alembic uses a separate connection.
+            # The session-level advisory lock survives this commit.
+            await lock_conn.commit()
             log.warning("db_schema_outdated: automatically upgrading to alembic head")
             await asyncio.to_thread(_run_alembic_upgrade)
             if await _db_schema_state(lock_conn, heads) != "current":
@@ -238,11 +242,35 @@ async def init_db() -> None:
             await _stamp_alembic_head(conn, heads)
 
 
+async def _guard_legacy_tenant_upgrade(conn) -> None:
+    """Never infer historical ownership from current UI state or a public default."""
+    tables = ("users", "knowledge_bases", "mcp_servers", "agents", "user_profiles", "portrait_versions", "cron_jobs", "cron_job_runs",
+              "memories", "daily_memories", "llm_providers", "llm_models",
+              "channel_configs", "channel_bindings", "channel_bind_codes")
+    for table in tables:
+        columns = (await conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema=current_schema() AND table_name=:table"
+        ), {"table": table})).scalars().all()
+        if not columns:
+            continue
+        condition = " WHERE tenant_id IS NULL" if "tenant_id" in columns else ""
+        # table comes from the constant allowlist above.
+        ambiguous = await conn.scalar(text(f'SELECT EXISTS (SELECT 1 FROM "{table}"{condition})'))
+        if ambiguous:
+            raise RuntimeError(
+                f"{table} 存在无法确定租户的历史记录，已停止自动迁移。"
+                "请先备份并单独审核所属对象，显式处理归属后再迁移；"
+                "禁止按用户当前租户或公共租户自动回填。"
+            )
+
+
 async def _run_manual_migrations(conn) -> None:
     """Idempotent column additions for existing tables."""
     # DDL 需要 ACCESS EXCLUSIVE 锁，若被其他长事务/残留连接阻塞会无限等锁。
     # 限定锁等待 10s，超时即放弃让启动继续（迁移幂等，下次启动可重试）。
     await conn.execute(text("SET LOCAL lock_timeout = '10s'"))
+    await _guard_legacy_tenant_upgrade(conn)
     migrations = [
         # Keep legacy/bootstrap databases aligned with the scoped-memory migration.
         "ALTER TABLE memories ADD COLUMN IF NOT EXISTS agent_id UUID",
@@ -273,8 +301,6 @@ async def _run_manual_migrations(conn) -> None:
            )
            ON CONFLICT (slug) DO NOTHING""",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        """UPDATE users SET tenant_id = '00000000-0000-0000-0000-000000000001'
-           WHERE tenant_id IS NULL""",
         "ALTER TABLE users ALTER COLUMN tenant_id SET NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_users_tenant ON users (tenant_id)",
         """CREATE TABLE IF NOT EXISTS tenant_memberships (
@@ -294,22 +320,14 @@ async def _run_manual_migrations(conn) -> None:
            )
            AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'superadmin')""",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        """UPDATE agents a SET tenant_id = u.tenant_id
-           FROM users u WHERE a.created_by = u.id AND a.tenant_id IS NULL""",
-        """UPDATE agents SET tenant_id = '00000000-0000-0000-0000-000000000001'
-           WHERE tenant_id IS NULL""",
         "ALTER TABLE agents ALTER COLUMN tenant_id SET NOT NULL",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'tenant'",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS mcp_all_tools_server_ids JSONB NOT NULL DEFAULT '[]'::jsonb",
         "CREATE INDEX IF NOT EXISTS idx_agents_tenant_visibility ON agents (tenant_id, visibility)",
         "CREATE INDEX IF NOT EXISTS idx_agents_creator ON agents (created_by)",
         "ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        """UPDATE knowledge_bases SET tenant_id = '00000000-0000-0000-0000-000000000001'
-           WHERE tenant_id IS NULL""",
         "ALTER TABLE knowledge_bases ALTER COLUMN tenant_id SET NOT NULL",
         "ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        """UPDATE mcp_servers SET tenant_id = '00000000-0000-0000-0000-000000000001'
-           WHERE tenant_id IS NULL""",
         "ALTER TABLE mcp_servers ALTER COLUMN tenant_id SET NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_mcp_servers_tenant ON mcp_servers (tenant_id)",
         "ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS created_by UUID",
@@ -332,17 +350,9 @@ async def _run_manual_migrations(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_portrait_versions_user ON portrait_versions (user_id, created_at)",
         # Portrait tenant isolation
         "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        """UPDATE user_profiles up SET tenant_id = u.tenant_id
-           FROM users u WHERE up.user_id = u.id AND up.tenant_id IS NULL""",
-        """UPDATE user_profiles SET tenant_id = '00000000-0000-0000-0000-000000000001'
-           WHERE tenant_id IS NULL""",
         "ALTER TABLE user_profiles ALTER COLUMN tenant_id SET NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_user_profiles_tenant ON user_profiles (tenant_id)",
         "ALTER TABLE portrait_versions ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        """UPDATE portrait_versions pv SET tenant_id = u.tenant_id
-           FROM users u WHERE pv.user_id = u.id AND pv.tenant_id IS NULL""",
-        """UPDATE portrait_versions SET tenant_id = '00000000-0000-0000-0000-000000000001'
-           WHERE tenant_id IS NULL""",
         "ALTER TABLE portrait_versions ALTER COLUMN tenant_id SET NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_portrait_versions_tenant ON portrait_versions (tenant_id)",
         # UserProfile: composite primary key (user_id, tenant_id) for multi-tenant profiles
@@ -364,44 +374,24 @@ async def _run_manual_migrations(conn) -> None:
         "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS message TEXT",
         # Cron job tenant isolation
         "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        """UPDATE cron_jobs cj SET tenant_id = u.tenant_id
-           FROM users u WHERE cj.user_id = u.id AND cj.tenant_id IS NULL""",
-        """UPDATE cron_jobs SET tenant_id = '00000000-0000-0000-0000-000000000001'
-           WHERE tenant_id IS NULL""",
         "ALTER TABLE cron_jobs ALTER COLUMN tenant_id SET NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_cron_jobs_tenant ON cron_jobs (tenant_id)",
         "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()",
         "ALTER TABLE cron_job_runs ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        """UPDATE cron_job_runs cr SET tenant_id = u.tenant_id
-           FROM users u WHERE cr.user_id = u.id AND cr.tenant_id IS NULL""",
-        """UPDATE cron_job_runs SET tenant_id = '00000000-0000-0000-0000-000000000001'
-           WHERE tenant_id IS NULL""",
         "ALTER TABLE cron_job_runs ALTER COLUMN tenant_id SET NOT NULL",
         # LLM tenant isolation
         "ALTER TABLE llm_providers ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        """UPDATE llm_providers SET tenant_id = '00000000-0000-0000-0000-000000000001'
-           WHERE tenant_id IS NULL""",
         "ALTER TABLE llm_providers ALTER COLUMN tenant_id SET NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_llm_providers_tenant ON llm_providers (tenant_id)",
         "ALTER TABLE llm_models ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        """UPDATE llm_models SET tenant_id = '00000000-0000-0000-0000-000000000001'
-           WHERE tenant_id IS NULL""",
         "ALTER TABLE llm_models ALTER COLUMN tenant_id SET NOT NULL",
         """CREATE INDEX IF NOT EXISTS idx_llm_models_tenant_default
            ON llm_models (tenant_id, is_default) WHERE is_default""",
         # Memory tenant isolation
         "ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        """UPDATE memories m SET tenant_id = u.tenant_id
-           FROM users u WHERE m.user_id = u.id AND m.tenant_id IS NULL""",
-        """UPDATE memories SET tenant_id = '00000000-0000-0000-0000-000000000001'
-           WHERE tenant_id IS NULL""",
         "ALTER TABLE memories ALTER COLUMN tenant_id SET NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_memories_tenant ON memories (tenant_id)",
         "ALTER TABLE daily_memories ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        """UPDATE daily_memories dm SET tenant_id = u.tenant_id
-           FROM users u WHERE dm.user_id = u.id AND dm.tenant_id IS NULL""",
-        """UPDATE daily_memories SET tenant_id = '00000000-0000-0000-0000-000000000001'
-           WHERE tenant_id IS NULL""",
         "ALTER TABLE daily_memories ALTER COLUMN tenant_id SET NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_daily_memories_tenant ON daily_memories (tenant_id)",
     ]

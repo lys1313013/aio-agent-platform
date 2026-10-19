@@ -253,7 +253,7 @@ async def test_real_chat_route_disconnect_then_reconnect(factory, monkeypatch, l
     monkeypatch.setattr(chat, "get_langfuse_client", lambda: langfuse if langfuse_enabled else None)
     monkeypatch.setattr(chat, "propagate_attributes", lambda **kwargs: nullcontext())
     for name, value in {
-        "_load_agent": None, "generate_session_title": "", "load_pet_chat_context": None,
+        "load_chat_agent": None, "generate_session_title": "", "load_pet_chat_context": None,
         "refresh_mcp_tools_for_agent": None, "_build_system_prompt_with_memories": "system",
         "_resolve_workspace": (None, None), "_build_agent_loop": FakeLoop(),
         "prepare_context": ([LLMMessage(role="user", content="write report")], None),
@@ -327,7 +327,7 @@ async def test_resume_reuses_completed_tool_instead_of_executing_again(monkeypat
         yield LLMChunk(type="done")
 
     executor = Mock(execute=AsyncMock())
-    loop = agent_module.AgentLoop(provider=Mock(model="test", stream=stream), tool_executor=executor)
+    loop = agent_module.AgentLoop(execution_tenant_id=uuid4(), provider=Mock(model="test", stream=stream), tool_executor=executor)
     token = completed_calls.set({call_key("submit_order", {"amount": 1}): {"status": "ok", "preview": "order 123"}})
     try:
         output = [e async for e in loop.run(user_input="continue", user_id=uuid4(), session_id=uuid4(),

@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from aio_agent_platform.core.context import current_agent_id
-from aio_agent_platform.db.models import Memory, Session
+from aio_agent_platform.db.models import Agent, Memory, Session, Tenant, TenantMembership, User
 from aio_agent_platform.memory.daily import DailyMemoryService, local_today, run_daily_consolidation
 from aio_agent_platform.memory.handlers import handle_memory_read, handle_memory_write
 from aio_agent_platform.memory.service import MemoryService
@@ -98,6 +98,12 @@ async def test_tools_use_child_context_and_session_fallback(db_session, factory)
 @pytest.mark.asyncio
 async def test_extraction_and_daily_cron_preserve_scope(db_session, factory, monkeypatch):
     user, a, b = uuid4(), uuid4(), uuid4()
+    tenant = Tenant(id=uuid4(), name="memory-scope", slug=str(uuid4()))
+    db_session.add_all([tenant, User(id=user, username="scope", email="scope@test.local",
+                                    password_hash="test", tenant_id=tenant.id),
+                        TenantMembership(user_id=user, tenant_id=tenant.id),
+                        Agent(id=a, name="a", created_by=user, tenant_id=tenant.id),
+                        Agent(id=b, name="b", created_by=user, tenant_id=tenant.id)])
     sessions = []
     for agent in (a, b):
         session = Session(user_id=user, agent_id=agent, title=str(agent))

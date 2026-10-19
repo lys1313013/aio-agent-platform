@@ -360,9 +360,9 @@ class PetService:
         if agent_id is None:
             return None
         try:
-            from aio_agent_platform.core.chat import load_agent
+            from aio_agent_platform.core.chat import load_execution_agent
 
-            return await load_agent(self.db, agent_id, user=user)
+            return await load_execution_agent(self.db, agent_id, user=user)
         except Exception:
             return None
 

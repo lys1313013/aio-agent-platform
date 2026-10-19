@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import re
+from uuid import UUID
 
 import httpx
 from markdownify import markdownify as to_markdown
 from readability import Document
-from sqlalchemy import select
 
 from aio_agent_platform.core.config import WebSettings
+from aio_agent_platform.core.execution_scope import resolve_execution_tenant
 from aio_agent_platform.db.connection import get_session_factory
-from aio_agent_platform.db.models import User
 from aio_agent_platform.tools.web.cache import TTLCache
 from aio_agent_platform.tools.web.config import WebConfigService
 from aio_agent_platform.tools.web.ssrf import SSRFError, assert_public_url, ssrf_check_hook
@@ -68,10 +68,7 @@ class WebFetcher:
 
                 factory = get_session_factory()
                 async with factory() as db:
-                    tenant_result = await db.execute(
-                        select(User.tenant_id).where(User.id == user_id)
-                    )
-                    tenant_id = tenant_result.scalar_one_or_none()
+                    tenant_id = await resolve_execution_tenant(db, UUID(user_id))
                 if tenant_id:
                     summary = await summarize_content(body, max_chars, tenant_id)
                     if summary:

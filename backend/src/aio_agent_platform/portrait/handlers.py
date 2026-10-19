@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
+from aio_agent_platform.core.execution_scope import resolve_execution_tenant
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
 from aio_agent_platform.db.models import PortraitVersion, UserProfile
 
@@ -22,10 +23,8 @@ async def handle_update_user_portrait(
     factory = get_session_factory()
     async with factory() as db:
         current_user_id.set(user_id)
-        # Look up tenant_id from the user record
-        from aio_agent_platform.db.models import User
-        user_result = await db.execute(select(User.tenant_id).where(User.id == uid))
-        tenant_id = user_result.scalar_one_or_none()
+        # Background jobs keep their original tenant even after a UI switch.
+        tenant_id = await resolve_execution_tenant(db, uid)
         if not tenant_id:
             return "用户不存在"
 

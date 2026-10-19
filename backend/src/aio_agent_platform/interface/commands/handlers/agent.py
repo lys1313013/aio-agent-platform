@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.core.confirmation import confirmation_manager
 from aio_agent_platform.db.models import Agent, LLMModel, Workspace
-from aio_agent_platform.interface.routes.agents import _agent_visible_to
 
 from ..models import CommandArg, CommandContext, CommandResult
 from ..registry import command
@@ -21,7 +20,7 @@ from ..registry import command
 async def cmd_agents(ctx: CommandContext) -> CommandResult:
     result = await ctx.db.execute(
         select(Agent)
-        .where(Agent.is_active, _agent_visible_to(ctx.user))
+        .where(Agent.is_active, ((Agent.tenant_id == ctx.tenant_id) & or_(Agent.visibility == "tenant", Agent.created_by == ctx.user.id)))
         .order_by(Agent.created_at)
     )
     agents = list(result.scalars().all())
@@ -48,7 +47,7 @@ async def cmd_agent(ctx: CommandContext) -> CommandResult:
     name = ctx.args["name"]
     agent = await ctx.db.scalar(
         select(Agent)
-        .where(Agent.name == name, Agent.is_active, _agent_visible_to(ctx.user))
+        .where(Agent.name == name, Agent.is_active, ((Agent.tenant_id == ctx.tenant_id) & or_(Agent.visibility == "tenant", Agent.created_by == ctx.user.id)))
     )
     if agent is None:
         return CommandResult(content=f"智能体 `{name}` 不存在。\n输入 /agents 查看可用智能体。")
@@ -180,7 +179,7 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
         if ctx.session is None:
             return CommandResult(content="当前没有会话，请先开始对话。")
         model = await ctx.db.scalar(
-            select(LLMModel).where(LLMModel.is_active, LLMModel.name == name, LLMModel.tenant_id == ctx.user.tenant_id)
+            select(LLMModel).where(LLMModel.is_active, LLMModel.name == name, LLMModel.tenant_id == ctx.tenant_id)
         )
         if model is None:
             return CommandResult(content=f"模型 `{name}` 不存在或未启用。\n输入 /model 查看可用模型。")
@@ -194,7 +193,7 @@ async def cmd_model(ctx: CommandContext) -> CommandResult:
     result = await ctx.db.execute(
         select(LLMModel)
         .options(selectinload(LLMModel.provider))
-        .where(LLMModel.is_active, LLMModel.tenant_id == ctx.user.tenant_id)
+        .where(LLMModel.is_active, LLMModel.tenant_id == ctx.tenant_id)
         .order_by(LLMModel.is_default.desc(), LLMModel.name)
     )
     models = list(result.scalars().all())

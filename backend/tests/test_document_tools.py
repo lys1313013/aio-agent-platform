@@ -279,7 +279,7 @@ async def test_pixels_reach_next_model_call_but_not_history_or_events(executor, 
         yield LLMChunk(type="done", usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
 
     provider.stream = stream
-    loop = AgentLoop(provider, executor, trust_level="full", workspace_id=uuid4(), workspace_slug="project")
+    loop = AgentLoop(provider, executor, execution_tenant_id=uuid4(), trust_level="full", workspace_id=uuid4(), workspace_slug="project")
     history = ChatTurnRecorder(uuid4(), uuid4())
     events = []
     # A resumed run has metadata in history, never pixels: it must reread the image.
@@ -306,7 +306,7 @@ async def test_pixels_reach_next_model_call_but_not_history_or_events(executor, 
 async def test_nonvision_model_fails_before_reading_pixels(executor):
     executor, _, _ = executor
     provider = MagicMock(supports_vision=False)
-    loop = AgentLoop(provider, executor)
+    loop = AgentLoop(provider, executor, execution_tenant_id=uuid4())
     result = await loop._execute_tool_traced(ToolCall(id="a", name="view_image", arguments={}), None)
     assert not result.success and "视觉" in result.error
     executor.sandbox_mgr.get_or_create.assert_not_awaited()

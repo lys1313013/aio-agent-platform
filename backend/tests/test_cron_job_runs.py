@@ -11,13 +11,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import sessionmaker
 
+from aio_agent_platform.core.execution_scope import bind_execution_scope
 from aio_agent_platform.cron_jobs.scheduler import Scheduler
 from aio_agent_platform.db.models import (
     DEFAULT_TENANT_ID,
     Agent,
+    ChannelConfig,
     CronJob,
     CronJobRun,
     Tenant,
+    TenantMembership,
     User,
 )
 from aio_agent_platform.interface.api import app
@@ -37,6 +40,7 @@ async def cron_client(client: AsyncClient, db_session: AsyncSession, engine):
     """HTTP client with auth bypassed and a real Scheduler on app.state."""
     from aio_agent_platform.auth.dependencies import get_current_user
 
+    db_session.add(Tenant(id=DEFAULT_TENANT_ID, name="default", slug="default"))
     user = User(
         id=uuid4(),
         username="cron-tester",
@@ -46,6 +50,8 @@ async def cron_client(client: AsyncClient, db_session: AsyncSession, engine):
         is_active=True,
     )
     db_session.add(user)
+    await db_session.flush()
+    db_session.add(TenantMembership(user_id=user.id, tenant_id=user.tenant_id))
     await db_session.flush()
 
     async def override_current_user():
@@ -472,7 +478,9 @@ async def test_cron_job_tenant_isolation(client, db_session: AsyncSession):
         id=uuid4(), username="cron-iso-user-b", email="b@test.com",
         password_hash="x", role="admin", is_active=True, tenant_id=tenant_b.id,
     )
-    db_session.add_all([user_a, user_b])
+    db_session.add_all([user_a, user_b,
+                        TenantMembership(user_id=user_a.id, tenant_id=tenant_a.id),
+                        TenantMembership(user_id=user_b.id, tenant_id=tenant_b.id)])
     await db_session.flush()
 
     async def act_as(user):
@@ -531,6 +539,8 @@ async def test_handler_create_cron_job_sets_tenant_id(engine, db_session, monkey
     )
     db_session.add(user)
     await db_session.flush()
+    db_session.add(TenantMembership(user_id=user.id, tenant_id=user.tenant_id))
+    await db_session.flush()
     await db_session.commit()
 
     factory = _test_factory(engine)
@@ -539,11 +549,12 @@ async def test_handler_create_cron_job_sets_tenant_id(engine, db_session, monkey
         lambda: factory,
     )
 
-    resp = await handle_create_cron_job(
-        {"name": "auto job", "cron_expr": "0 8 * * *", "message": "hello"},
-        str(user.id),
-        "session-x",
-    )
+    with bind_execution_scope(user.id, tenant.id):
+        resp = await handle_create_cron_job(
+            {"name": "auto job", "cron_expr": "0 8 * * *", "message": "hello"},
+            str(user.id),
+            "session-x",
+        )
     assert "successfully" in resp
 
     async with factory() as db:
@@ -578,6 +589,8 @@ async def test_handler_create_cron_job_derives_tenant_from_agent(
     )
     db_session.add(user)
     await db_session.flush()
+    db_session.add(TenantMembership(user_id=user.id, tenant_id=user.tenant_id))
+    await db_session.flush()
     await db_session.commit()
 
     factory = _test_factory(engine)
@@ -586,16 +599,17 @@ async def test_handler_create_cron_job_derives_tenant_from_agent(
         lambda: factory,
     )
 
-    resp = await handle_create_cron_job(
-        {
-            "name": "agent tenant job",
-            "cron_expr": "0 8 * * *",
-            "message": "hello",
-            "agent_id": str(agent.id),
-        },
-        str(user.id),
-        "session-x",
-    )
+    with bind_execution_scope(user.id, tenant.id):
+        resp = await handle_create_cron_job(
+            {
+                "name": "agent tenant job",
+                "cron_expr": "0 8 * * *",
+                "message": "hello",
+                "agent_id": str(agent.id),
+            },
+            str(user.id),
+            "session-x",
+        )
     assert "successfully" in resp
 
     async with factory() as db:
@@ -626,6 +640,8 @@ async def test_handler_create_cron_job_autobinds_channel(engine, db_session, mon
     )
     db_session.add(user)
     await db_session.flush()
+    db_session.add(TenantMembership(user_id=user.id, tenant_id=user.tenant_id))
+    await db_session.flush()
     await db_session.commit()
 
     factory = _test_factory(engine)
@@ -635,6 +651,7 @@ async def test_handler_create_cron_job_autobinds_channel(engine, db_session, mon
     )
 
     channel_id = uuid4()
+    await _add_channel(db_session, channel_id, tenant.id)
     token = current_channel_send_ctx.set(
         ChannelSendContext(
             adapter=SimpleNamespace(channel_id=channel_id),
@@ -642,11 +659,12 @@ async def test_handler_create_cron_job_autobinds_channel(engine, db_session, mon
         )
     )
     try:
-        resp = await handle_create_cron_job(
-            {"name": "channel job", "cron_expr": "0 8 * * *", "message": "hi"},
-            str(user.id),
-            "session-x",
-        )
+        with bind_execution_scope(user.id, tenant.id):
+            resp = await handle_create_cron_job(
+                {"name": "channel job", "cron_expr": "0 8 * * *", "message": "hi"},
+                str(user.id),
+                "session-x",
+            )
     finally:
         current_channel_send_ctx.reset(token)
     assert "successfully" in resp
@@ -677,6 +695,8 @@ async def test_handler_create_cron_job_explicit_channel_wins(engine, db_session,
     )
     db_session.add(user)
     await db_session.flush()
+    db_session.add(TenantMembership(user_id=user.id, tenant_id=user.tenant_id))
+    await db_session.flush()
     await db_session.commit()
 
     factory = _test_factory(engine)
@@ -686,6 +706,7 @@ async def test_handler_create_cron_job_explicit_channel_wins(engine, db_session,
     )
 
     explicit_id, ctx_id = uuid4(), uuid4()
+    await _add_channel(db_session, explicit_id, tenant.id)
     token = current_channel_send_ctx.set(
         ChannelSendContext(
             adapter=SimpleNamespace(channel_id=ctx_id),
@@ -693,16 +714,17 @@ async def test_handler_create_cron_job_explicit_channel_wins(engine, db_session,
         )
     )
     try:
-        resp = await handle_create_cron_job(
-            {
-                "name": "explicit channel job",
-                "cron_expr": "0 8 * * *",
-                "message": "hi",
-                "channel_id": str(explicit_id),
-            },
-            str(user.id),
-            "session-x",
-        )
+        with bind_execution_scope(user.id, tenant.id):
+            resp = await handle_create_cron_job(
+                {
+                    "name": "explicit channel job",
+                    "cron_expr": "0 8 * * *",
+                    "message": "hi",
+                    "channel_id": str(explicit_id),
+                },
+                str(user.id),
+                "session-x",
+            )
     finally:
         current_channel_send_ctx.reset(token)
     assert "successfully" in resp
@@ -731,7 +753,9 @@ async def test_handler_list_cron_jobs_scoped_to_tenant(engine, db_session, monke
         id=uuid4(), username="cron-h-u-b", email="b@t.com",
         password_hash="x", role="admin", is_active=True, tenant_id=tenant_b.id,
     )
-    db_session.add_all([user_a, user_b])
+    db_session.add_all([user_a, user_b,
+                        TenantMembership(user_id=user_a.id, tenant_id=tenant_a.id),
+                        TenantMembership(user_id=user_b.id, tenant_id=tenant_b.id)])
     await db_session.flush()
     await db_session.commit()
 
@@ -773,7 +797,9 @@ async def test_handler_delete_cron_job_scoped_to_tenant(engine, db_session, monk
         id=uuid4(), username="cron-h-d-b", email="b@t.com",
         password_hash="x", role="admin", is_active=True, tenant_id=tenant_b.id,
     )
-    db_session.add_all([user_a, user_b])
+    db_session.add_all([user_a, user_b,
+                        TenantMembership(user_id=user_a.id, tenant_id=tenant_a.id),
+                        TenantMembership(user_id=user_b.id, tenant_id=tenant_b.id)])
     await db_session.flush()
     await db_session.commit()
 
@@ -806,3 +832,10 @@ async def test_handler_delete_cron_job_scoped_to_tenant(engine, db_session, monk
             await db.execute(select(CronJob).where(CronJob.name == "job-b"))
         ).scalar_one_or_none()
         assert remaining is not None
+
+
+async def _add_channel(db, channel_id, tenant_id):
+    db.add(ChannelConfig(id=channel_id, tenant_id=tenant_id, agent_id=uuid4(), name="test",
+                         app_id="test", app_secret_encrypted="test", mode="webhook",
+                         status="enabled", channel_key=str(channel_id), created_by=uuid4()))
+    await db.commit()

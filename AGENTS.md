@@ -69,7 +69,7 @@ docker compose --profile build up sandbox-build  # 构建沙箱镜像
 
 ### 数据库
 
-`db/models.py` — 所有表定义，无外键约束（依赖应用层维护关系）。PostgreSQL RLS 通过 `app.current_user_id` 实现多租户隔离。`db/sanitize.py` 处理 NUL 字节防止 PostgreSQL 写入失败。
+`db/models.py` — 所有表定义，无外键约束（依赖应用层维护关系）。租户与资源权限必须由应用层显式校验；部分表的 RLS 策略使用 `app.current_user_id` 做用户隔离，不能代替租户权限检查。`db/sanitize.py` 处理 NUL 字节防止 PostgreSQL 写入失败。
 
 ### 应用启动流程
 
@@ -85,3 +85,24 @@ docker compose --profile build up sandbox-build  # 构建沙箱镜像
 ### 配置系统
 
 `core/config.py` — `pydantic-settings`，`AppSettings` 组合多个子配置类（DB、JWT、LLM、Agent、Sandbox、Storage、Langfuse、Server）。LLM 模型不在 .env 配置，而是通过管理后台动态管理（`llm_providers` / `llm_models` 表）。
+
+### 执行租户与权限（新增执行入口必须遵守）
+
+- `users.tenant_id` 是用户在界面选中的租户，只能用于管理界面筛选或没有绑定对象的新交互入口；禁止在后台执行、工具、委派、记忆提取中重新读取它决定归属。
+- 现有对象按自身租户运行：定时任务 `job.tenant_id`、渠道 `channel.tenant_id`、协作房间 `room.tenant_id`、智能体/会话绑定的 `agent.tenant_id`；动态子智能体继承父执行租户。
+- 使用 `core/execution_scope.py`：入口先 `require_execution_user` 校验用户、租户启用状态和成员资格；再按执行租户及 `visibility/created_by` 校验资源，最后绑定上下文。绑定 ContextVar 本身不代表授权。
+- `AgentLoop` 必须显式传入 `execution_tenant_id`，或继承已校验的执行上下文；`build_agent_loop` 会设置它。工具通过 `resolve_execution_tenant` 获取上下文；不能缓存用户当前租户，不能修改 ORM `User.tenant_id` 来模拟切换。
+- 新协程、流式生成器、并发工具和延迟任务都要传播执行上下文；任务结束、异常、取消时必须清理。记忆后台任务重新校验来源对象和成员资格；缺少可靠租户来源的历史无智能体任务跳过并记录错误，禁止回退公共租户。
+- 回归至少覆盖：运行中切换界面租户仍使用原对象租户；成员被移除/租户停用/私有资源不可见时拒绝执行；并发、异常、取消不串上下文；用户当前租户不被写回；模型、工具、画像、记忆与观测归属一致。
+- 历史归属修复是独立的数据治理操作，必须单独获得用户授权；代码修复不附带历史数据迁移。
+- 详细契约见 `docs/17-用户与租户隔离.md` 第七节。
+
+### 执行入口与定时任务补充约束
+
+- 已有对象执行入口使用 `ExecutionUser` 校验 JWT 和活跃用户，再按对象租户校验成员资格；不要先用 `CurrentUser` 校验界面租户，否则切换到停用租户会误拦截其他租户任务。管理、新建无对象入口仍使用 `CurrentUser`。
+- 房间详情、SSE、停止、重试、确认操作都必须通过 `owned_room` 检查对象归属与实际租户；SSE 持续校验实际成员资格。
+- 斜杠命令使用 `ctx.tenant_id`；调用 `resolve_model` 明确写出 `tenant_id=` 和 `model_id=`，避免位置参数误传。
+- 定时任务统一通过 `CronJobService` 创建/更新，校验任务所有者、智能体、通知渠道属于同一有效租户。创建缺少执行上下文和智能体时拒绝，不能从界面租户兜底。
+- 新 Cron 输入遵循标准星期编号 `0/7=周日、1=周一`，入库前转为 `mon`–`sun`；存量数字保留 APScheduler 语义 `0=周一`，编辑时先转换为名称，禁止全局重解释存量数字。
+- 创建请求重试复用 `request_id`；同名不同配置默认冲突，明确需要并存时才传 `allow_duplicate=true`。禁止通过改名或改请求标识绕过重复提示。
+- 自动启动迁移遇到缺失租户的历史记录应停止并报错，不按用户当前租户或公共默认租户补齐。手工执行旧 Alembic 版本前也必须审查归属回填 SQL。

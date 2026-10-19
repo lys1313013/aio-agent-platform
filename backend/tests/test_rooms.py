@@ -20,7 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from aio_agent_platform.auth.dependencies import get_current_user
+from aio_agent_platform.auth.dependencies import get_current_user, get_execution_user
 from aio_agent_platform.core.agent import AgentLoop
 from aio_agent_platform.core.confirmation import ConfirmationManager, confirmation_manager
 from aio_agent_platform.db.connection import get_db
@@ -145,6 +145,7 @@ async def room_env(monkeypatch):
         app.include_router(router)
     actor = {"user": user}
     app.dependency_overrides[get_current_user] = lambda: actor["user"]
+    app.dependency_overrides[get_execution_user] = lambda: actor["user"]
 
     async def test_db():
         async with factory() as db:
@@ -182,7 +183,7 @@ async def room_env(monkeypatch):
 
     async def build(executor, prompt, db, **kwargs):
         aid = UUID(runtime.current_agent_id.get())
-        return AgentLoop(Provider(aid), executor, system_prompt=prompt, max_iterations=3,
+        return AgentLoop(Provider(aid), executor, execution_tenant_id=kwargs["tenant_id"], system_prompt=prompt, max_iterations=3,
                          event_queue=kwargs["event_queue"], allowed_tools=kwargs["allowed_tools"],
                          workspace_id=kwargs["workspace_id"], workspace_slug=kwargs["workspace_slug"])
     monkeypatch.setattr(runtime, "build_agent_loop", build)
@@ -346,7 +347,7 @@ async def test_owner_tenant_and_agent_visibility_checks(room_env):
     env.actor["user"] = SimpleNamespace(id=uuid4(), tenant_id=original.tenant_id)
     assert (await env.client.get(f"/api/rooms/{room['id']}")).status_code == 404
     env.actor["user"] = SimpleNamespace(id=original.id, tenant_id=uuid4())
-    assert (await env.client.get(f"/api/rooms/{room['id']}")).status_code == 404
+    assert (await env.client.get(f"/api/rooms/{room['id']}")).status_code == 200
     env.actor["user"] = original
     async with env.factory() as db:
         agent = await db.get(Agent, env.agents[0].id)

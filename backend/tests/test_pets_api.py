@@ -15,8 +15,8 @@ from httpx import AsyncClient
 from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.auth.dependencies import get_current_user
-from aio_agent_platform.db.models import Agent, User
+from aio_agent_platform.auth.dependencies import get_current_user, get_execution_user
+from aio_agent_platform.db.models import Agent, Tenant, TenantMembership, User
 from aio_agent_platform.interface.api import app
 
 TENANT_A = uuid.UUID("10000000-0000-0000-0000-00000000000a")
@@ -70,6 +70,10 @@ def _make_user(user_id: uuid.UUID, tenant_id: uuid.UUID, role: str = "user") -> 
 
 
 async def _login_as(client: AsyncClient, db: AsyncSession, user: User):
+    if await db.get(Tenant, user.tenant_id) is None:
+        db.add(Tenant(id=user.tenant_id, name="pets-test", slug=str(user.tenant_id)))
+    if await db.get(TenantMembership, (user.tenant_id, user.id)) is None:
+        db.add(TenantMembership(user_id=user.id, tenant_id=user.tenant_id))
     db.add(user)
     await db.flush()
 
@@ -77,6 +81,7 @@ async def _login_as(client: AsyncClient, db: AsyncSession, user: User):
         return user
 
     app.dependency_overrides[get_current_user] = override
+    app.dependency_overrides[get_execution_user] = override
 
 
 def _make_pet_zip(pet_id: str = "testpet", rows: int = 2, cols: int = 8) -> bytes:

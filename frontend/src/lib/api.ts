@@ -2046,6 +2046,8 @@ export const cronJobsApi = {
 
   create(data: {
     name: string;
+    request_id?: string;
+    allow_duplicate?: boolean;
     agent_id?: string | null;
     cron_expr?: string | null;
     run_at?: string | null;

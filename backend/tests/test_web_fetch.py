@@ -219,7 +219,15 @@ async def test_firecrawl_failure_keeps_local_extraction(monkeypatch):
 # ---- LLM summary ----
 
 
-async def test_summary_replaces_truncation_when_enabled(monkeypatch):
+@pytest.mark.parametrize("pinned", [False, True])
+async def test_summary_replaces_truncation_when_enabled(monkeypatch, pinned):
+    from contextlib import nullcontext
+    from uuid import UUID
+
+    from aio_agent_platform.core.execution_scope import bind_execution_scope
+
+    user_id = UUID("00000000-0000-0000-0000-000000000002")
+    job_tenant = UUID("00000000-0000-0000-0000-000000000003")
     fetcher = _fetcher(summary_enabled=True)
     body = "x" * 5000
 
@@ -227,9 +235,11 @@ async def test_summary_replaces_truncation_when_enabled(monkeypatch):
         return body
 
     async def fake_summarize(text, max_chars, tenant_id):
+        assert str(tenant_id) == str(job_tenant if pinned else "00000000-0000-0000-0000-000000000001")
         return "页面核心内容摘要"
 
     async def fake_execute(*args, **kwargs):
+        assert not pinned, "Pinned jobs must not query the UI tenant"
         class FakeResult:
             def scalar_one_or_none(self):
                 return "00000000-0000-0000-0000-000000000001"
@@ -255,7 +265,10 @@ async def test_summary_replaces_truncation_when_enabled(monkeypatch):
         "aio_agent_platform.tools.web.fetch.get_session_factory", FakeFactory
     )
 
-    out = await fetcher.handle({"url": "http://example.com", "max_chars": 1000}, user_id="some-user-id")
+    with bind_execution_scope(user_id, job_tenant) if pinned else nullcontext():
+        out = await fetcher.handle(
+            {"url": "http://example.com", "max_chars": 1000}, user_id=str(user_id)
+        )
     assert "页面核心内容摘要" in out
     assert "summarized by LLM" in out
     assert "truncated" not in out

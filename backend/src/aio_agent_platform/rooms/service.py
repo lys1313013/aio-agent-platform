@@ -11,6 +11,7 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.core.chat import load_agent
+from aio_agent_platform.core.execution_scope import ExecutionAccessError, require_execution_user
 from aio_agent_platform.db.models import (
     Agent,
     ChatRoom,
@@ -41,13 +42,17 @@ def touch(room: ChatRoom) -> None:
 
 async def owned_room(db: AsyncSession, room_id: UUID, user: User, *, lock=False) -> ChatRoom:
     stmt = select(ChatRoom).where(
-        ChatRoom.id == room_id, ChatRoom.user_id == user.id, ChatRoom.tenant_id == user.tenant_id,
+        ChatRoom.id == room_id, ChatRoom.user_id == user.id,
     )
     if lock:
         stmt = stmt.with_for_update().execution_options(populate_existing=True)
     room = await db.scalar(stmt)
     if room is None:
         raise HTTPException(404, "聊天室不存在")
+    try:
+        await require_execution_user(db, user.id, room.tenant_id)
+    except ExecutionAccessError as error:
+        raise HTTPException(403, str(error)) from error
     return room
 
 
@@ -140,7 +145,7 @@ async def update_room(db: AsyncSession, room: ChatRoom, user: User, req: RoomUpd
         for position, agent_id in enumerate(req.agent_ids):
             member = by_agent.get(agent_id)
             if member is None or not member.is_active:
-                agent = await load_agent(db, agent_id, user)
+                agent = await load_agent(db, agent_id, user, tenant_id=room.tenant_id)
                 if not agent:
                     raise HTTPException(404, "新增成员不可用或无权使用")
                 if member is None:
@@ -169,7 +174,7 @@ async def update_room(db: AsyncSession, room: ChatRoom, user: User, req: RoomUpd
     if default is None:
         raise HTTPException(422, "移除默认成员时，请指定另一位房间成员为默认回答成员")
     if default_id != room.default_member_id:
-        if not await load_agent(db, default.agent_id, user):
+        if not await load_agent(db, default.agent_id, user, tenant_id=room.tenant_id):
             raise HTTPException(422, "默认回答成员不可用")
         room.default_member_id = default_id
         add_message(db, room, role="system", content=f"默认回答成员改为：{default.name}")
@@ -229,7 +234,7 @@ async def submit_run(db: AsyncSession, room: ChatRoom, user: User, req: RoomSend
     valid = []
     for mid in targets:
         member = next(m for m in roster if m.id == mid)
-        if await load_agent(db, member.agent_id, user):
+        if await load_agent(db, member.agent_id, user, tenant_id=room.tenant_id):
             valid.append(mid)
         elif req.mode != "all":
             raise HTTPException(422, f"成员 {member.name} 当前不可用，请调整接收对象")
@@ -324,7 +329,7 @@ def message_dict(message: ChatRoomMessage) -> dict:
 async def room_detail(db: AsyncSession, room: ChatRoom, user: User, before: int | None = None) -> dict:
     roster = await members(db, room.id)
     allowed = set((await db.scalars(select(Agent.id).where(
-        Agent.tenant_id == user.tenant_id, Agent.is_active,
+        Agent.tenant_id == room.tenant_id, Agent.is_active,
         or_(Agent.visibility == "tenant", Agent.created_by == user.id),
     ))).all())
     stmt = select(ChatRoomMessage).where(ChatRoomMessage.room_id == room.id)
