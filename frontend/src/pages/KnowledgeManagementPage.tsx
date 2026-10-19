@@ -42,9 +42,13 @@ const { Text } = Typography;
 const { TextArea } = Input;
 
 export default function KnowledgeManagementPage() {
-  const { message } = App.useApp();
   const role = useAuthStore((s) => s.role);
   const isAdmin = role === 'admin' || role === 'superadmin';
+  return isAdmin ? <KnowledgeManagementPageContent /> : <Navigate to="/" replace />;
+}
+
+function KnowledgeManagementPageContent() {
+  const { message } = App.useApp();
 
   // ---- List state ----
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
@@ -69,11 +73,6 @@ export default function KnowledgeManagementPage() {
   const [retrievalRecords, setRetrievalRecords] = useState<RetrievalRecord[]>([]);
   const [retrievalError, setRetrievalError] = useState<string | null>(null);
   const [retrievalTimeMs, setRetrievalTimeMs] = useState<number>(0);
-
-  // ---- Admin guard ----
-  if (!isAdmin) {
-    return <Navigate to="/" replace />;
-  }
 
   // ---- Data fetching ----
   const fetchData = useCallback(async () => {

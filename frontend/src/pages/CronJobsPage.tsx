@@ -58,11 +58,15 @@ const toBeijingLocalInput = (iso: string): string => {
 };
 
 export default function CronJobsPage() {
+  const role = useAuthStore((s) => s.role);
+  const isAdmin = role === 'admin' || role === 'superadmin';
+  return isAdmin ? <CronJobsPageContent /> : <Navigate to="/" replace />;
+}
+
+function CronJobsPageContent() {
   const { message, modal } = App.useApp();
   const creation = useRef<{ payload: string; id: string } | null>(null);
   const saveInFlight = useRef(false);
-  const role = useAuthStore((s) => s.role);
-  const isAdmin = role === 'admin' || role === 'superadmin';
 
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -84,10 +88,6 @@ export default function CronJobsPage() {
   const [runsPage, setRunsPage] = useState(1);
   const [runsTotal, setRunsTotal] = useState(0);
 
-  if (!isAdmin) {
-    return <Navigate to="/" replace />;
-  }
-
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
@@ -104,7 +104,7 @@ export default function CronJobsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [message]);
 
   useEffect(() => {
     fetchData();

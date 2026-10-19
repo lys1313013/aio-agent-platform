@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { GraphChart } from 'echarts/charts';
 import { LegendComponent, TooltipComponent } from 'echarts/components';
-import { init, use } from 'echarts/core';
+import { init, use as registerECharts } from 'echarts/core';
 import type { ECharts, EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 
-use([GraphChart, LegendComponent, TooltipComponent, CanvasRenderer]);
+registerECharts([GraphChart, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 export interface GraphCanvasNode {
   id: string;

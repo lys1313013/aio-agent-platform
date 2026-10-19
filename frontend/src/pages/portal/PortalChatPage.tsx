@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useOutletContext } from 'react-router-dom';
 import { useChatStore } from '@/stores/chatStore';
 import { chatApi, portalApi } from '@/lib/api';
 import { useMessageQueue } from '@/hooks/useMessageQueue';
@@ -7,8 +7,11 @@ import { useChatStream } from '@/hooks/useChatStream';
 import ChatRunNotice from '@/components/chat/ChatRunNotice';
 import ChatWindow from '@/components/chat/ChatWindow';
 import SessionSidebar from '@/components/chat/SessionSidebar';
-import { Alert, App, Button, Skeleton } from 'antd';
-import { PlusOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import BrandLogo from '@/components/BrandLogo';
+import type { PortalOutletContext } from '@/components/layout/PortalLayout';
+import { useMobileChatViewport } from '@/hooks/useMobileChatViewport';
+import { Alert, App, Button, Drawer, Skeleton } from 'antd';
+import { PlusOutlined, ArrowLeftOutlined, MenuOutlined } from '@ant-design/icons';
 import type { PortalAgent, ChatAttachment } from '@/lib/types';
 import { getAgentIcon } from '@/lib/agent-icons';
 import './PortalChatPage.css';
@@ -20,11 +23,16 @@ import './PortalChatPage.css';
 export default function PortalChatPage() {
   const { agentId, sessionId: urlSessionId } = useParams<{ agentId: string; sessionId?: string }>();
   const navigate = useNavigate();
+  const { navigation } = useOutletContext<PortalOutletContext>();
+  const chatRef = useRef<HTMLDivElement>(null);
+  const isMobile = useMobileChatViewport(chatRef);
+  const [menuOpen, setMenuOpen] = useState(false);
   const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession, loadSessions, refreshSessions, setActiveSession } = useChatStore();
   const { message } = App.useApp();
   const [creatingSession, setCreatingSession] = useState(false);
   const [agent, setAgent] = useState<PortalAgent | null>(null);
   const [agentLoading, setAgentLoading] = useState(true);
+  useEffect(() => { setMenuOpen(false); }, [isMobile, agentId, urlSessionId]);
   // onDone 需要 flushNext，但 useChatStream 初始化早于 useMessageQueue —— 用 ref 打破循环依赖
   const flushNextRef = useRef<() => void>(() => {});
 
@@ -164,7 +172,22 @@ export default function PortalChatPage() {
     .filter((item) => !(streaming.isStreaming && run && item.id === run.assistant_message_id));
 
   return (
-    <div className="portal-chat flex min-h-0 flex-1 flex-col overflow-hidden">
+    <div ref={chatRef} className="portal-chat flex min-h-0 flex-1 flex-col overflow-hidden">
+      <Drawer
+        title="导航与对话"
+        placement="left"
+        open={isMobile && menuOpen}
+        onClose={() => setMenuOpen(false)}
+        size="min(340px, 88vw)"
+        rootClassName="portal-mobile-drawer"
+        styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}
+      >
+        <div className="portal-mobile-navigation">
+          <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/portal')}>智能体列表</Button>
+          {navigation}
+        </div>
+        {agentId && <SessionSidebar agentId={agentId} portal embedded onSelect={() => setMenuOpen(false)} />}
+      </Drawer>
       {/* Agent header */}
       {agentLoading && (
         <div className="portal-chat-header">
@@ -176,36 +199,43 @@ export default function PortalChatPage() {
           <Button
             type="text"
             size="small"
-            icon={<ArrowLeftOutlined />}
-            onClick={() => navigate('/portal')}
-            className="!px-1.5 text-muted-foreground"
-            aria-label="返回智能体列表"
+            icon={isMobile ? <MenuOutlined /> : <ArrowLeftOutlined />}
+            onClick={() => {
+              if (isMobile) {
+                setMenuOpen(true);
+                void refreshSessions(agentId);
+              } else navigate('/portal');
+            }}
+            className="portal-menu-button !px-1.5 text-muted-foreground"
+            aria-label={isMobile ? '打开导航与对话历史' : '返回智能体列表'}
+            aria-expanded={isMobile ? menuOpen : undefined}
           />
-          <span className="portal-agent-icon">{getAgentIcon(agent.icon)}</span>
+          <span className="portal-agent-icon">{isMobile && (!agent.icon || agent.icon === 'robot') ? <BrandLogo className="h-10 w-10" /> : getAgentIcon(agent.icon)}</span>
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
+            <div className="portal-agent-heading flex items-center gap-2">
               <h2 className="truncate text-sm font-semibold">{agent.name}</h2>
-              <span className="portal-agent-badge">智能体</span>
+              {!isMobile && <span className="portal-agent-badge">智能体</span>}
             </div>
             <p className="portal-conversation-title" title={sessions.find(s => s.id === activeSessionId)?.title || agent.description || undefined}>
-              {sessions.find(s => s.id === activeSessionId)?.title || agent.description || '开启一段新的对话'}
+              {isMobile ? '智能体' : sessions.find(s => s.id === activeSessionId)?.title || agent.description || '开启一段新的对话'}
             </p>
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-1">
               <Button
+                type="text"
                 className="portal-new-chat"
                 icon={<PlusOutlined />}
                 onClick={handleNewChat}
                 loading={creatingSession}
                 aria-label="新对话"
-              ><span className="hidden sm:inline">新对话</span></Button>
+              >{!isMobile && <span>新对话</span>}</Button>
           </div>
         </div>
       )}
 
       {/* Main content: session sidebar + chat area */}
-      <div className="flex flex-1 overflow-hidden relative">
-        {agentId && <SessionSidebar agentId={agentId} portal />}
+      <div className="flex min-h-0 flex-1 overflow-hidden relative">
+        {agentId && !isMobile && <SessionSidebar agentId={agentId} portal />}
 
         <ChatWindow
           loading={messagesLoading || agentLoading}

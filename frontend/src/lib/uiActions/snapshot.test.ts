@@ -121,14 +121,16 @@ describe('resolveRef / stale_ref', () => {
   it('ref 可解析回元素', () => {
     setBody('<button id="target">点我</button>');
     const snap = snapshotEngine.capture();
-    const ref = snap.tree.match(/@e\d+/)?.[0]!;
+    const ref = snap.tree.match(/@e\d+/)?.[0];
+    if (!ref) throw new Error('Expected a captured element reference');
     expect(snapshotEngine.resolveRef(ref)?.id).toBe('target');
   });
 
   it('元素脱离文档后返回 null（stale_ref）', () => {
     setBody('<button>将被移除</button>');
     const snap = snapshotEngine.capture();
-    const ref = snap.tree.match(/@e\d+/)?.[0]!;
+    const ref = snap.tree.match(/@e\d+/)?.[0];
+    if (!ref) throw new Error('Expected a captured element reference');
     setBody('<div>空了</div>');
     expect(snapshotEngine.resolveRef(ref)).toBeNull();
   });
@@ -136,7 +138,8 @@ describe('resolveRef / stale_ref', () => {
   it('invalidate 后旧 ref 全部失效', () => {
     setBody('<button>按钮</button>');
     const snap = snapshotEngine.capture();
-    const ref = snap.tree.match(/@e\d+/)?.[0]!;
+    const ref = snap.tree.match(/@e\d+/)?.[0];
+    if (!ref) throw new Error('Expected a captured element reference');
     snapshotEngine.invalidate();
     expect(snapshotEngine.resolveRef(ref)).toBeNull();
   });

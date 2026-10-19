@@ -282,7 +282,6 @@ async function execScreenshot(
 const EXEC_WATCHDOG_MS = 45_000;
 
 function log(...args: unknown[]): void {
-  // eslint-disable-next-line no-console
   console.info('[ui-runner]', ...args);
 }
 

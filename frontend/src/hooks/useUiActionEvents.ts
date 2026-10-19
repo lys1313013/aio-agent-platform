@@ -24,7 +24,6 @@ export function handleUiActionEvent(event: Record<string, unknown>): boolean {
       created_at: (event.created_at as string) || new Date().toISOString(),
     };
     uiActionStore.getState().enqueue(payload);
-    // eslint-disable-next-line no-console
     console.info('[ui-runner] enqueued', payload.action, payload.action_id);
     return true;
   }

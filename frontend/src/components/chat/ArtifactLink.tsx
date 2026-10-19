@@ -10,8 +10,11 @@ export function parseArtifactLink(href: string) {
   if (!href.startsWith('/workspace/')) return null;
   try {
     const path = decodeURIComponent(href.slice('/workspace/'.length));
+    // Reject control characters in decoded artifact paths, including NUL.
+    // eslint-disable-next-line no-control-regex
+    const hasUnsafeCharacters = /[\\\u0000-\u001f]/.test(path);
     if (!path || path.split('/').some((part) => !part || part === '.' || part === '..')
-      || /[\\\u0000-\u001f]/.test(path)) return null;
+      || hasUnsafeCharacters) return null;
     return { kind: 'file' as const, path, filename: path.split('/').pop()! };
   } catch {
     return null;

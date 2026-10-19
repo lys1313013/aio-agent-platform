@@ -416,7 +416,7 @@ export default function ChatMessage({ message: msg, onEditResend, compact, works
                               a: ({ href, children }) => (
                                 <ArtifactLink href={href} workspaceId={workspaceId}>{children}</ArtifactLink>
                               ),
-                              code: ({ node, className, children, ...props }) => {
+                              code: ({ node: _node, className, children, ...props }) => {
                                 const match = /language-(\w+)/.exec(className || '');
                                 const codeString = String(children).replace(/\n$/, '');
                                 return match ? (

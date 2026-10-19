@@ -52,9 +52,13 @@ const STATUS_META: Record<string, { color: string; label: string }> = {
 type TransportType = 'sse' | 'streamable-http';
 
 export default function McpManagementPage() {
-  const { message } = App.useApp();
   const role = useAuthStore((s) => s.role);
   const isAdmin = role === 'admin' || role === 'superadmin';
+  return isAdmin ? <McpManagementPageContent /> : <Navigate to="/" replace />;
+}
+
+function McpManagementPageContent() {
+  const { message } = App.useApp();
 
   // ---- List state ----
   const [servers, setServers] = useState<McpServer[]>([]);
@@ -71,11 +75,6 @@ export default function McpManagementPage() {
   // ---- Tools detail modal ----
   const [toolsModalOpen, setToolsModalOpen] = useState(false);
   const [toolsModalServer, setToolsModalServer] = useState<McpServer | null>(null);
-
-  // ---- Admin guard ----
-  if (!isAdmin) {
-    return <Navigate to="/" replace />;
-  }
 
   // ---- Data fetching ----
   const fetchData = useCallback(async () => {

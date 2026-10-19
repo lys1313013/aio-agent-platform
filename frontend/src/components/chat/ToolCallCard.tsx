@@ -429,7 +429,7 @@ function parseKnowledgeChunks(preview: string): KnowledgeChunk[] {
     const contentLines: string[] = [];
     i++;
     while (i < lines.length && lines[i].startsWith('   ')) {
-      contentLines.push(lines[i].replace(/^   /, ''));
+      contentLines.push(lines[i].replace(/^ {3}/, ''));
       i++;
     }
     chunks.push({

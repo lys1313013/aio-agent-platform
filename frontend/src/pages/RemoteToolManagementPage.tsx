@@ -59,9 +59,13 @@ type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
 type AuthType = 'none' | 'bearer' | 'api_key' | 'basic' | 'custom_header';
 
 export default function RemoteToolManagementPage() {
-  const { message } = App.useApp();
   const role = useAuthStore((s) => s.role);
   const isAdmin = role === 'admin' || role === 'superadmin';
+  return isAdmin ? <RemoteToolManagementPageContent /> : <Navigate to="/" replace />;
+}
+
+function RemoteToolManagementPageContent() {
+  const { message } = App.useApp();
 
   // ---- List state ----
   const [tools, setTools] = useState<RemoteTool[]>([]);
@@ -82,11 +86,6 @@ export default function RemoteToolManagementPage() {
   const [testForm] = Form.useForm();
   const [testResult, setTestResult] = useState<{ success: boolean; body: string; error: string | null } | null>(null);
   const [testLoading, setTestLoading] = useState(false);
-
-  // ---- Admin guard ----
-  if (!isAdmin) {
-    return <Navigate to="/" replace />;
-  }
 
   // ---- Data fetching ----
   const fetchData = useCallback(async () => {

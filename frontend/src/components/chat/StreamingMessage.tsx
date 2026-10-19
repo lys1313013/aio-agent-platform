@@ -185,7 +185,7 @@ export default function StreamingMessage({ streaming, compact, workspaceId, reas
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                  code: ({ node, className, children, ...props }) => {
+                  code: ({ node: _node, className, children, ...props }) => {
                     const match = /language-(\w+)/.exec(className || '');
                     const codeString = String(children).replace(/\n$/, '');
                     return match ? (

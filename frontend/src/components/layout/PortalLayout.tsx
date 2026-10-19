@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import {
@@ -13,6 +13,8 @@ import type { MenuProps } from 'antd';
 import { settingsApi } from '@/lib/api';
 import { SkinPickerContent } from '@/components/SkinPicker';
 import BrandLogo from '@/components/BrandLogo';
+
+export interface PortalOutletContext { navigation: ReactNode }
 
 /**
  * 用户端对话门户布局：仅顶栏（品牌 / 租户 / 用户菜单），无管理端侧边菜单，
@@ -59,6 +61,42 @@ export default function PortalLayout() {
     },
   ];
 
+  const navigation = (
+    <div className="flex items-center gap-2">
+      <button onClick={() => navigate('/portal/rooms')} className="rounded-lg px-2 py-1.5 text-sm text-primary hover:bg-muted">聊天室</button>
+      <button onClick={() => navigate('/portal/skills')} className="rounded-lg px-2 py-1.5 text-sm text-primary hover:bg-muted">我的技能</button>
+      {tenantOptions.length > 1 ? (
+        <Select
+          aria-label="当前租户"
+          size="small"
+          className="min-w-32 max-w-52"
+          value={tenantOptions.find((tenant) => tenant.is_current)?.id}
+          options={tenantOptions
+            .filter((tenant) => tenant.is_active)
+            .map((tenant) => ({ value: tenant.id, label: tenant.name }))}
+          onChange={async (tenantId) => {
+            await settingsApi.switchTenant(tenantId);
+            window.location.reload();
+          }}
+        />
+      ) : tenantName ? (
+        <span
+          title={tenantName}
+          className="hidden sm:flex max-w-52 items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-muted-foreground"
+        >
+          <GlobalOutlined className="shrink-0 text-primary" />
+          <span className="truncate">{tenantName}</span>
+        </span>
+      ) : null}
+      <Dropdown menu={{ items: userMenuItems }} trigger={['click']} placement="bottomRight">
+        <button aria-label="账户菜单" className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-muted">
+          <Avatar size={28} icon={<UserOutlined />} className="bg-primary/20 text-primary" />
+          <span className="hidden sm:inline text-sm text-foreground">{username || '用户'}</span>
+        </button>
+      </Dropdown>
+    </div>
+  );
+
   return (
     <div className={`flex h-screen flex-col overflow-hidden bg-background ${isAgentChat ? 'portal-chat-layout' : ''}`}>
       <header className="relative z-10 flex h-14 flex-shrink-0 items-center justify-between border-b border-border/40 bg-card/90 px-4 shadow-[0_1px_12px_rgba(15,23,42,0.04)] backdrop-blur-sm sm:px-6">
@@ -71,43 +109,11 @@ export default function PortalLayout() {
           <h1 className="text-sm font-bold tracking-tight text-foreground">智能体平台</h1>
         </button>
 
-        <div className="flex items-center gap-2">
-          <button onClick={() => navigate('/portal/rooms')} className="rounded-lg px-2 py-1.5 text-sm text-primary hover:bg-muted">聊天室</button>
-          <button onClick={() => navigate('/portal/skills')} className="rounded-lg px-2 py-1.5 text-sm text-primary hover:bg-muted">我的技能</button>
-          {tenantOptions.length > 1 ? (
-            <Select
-              aria-label="当前租户"
-              size="small"
-              className="min-w-32 max-w-52"
-              value={tenantOptions.find((tenant) => tenant.is_current)?.id}
-              options={tenantOptions
-                .filter((tenant) => tenant.is_active)
-                .map((tenant) => ({ value: tenant.id, label: tenant.name }))}
-              onChange={async (tenantId) => {
-                await settingsApi.switchTenant(tenantId);
-                window.location.reload();
-              }}
-            />
-          ) : tenantName ? (
-            <span
-              title={tenantName}
-              className="hidden sm:flex max-w-52 items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-muted-foreground"
-            >
-              <GlobalOutlined className="shrink-0 text-primary" />
-              <span className="truncate">{tenantName}</span>
-            </span>
-          ) : null}
-          <Dropdown menu={{ items: userMenuItems }} trigger={['click']} placement="bottomRight">
-            <button className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-muted">
-              <Avatar size={28} icon={<UserOutlined />} className="bg-primary/20 text-primary" />
-              <span className="hidden sm:inline text-sm text-foreground">{username || '用户'}</span>
-            </button>
-          </Dropdown>
-        </div>
+        {navigation}
       </header>
 
-      <main className="flex flex-1 flex-col overflow-hidden bg-background">
-        <Outlet />
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+        <Outlet context={{ navigation } satisfies PortalOutletContext} />
       </main>
 
       <Modal

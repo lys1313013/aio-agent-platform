@@ -34,7 +34,7 @@ const SESSION_SOURCE_LABELS: Record<string, string> = {
   wecom_bot: '企微机器人',
 };
 
-export default function SessionSidebar({ agentId, portal }: { agentId?: string | null; portal?: boolean }) {
+export default function SessionSidebar({ agentId, portal, embedded = false, onSelect }: { agentId?: string | null; portal?: boolean; embedded?: boolean; onSelect?: () => void }) {
   const navigate = useNavigate();
   const { modal } = App.useApp();
   const {
@@ -58,7 +58,7 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
   const [searchQuery, setSearchQuery] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(embedded);
   const [creatingSession, setCreatingSession] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
@@ -71,7 +71,7 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
 
   // Close panel on click outside
   useEffect(() => {
-    if (!panelOpen) return;
+    if (!panelOpen || embedded) return;
     const handleClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (
@@ -88,7 +88,7 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
     };
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
-  }, [panelOpen]);
+  }, [panelOpen, embedded]);
 
   const handleNewChat = async () => {
     if (creatingSession) return;
@@ -139,7 +139,8 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
 
   const handleSelectSession = (id: string) => {
     setActiveSession(id);
-    setPanelOpen(false);
+    if (!embedded) setPanelOpen(false);
+    onSelect?.();
     if (agentId) {
       const base = portal ? `/portal/agents/${agentId}` : `/agents/${agentId}`;
       navigate(`${base}/chat/${id}`, { replace: true });
@@ -189,14 +190,14 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
         'flex flex-shrink-0 overflow-hidden transition-all duration-200 ease-in-out',
         portal && 'portal-session-sidebar',
         portal ? 'border-r border-border/50 bg-card/30' : 'border-r border-border bg-card',
-        panelOpen
+        embedded ? 'portal-session-embedded w-full min-h-0 flex-1 !border-0' : panelOpen
           // 小屏：抽屉式覆盖在聊天区之上，不挤压内容；sm 及以上恢复为并排布局
           ? 'absolute inset-y-0 left-0 z-20 w-[85vw] max-w-[340px] shadow-xl sm:static sm:z-auto sm:w-[340px] sm:max-w-none sm:shadow-none'
           : 'w-11',
       )}
     >
       {/* Icon rail */}
-      <div className="flex flex-col items-center py-2 w-11 flex-shrink-0 gap-1">
+      {!embedded && <div className="flex flex-col items-center py-2 w-11 flex-shrink-0 gap-1">
         <Tooltip title="对话历史" placement="right" mouseEnterDelay={0.5}>
           <button
             aria-label="对话历史"
@@ -248,7 +249,7 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
             <ReloadOutlined className="text-sm" />
           </button>
         </Tooltip>}
-      </div>
+      </div>}
 
       {/* Inline panel */}
       {panelOpen && (
@@ -260,13 +261,13 @@ export default function SessionSidebar({ agentId, portal }: { agentId?: string |
                 <HistoryOutlined className="text-primary" />
                 <span className="text-sm font-semibold">对话历史</span>
               </div>
-            <button
+            {!embedded && <button
               aria-label="关闭对话历史"
               onClick={() => setPanelOpen(false)}
               className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
             >
               <CloseOutlined className="text-xs" />
-            </button>
+            </button>}
           </div>
           {/* Workspace selector（门户模式隐藏） */}
           {!portal && (
@@ -637,6 +638,7 @@ function SessionItem({
 
           <Dropdown menu={{ items: menuItems }} trigger={['click']}>
             <button
+              aria-label="对话操作"
               onClick={(e) => e.stopPropagation()}
               className="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground group-hover:opacity-100"
             >

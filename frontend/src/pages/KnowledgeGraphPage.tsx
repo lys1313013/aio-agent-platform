@@ -36,9 +36,13 @@ const { Text } = Typography;
 const { TextArea } = Input;
 
 export default function KnowledgeGraphPage() {
-  const { message } = App.useApp();
   const role = useAuthStore((s) => s.role);
   const isAdmin = role === 'admin' || role === 'superadmin';
+  return isAdmin ? <KnowledgeGraphPageContent /> : <Navigate to="/" replace />;
+}
+
+function KnowledgeGraphPageContent() {
+  const { message } = App.useApp();
   const navigate = useNavigate();
 
   const [knowledgeBases, setKnowledgeBases] = useState<GraphKnowledgeBase[]>([]);
@@ -48,10 +52,6 @@ export default function KnowledgeGraphPage() {
   const [editingKb, setEditingKb] = useState<GraphKnowledgeBase | null>(null);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
-
-  if (!isAdmin) {
-    return <Navigate to="/" replace />;
-  }
 
   const fetchData = useCallback(async () => {
     setLoading(true);

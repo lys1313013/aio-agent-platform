@@ -95,7 +95,10 @@ cd backend && uv run aio-cli          # CLI 对话
 cd backend && uv run aio-manage       # 管理命令
 cd backend && uv run alembic upgrade head  # 数据库迁移
 cd frontend && npm run build          # 前端生产构建
+cd frontend && npm run lint           # ESLint（JavaScript / TypeScript / React Hooks）
 ```
+
+前端 lint 配置位于 `frontend/eslint.config.js`，CI 会自动执行检查。代码正确性和 Hooks 调用规则按错误检查；现有 `any` 类型、Hooks 依赖数组和 Fast Refresh 导出问题按警告报告，便于逐步清理。构建产物不参与检查。
 
 ## 配置说明
 
