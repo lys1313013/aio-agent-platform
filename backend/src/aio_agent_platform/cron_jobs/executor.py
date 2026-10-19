@@ -18,6 +18,7 @@ async def execute_cron_job(job, db, run_id, *, tool_executor, push_to_channel):
         refresh_mcp_tools_for_agent,
     )
     from aio_agent_platform.core.chat_history import ChatTurnRecorder
+    from aio_agent_platform.core.prompt import build_cron_execution_prompt
     from aio_agent_platform.db.models import CronJobRun, Message, Tenant, TenantMembership, User
     from aio_agent_platform.db.models import Session as ChatSession
 
@@ -126,18 +127,9 @@ async def execute_cron_job(job, db, run_id, *, tool_executor, push_to_channel):
         system_prompt = await build_system_prompt_with_memories(
             db, job.user_id, job.message, tools_list, agent=agent, tenant_id=job.tenant_id,
         )
-        system_prompt += (
-            "\n\n[定时任务结果与通知] 执行完毕后使用 cron_respond 上报 summary 和 notify。"
-            "summary 是保存在后台的完整执行摘要；notify 决定是否发送飞书等 IM 消息。"
-            "用户没有明确静默条件时默认 notify=true；用户要求仅满足条件才通知时，"
-            "条件未满足必须 notify=false 并填写 reason，不能推送『未触发，保持静默』这类消息。"
-            "需要通知时可以用 notification_text 提供精简正文。系统在执行成功结束后统一发送，"
-            "不要主动调用 notify_channel 发送结果；静默与邮件是否发送无关，邮件按任务规则执行。"
-            "若未使用 cron_respond，最终回答默认作为通知正文；仅当需要静默时最终全文只返回"
-            "大写 NO_REPLY，不能附加解释、标点或代码块。结构化上报优先于最终回答。"
+        system_prompt += "\n\n" + build_cron_execution_prompt(
+            has_notify_channel=bool(job.channel_id),
         )
-        if not job.channel_id:
-            system_prompt += "当前任务未绑定 IM 推送渠道，执行结果只保存在后台。"
         loop = await build_agent_loop(
             tool_executor, system_prompt, db,
             agent_model_id=agent.model_id,

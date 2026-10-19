@@ -67,6 +67,7 @@ def execution(monkeypatch):
 
     async def build_loop(*args, **kwargs):
         d.options = kwargs
+        d.system_prompt = args[1]
         return Loop()
 
     monkeypatch.setattr(chat, "load_agent", AsyncMock(return_value=agent))
@@ -446,3 +447,53 @@ async def test_real_agent_loop_and_tool_executor_report_decision(execution, monk
     assert d.run.output == "真实循环的检查报告"
     assert d.run.delivery_status == ("sent" if notify else "suppressed")
     assert d.pushed.await_count == int(notify)
+
+
+@pytest.mark.parametrize("custom_prompt", [None, "你是监控智能体。旧约定：执行后调用 notify_channel。"])
+@pytest.mark.parametrize("bound_channel", [False, True])
+async def test_cron_contract_follows_default_or_custom_prompt(execution, monkeypatch, custom_prompt, bound_channel):
+    from aio_agent_platform.core.prompt import build_cron_execution_prompt, build_system_prompt
+
+    d = execution
+    if not bound_channel:
+        d.job.channel_id = None
+    base = build_system_prompt(agent_prompt=custom_prompt)
+    # Normal chat keeps its own prompt. Only the cron entry appends the runtime contract.
+    assert "## 定时任务运行协议" not in base
+    monkeypatch.setattr(chat, "build_system_prompt_with_memories", AsyncMock(return_value=base))
+    await execute(d)
+    contract = build_cron_execution_prompt(has_notify_channel=bound_channel)
+    assert d.system_prompt == base + "\n\n" + contract
+    assert d.system_prompt.count("## 定时任务运行协议") == 1
+    if bound_channel:
+        assert "当前任务已绑定 IM 渠道" in contract
+        assert "当前任务未绑定 IM 渠道" not in contract
+    else:
+        assert "当前任务未绑定 IM 渠道" in contract
+        assert "当前任务已绑定 IM 渠道" not in contract
+
+
+@pytest.mark.parametrize("notify", [False, True])
+async def test_prompt_examples_execute_the_documented_delivery_decision(execution, notify):
+    import json
+
+    from aio_agent_platform.core.prompt import build_cron_execution_prompt
+
+    d = execution
+    examples = [json.loads(line) for line in build_cron_execution_prompt(
+        has_notify_channel=True,
+    ).splitlines() if line.startswith('{"notify":')]
+    example = next(item for item in examples if item["notify"] is notify)
+
+    async def action(ctx):
+        await respond(ctx, **example)
+
+    d.action = action
+    await execute(d)
+    assert d.run.output == example["summary"]
+    assert d.run.delivery_status == ("sent" if notify else "suppressed")
+    if notify:
+        d.pushed.assert_awaited_once_with(d.db, d.job, example["notification_text"])
+    else:
+        d.pushed.assert_not_awaited()
+        assert d.run.delivery_reason == example["reason"]

@@ -51,6 +51,13 @@ def build_current_time_context() -> str:
     )
 
 
+def build_cron_execution_prompt(*, has_notify_channel: bool) -> str:
+    """Runtime-only contract, appended after default/custom role and memory prompts."""
+    return _env.get_template("cron_execution.j2").render(
+        has_notify_channel=has_notify_channel,
+    ).strip()
+
+
 def build_system_prompt(
     tools: list | None = None,
     persistent_memories: list | None = None,

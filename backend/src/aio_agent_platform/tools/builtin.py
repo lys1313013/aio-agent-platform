@@ -987,7 +987,14 @@ CREATE_CRON_JOB = Tool(
             },
             "message": {
                 "type": "string",
-                "description": "The message to send to the agent when the task fires.",
+                "description": (
+                    "Self-contained instructions for the scheduled run: preserve the user's "
+                    "task, data sources, trigger criteria and notification conditions. "
+                    "Write IM notification/silence conditions separately from email actions. "
+                    "Silence means no IM notification while retaining the background result; "
+                    "not sending email does not imply IM silence. The run reports its final "
+                    "summary and notification decision using cron_respond."
+                ),
             },
             "request_id": {
                 "type": "string",
@@ -1029,7 +1036,9 @@ CREATE_CRON_JOB = Tool(
                     "task result to. The result is sent to the task owner's "
                     "bound external account on that channel's tenant. "
                     "Omit it — when the conversation happens in an IM channel, "
-                    "that channel is bound automatically."
+                    "that channel is bound automatically. With a bound channel the runner "
+                    "delivers results by default; preserve conditional silence in message. "
+                    "This field does not configure email delivery."
                 ),
             },
         },

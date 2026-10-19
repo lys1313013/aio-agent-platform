@@ -14,11 +14,11 @@ CRON_RESPOND_TOOL_SCHEMA: dict = {
     "function": {
         "name": CRON_RESPOND_TOOL_NAME,
         "description": (
-            "上报定时任务的后台执行摘要和是否通知用户，由系统在执行成功结束后统一推送 IM 消息。"
-            "summary 始终保留在运行记录中；notify=false 表示本次不发飞书等 IM 消息，"
-            "reason 说明静默原因。仅在任务明确要求的静默条件满足时设为 false，默认应通知。"
-            "notify=true 时 notification_text 为通知正文，省略则使用 summary。"
-            "本工具不会发送邮件，也不改变任务自身的邮件规则。"
+            "登记定时任务的执行摘要和 IM 通知决策，不立即发送。"
+            "按定时任务运行协议与任务约定选择 notify；"
+            "notify=false 必须提供静默原因 reason，summary 始终保存在后台。"
+            "notify=true 可另填 notification_text，省略时使用 summary。"
+            "邮件等任务操作应先完成，再上报；工具成功仅代表已登记，不能据此声称消息已送达。"
         ),
         "parameters": {
             "type": "object",
@@ -89,7 +89,7 @@ async def handle_cron_respond(args: dict, user_id: str, session_id: str, **kwarg
         notification_text=text.strip() if text is not None else None,
         reason=reason.strip() if isinstance(reason, str) else None,
     )
-    return "已记录执行摘要和通知决策，任务结束后由系统统一处理；此时尚未发送通知。"
+    return "已记录执行摘要和通知决策，尚未发送通知。若结果无误，请结束本轮；最终文字不会覆盖已登记的决策。"
 
 
 async def handle_notify_channel(args: dict, user_id: str, session_id: str, **kwargs) -> str:
