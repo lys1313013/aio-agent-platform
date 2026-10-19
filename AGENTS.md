@@ -4,9 +4,11 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## 项目概述
 
-多租户 AI 智能体平台。后端 FastAPI + SQLAlchemy，前端 React + TypeScript + Ant Design，PostgreSQL 数据库，Docker 沙箱执行代码。
+多租户 AI 智能体平台。后端 Python 3.13 + FastAPI + SQLAlchemy，前端 React + TypeScript + Ant Design，PostgreSQL 数据库，Docker 沙箱执行代码。
 
 ## 常用命令
+
+后端、沙箱和 CI 统一使用 Python 3.13，`backend/.python-version` 固定本地 uv 版本。修改运行时版本时同步更新 Dockerfile、CI、pyproject 工具配置和 uv.lock，并验证完整测试与镜像构建。
 
 ```bash
 # 后端
@@ -92,6 +94,7 @@ docker compose --profile build up sandbox-build  # 构建沙箱镜像
 - 现有对象按自身租户运行：定时任务 `job.tenant_id`、渠道 `channel.tenant_id`、协作房间 `room.tenant_id`、智能体/会话绑定的 `agent.tenant_id`；动态子智能体继承父执行租户。
 - 使用 `core/execution_scope.py`：入口先 `require_execution_user` 校验用户、租户启用状态和成员资格；再按执行租户及 `visibility/created_by` 校验资源，最后绑定上下文。绑定 ContextVar 本身不代表授权。
 - `AgentLoop` 必须显式传入 `execution_tenant_id`，或继承已校验的执行上下文；`build_agent_loop` 会设置它。工具通过 `resolve_execution_tenant` 获取上下文；不能缓存用户当前租户，不能修改 ORM `User.tenant_id` 来模拟切换。
+- 流式执行的 ContextVar 必须在创建它的 Context 中清理，不能依赖调用方始终在同一 Task 中推进生成器；跨 Task 的 `anext`、关闭、取消和异常都要验证，尤其是 Python 3.11 的 `asyncio.wait_for`。
 - 新协程、流式生成器、并发工具和延迟任务都要传播执行上下文；任务结束、异常、取消时必须清理。记忆后台任务重新校验来源对象和成员资格；缺少可靠租户来源的历史无智能体任务跳过并记录错误，禁止回退公共租户。
 - 回归至少覆盖：运行中切换界面租户仍使用原对象租户；成员被移除/租户停用/私有资源不可见时拒绝执行；并发、异常、取消不串上下文；用户当前租户不被写回；模型、工具、画像、记忆与观测归属一致。
 - 历史归属修复是独立的数据治理操作，必须单独获得用户授权；代码修复不附带历史数据迁移。

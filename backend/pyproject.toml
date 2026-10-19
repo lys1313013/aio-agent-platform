@@ -3,7 +3,7 @@ name = "aio-agent-platform"
 version = "0.1.0"
 description = "A self-evolving multi-tenant AI agent platform"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 license = { text = "MIT" }
 authors = [
     { name = "AIO Agent Platform Team" },
@@ -114,7 +114,7 @@ dev = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = [
@@ -139,7 +139,7 @@ ignore = [
 ]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 strict = false
 warn_return_any = false
 warn_unused_ignores = false

@@ -2,7 +2,7 @@
 # Sandbox image — isolated execution environment
 # All commands run here, never on the host
 # ============================================================
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 ARG INSTALL_OFFICE_RENDERER=false
 

@@ -173,7 +173,7 @@ async def test_revisions_bounded(db_session, model):
 async def test_tool_and_extraction_call_reconciliation_without_database(monkeypatch):
     from aio_agent_platform.memory.handlers import handle_memory_write
 
-    uid, agent, session_id = uuid4(), uuid4(), uuid4()
+    uid, agent, session_id, tenant = uuid4(), uuid4(), uuid4(), uuid4()
     memory = Memory(id=uuid4(), content='英语初学者')
     db = MagicMock(spec=AsyncSession)
     db.__aenter__.return_value = db
@@ -191,11 +191,21 @@ async def test_tool_and_extraction_call_reconciliation_without_database(monkeypa
     assert reconcile.call_args.args[:4] == (db, uid, 'L2', '刚入门')
     assert reconcile.call_args.kwargs['agent_id'] == agent
     reconcile.reset_mock()
+    # Background authorization loads the source Session, then the Agent tenant,
+    # then the active user/membership. A bare UUID is not a Session object.
+    db.scalar.side_effect = [SimpleNamespace(agent_id=agent), tenant, SimpleNamespace(id=uid)]
     provider = SimpleNamespace(complete=AsyncMock(return_value=SimpleNamespace(content=json.dumps({
         'l2_memories': [{'content': '正在学英语'}], 'l3_summary': '',
     }))))
+    from aio_agent_platform.core.execution_scope import execution_tenant_id
+
+    async def get_provider(user_id):
+        assert user_id == uid
+        assert execution_tenant_id(uid) == tenant
+        return provider
+
     monkeypatch.setattr('aio_agent_platform.memory.service.create_default_provider_for_user',
-                        AsyncMock(return_value=provider))
+                        get_provider)
     rows = await MemoryService.extract_memories_from_conversation(uid, session_id, [], agent_id=agent)
     assert rows == [memory]
     reconcile.assert_awaited_once()

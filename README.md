@@ -15,7 +15,7 @@
 
 ## 技术栈
 
-- **后端**: Python 3.12+, FastAPI, SQLAlchemy, Alembic
+- **后端**: Python 3.13, FastAPI, SQLAlchemy, Alembic
 - **前端**: React + TypeScript, Vite, Ant Design
 - **数据库**: PostgreSQL 16
 - **沙箱**: Docker
@@ -23,7 +23,7 @@
 
 ## 环境要求
 
-- Python >= 3.12
+- Python 3.13
 - [uv](https://docs.astral.sh/uv/)（Python 包管理器）
 - Node.js >= 18 + npm
 - Docker & Docker Compose

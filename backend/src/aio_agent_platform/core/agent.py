@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC
 from uuid import UUID, uuid4
@@ -256,6 +257,52 @@ class AgentLoop:
         self.stop_reason: str | None = None
 
     async def run(
+        self,
+        user_input: str | list[dict] | None,
+        user_id: UUID,
+        session_id: UUID,
+        conversation_history: list[LLMMessage],
+        tools: list[dict],
+    ) -> AsyncIterator[AgentStep | str]:
+        # Consumers may advance/close the iterator from different tasks (e.g.
+        # wait_for on Python 3.11). One worker owns the complete generator
+        # lifecycle, including ContextVar tokens and provider stream contexts.
+        requests: asyncio.Queue[asyncio.Future] = asyncio.Queue()
+
+        async def produce():
+            events = self._run_scoped(user_input, user_id, session_id, conversation_history, tools)
+            try:
+                while True:
+                    response = await requests.get()
+                    try:
+                        event = await anext(events)
+                    except BaseException as error:
+                        if not response.done():
+                            response.set_exception(error)
+                        return
+                    if not response.done():
+                        response.set_result(event)
+            finally:
+                await events.aclose()
+
+        worker = asyncio.create_task(produce())
+        try:
+            while True:
+                response = asyncio.get_running_loop().create_future()
+                requests.put_nowait(response)
+                try:
+                    event = await response
+                except StopAsyncIteration:
+                    break
+                # Demand-driven: no provider/tool work advances until the
+                # consumer asks for another event.
+                yield event
+        finally:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
+
+    async def _run_scoped(
         self,
         user_input: str | list[dict] | None,
         user_id: UUID,
