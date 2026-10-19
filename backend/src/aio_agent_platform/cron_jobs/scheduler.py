@@ -227,6 +227,7 @@ class Scheduler:
             tenant_id=job.tenant_id,
             user_id=job.user_id,
             status="running",
+            delivery_status="pending" if job.channel_id else "not_requested",
             started_at=datetime.now(UTC),
         )
         db.add(run)
@@ -248,6 +249,9 @@ class Scheduler:
                 )
                 # Fallback: executor raised before it could finalize the run record
                 run.status = "failed"
+                if run.delivery_status == "pending":
+                    run.delivery_status = "not_requested"
+                    run.delivery_reason = "execution_failed"
                 run.error = str(exc) or "scheduler execution raised unexpectedly"
                 run.finished_at = datetime.now(UTC)
                 if run.started_at:
@@ -260,6 +264,9 @@ class Scheduler:
                 # never leave a run stuck in "running" forever.
                 if run.status == "running":
                     run.status = "failed"
+                    if run.delivery_status == "pending":
+                        run.delivery_status = "not_requested"
+                        run.delivery_reason = "execution_failed"
                     run.error = "executor returned without finalizing the run"
                     run.finished_at = datetime.now(UTC)
                     if run.started_at:

@@ -379,6 +379,10 @@ async def _run_manual_migrations(conn) -> None:
         "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()",
         "ALTER TABLE cron_job_runs ADD COLUMN IF NOT EXISTS tenant_id UUID",
         "ALTER TABLE cron_job_runs ALTER COLUMN tenant_id SET NOT NULL",
+        # Preserve unknown delivery history; do not infer delivery from execution success.
+        "ALTER TABLE cron_job_runs ADD COLUMN IF NOT EXISTS delivery_status VARCHAR(32) NOT NULL DEFAULT 'unknown'",
+        "ALTER TABLE cron_job_runs ADD COLUMN IF NOT EXISTS delivery_reason TEXT",
+        "ALTER TABLE cron_job_runs ADD COLUMN IF NOT EXISTS delivery_error TEXT",
         # LLM tenant isolation
         "ALTER TABLE llm_providers ADD COLUMN IF NOT EXISTS tenant_id UUID",
         "ALTER TABLE llm_providers ALTER COLUMN tenant_id SET NOT NULL",

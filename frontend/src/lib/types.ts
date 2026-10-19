@@ -735,6 +735,9 @@ export interface CronJobRun {
   duration_ms: number | null;
   output: string | null;
   error: string | null;
+  delivery_status: 'pending' | 'sent' | 'suppressed' | 'not_requested' | 'failed' | 'unknown';
+  delivery_reason: string | null;
+  delivery_error: string | null;
   /** 任务名（全任务记录接口 LEFT JOIN 填充；任务已删除时为 null） */
   job_name?: string | null;
 }

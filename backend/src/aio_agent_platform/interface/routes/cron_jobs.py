@@ -105,6 +105,9 @@ class CronJobRunOut(BaseModel):
     duration_ms: int | None = None
     output: str | None = None
     error: str | None = None
+    delivery_status: str = "unknown"
+    delivery_reason: str | None = None
+    delivery_error: str | None = None
     job_name: str | None = None
 
     model_config = {"from_attributes": True}

@@ -6,6 +6,7 @@ import type { CronJob, CronJobRun } from '@/lib/types';
 import { useAuthStore } from '@/stores/authStore';
 import { useChatStore } from '@/stores/chatStore';
 import { Navigate, useNavigate } from 'react-router-dom';
+import CronDeliveryStatus from '@/components/cron/CronDeliveryStatus';
 
 const { Text, Paragraph } = Typography;
 
@@ -159,6 +160,13 @@ export default function CronJobRunsPage() {
       render: runStatusTag,
     },
     {
+      title: '通知',
+      dataIndex: 'delivery_status',
+      key: 'delivery_status',
+      width: 110,
+      render: (_: unknown, record: CronJobRun) => <CronDeliveryStatus run={record} />,
+    },
+    {
       title: '耗时',
       dataIndex: 'duration_ms',
       key: 'duration_ms',
@@ -256,6 +264,11 @@ export default function CronJobRunsPage() {
                 {detail.job_name || '（任务已删除）'}
               </Text>
               {runStatusTag(detail.status)}
+            </div>
+
+            <div>
+              <Text type="secondary">通知状态</Text>
+              <div className="mt-1"><CronDeliveryStatus run={detail} showReason /></div>
             </div>
 
             <div className="grid grid-cols-2 gap-3 text-sm">

@@ -112,7 +112,7 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
         scheduler.add_job(job)
 
     notify_line = (
-        f"  Notify channel: {job.channel_id} (结果会推送到该渠道)\n"
+        f"  Notify channel: {job.channel_id} (默认推送；明确满足静默条件时只记录结果)\n"
         if job.channel_id
         else "  Notify channel: 未绑定（任务将静默执行，结果仅写入会话）\n"
     )

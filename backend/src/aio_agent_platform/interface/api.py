@@ -176,12 +176,15 @@ async def lifespan(app: FastAPI):
 
     tool_executor.register_direct_handler(SEND_FILE_TOOL_NAME, handle_send_file)
 
-    # 9.10 Register cron channel-notify tool handler (定时任务主动通知渠道)
+    # 9.10 Register cron result handlers (decisions only; executor owns delivery)
     from aio_agent_platform.channels.cron_notify import (
+        CRON_RESPOND_TOOL_NAME,
         NOTIFY_CHANNEL_TOOL_NAME,
+        handle_cron_respond,
         handle_notify_channel,
     )
 
+    tool_executor.register_direct_handler(CRON_RESPOND_TOOL_NAME, handle_cron_respond)
     tool_executor.register_direct_handler(NOTIFY_CHANNEL_TOOL_NAME, handle_notify_channel)
 
     # 9.11 Register artifact tool handlers (create_webpage 网页产物)

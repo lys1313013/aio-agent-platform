@@ -32,6 +32,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { Navigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { cronToLabel, storedCronForEditing } from '@/lib/cron';
+import CronDeliveryStatus from '@/components/cron/CronDeliveryStatus';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -306,6 +307,13 @@ function CronJobsPageContent() {
       render: runStatusTag,
     },
     {
+      title: '通知',
+      dataIndex: 'delivery_status',
+      key: 'delivery_status',
+      width: 110,
+      render: (_: string, record: CronJobRun) => <CronDeliveryStatus run={record} />,
+    },
+    {
       title: '耗时',
       dataIndex: 'duration_ms',
       key: 'duration_ms',
@@ -547,7 +555,7 @@ function CronJobsPageContent() {
           <Form.Item
             name="channel_id"
             label="推送渠道"
-            tooltip="任务执行时智能体可通过 notify_channel 工具主动推送结果到你在该渠道绑定的账号（默认静默，仅在需要通知用户时才推送；需先在渠道管理中启用渠道并完成账号绑定）"
+            tooltip="绑定渠道后默认推送执行结果；任务明确要求的静默条件满足时不推送，后台仍保留执行摘要和静默原因。需先启用渠道并完成账号绑定。"
           >
             <Select
               placeholder="不推送（可选）"
@@ -583,7 +591,7 @@ function CronJobsPageContent() {
         open={runsOpen}
         onCancel={() => setRunsOpen(false)}
         footer={null}
-        width={720}
+        width={880}
       >
         <Table<CronJobRun>
           rowKey="id"

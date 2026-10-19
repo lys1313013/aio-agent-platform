@@ -5,6 +5,7 @@ from aio_agent_platform.core.execution_scope import bind_execution_scope
 
 async def execute_cron_job(job, db, run_id, *, tool_executor, push_to_channel):
     """Execute a cron job by running its agent with the configured message."""
+    import asyncio
     from datetime import UTC, datetime
 
     from sqlalchemy import select
@@ -43,6 +44,9 @@ async def execute_cron_job(job, db, run_id, *, tool_executor, push_to_channel):
                 run.output = output
             if error:
                 run.error = error
+            if status == "failed" and run.delivery_status == "pending":
+                run.delivery_status = "not_requested"
+                run.delivery_reason = "execution_failed"
         await db.commit()
 
     if not job.agent_id or not job.message:
@@ -102,25 +106,38 @@ async def execute_cron_job(job, db, run_id, *, tool_executor, push_to_channel):
             extra_blacklist={"delegate_task", "AskUserQuestion", *FRONTEND_TOOL_NAMES},
         )
 
-        # 配置了渠道时，注入 notify_channel 工具让 agent 执行后推送结果（默认通知）
-        if job.channel_id:
-            from aio_agent_platform.channels.cron_notify import (
-                NOTIFY_CHANNEL_TOOL_NAME,
-                NOTIFY_CHANNEL_TOOL_SCHEMA,
-            )
-            tools_list = [*tools_list, NOTIFY_CHANNEL_TOOL_NAME]
-            tools_schema = [*tools_schema, NOTIFY_CHANNEL_TOOL_SCHEMA]
+        from aio_agent_platform.channels.cron_notify import (
+            CRON_RESPOND_TOOL_NAME,
+            CRON_RESPOND_TOOL_SCHEMA,
+            NOTIFY_CHANNEL_TOOL_NAME,
+            SILENT_REPLY_TOKEN,
+            CronNotifyContext,
+            current_cron_notify_ctx,
+        )
+        from aio_agent_platform.tools.registry import Tool
+
+        response_function = CRON_RESPOND_TOOL_SCHEMA["function"]
+        tools_list = [*tools_list, Tool(
+            name=CRON_RESPOND_TOOL_NAME, description=response_function["description"],
+            parameters=response_function["parameters"], requires_sandbox=False,
+        )]
+        tools_schema = [*tools_schema, CRON_RESPOND_TOOL_SCHEMA]
 
         system_prompt = await build_system_prompt_with_memories(
             db, job.user_id, job.message, tools_list, agent=agent, tenant_id=job.tenant_id,
         )
-        if job.channel_id:
-            system_prompt += (
-                "\n\n[通知规则] 执行结束后必须调用 notify_channel 工具把结果推送到用户的 IM 渠道。"
-                "默认总是通知，不要在『一切正常』时选择不推。"
-                "唯一例外：任务 message 中用户明确写明了不通知的条件（如『仅异常时通知』、"
-                "『结果正常时不用推送』），才按用户说明的条件判断是否通知；没有写明就一律推送。"
-            )
+        system_prompt += (
+            "\n\n[定时任务结果与通知] 执行完毕后使用 cron_respond 上报 summary 和 notify。"
+            "summary 是保存在后台的完整执行摘要；notify 决定是否发送飞书等 IM 消息。"
+            "用户没有明确静默条件时默认 notify=true；用户要求仅满足条件才通知时，"
+            "条件未满足必须 notify=false 并填写 reason，不能推送『未触发，保持静默』这类消息。"
+            "需要通知时可以用 notification_text 提供精简正文。系统在执行成功结束后统一发送，"
+            "不要主动调用 notify_channel 发送结果；静默与邮件是否发送无关，邮件按任务规则执行。"
+            "若未使用 cron_respond，最终回答默认作为通知正文；仅当需要静默时最终全文只返回"
+            "大写 NO_REPLY，不能附加解释、标点或代码块。结构化上报优先于最终回答。"
+        )
+        if not job.channel_id:
+            system_prompt += "当前任务未绑定 IM 推送渠道，执行结果只保存在后台。"
         loop = await build_agent_loop(
             tool_executor, system_prompt, db,
             agent_model_id=agent.model_id,
@@ -128,6 +145,8 @@ async def execute_cron_job(job, db, run_id, *, tool_executor, push_to_channel):
             agent_max_iterations=agent.max_iterations,
             agent_enable_retry=agent.enable_retry if agent.enable_retry is not None else True,
             tenant_id=job.tenant_id,
+            allowed_tools={schema["function"]["name"] for schema in tools_schema}
+            | {NOTIFY_CHANNEL_TOOL_NAME},
         )
 
         loop.execution_tenant_id = job.tenant_id
@@ -170,18 +189,10 @@ async def execute_cron_job(job, db, run_id, *, tool_executor, push_to_channel):
 
         error_msg = ""
         final_output = ""
-        notify_token = None
-        if job.channel_id:
-            from aio_agent_platform.channels.cron_notify import (
-                CronNotifyContext,
-                current_cron_notify_ctx,
-            )
-            notify_ctx = CronNotifyContext(
-                push_fn=lambda text: push_to_channel(db, job, text),
-                job_id=str(job.id),
-                channel_id=str(job.channel_id),
-            )
-            notify_token = current_cron_notify_ctx.set(notify_ctx)
+        notify_ctx = CronNotifyContext(
+            job_id=str(job.id), user_id=str(job.user_id), session_id=str(new_session.id),
+        )
+        notify_token = current_cron_notify_ctx.set(notify_ctx)
 
         try:
             turn = ChatTurnRecorder(new_session.id, job.user_id)
@@ -195,24 +206,69 @@ async def execute_cron_job(job, db, run_id, *, tool_executor, push_to_channel):
                 ),
                 db,
             )
+        except asyncio.CancelledError:
+            await _finalize("failed", error="任务执行已取消", session_id=new_session.id)
+            raise
         except Exception as exc:
+            final_output = turn.content
             error_msg = str(exc) or "agent loop failed"
             log.exception(
                 "cron_job_agent_loop_failed",
                 job_id=str(job.id),
             )
         finally:
-            if notify_token is not None:
-                current_cron_notify_ctx.reset(notify_token)
+            # Invalidate inherited child-task contexts as well as resetting this task.
+            notify_ctx.active = False
+            current_cron_notify_ctx.reset(notify_token)
 
+        response = notify_ctx.response
+        output = response.summary if response else (final_output or notify_ctx.legacy_text or "")
+        succeeded = bool(output.strip()) and not error_msg
+        # Execution is complete independently of delivery. Save the report before
+        # any outbound IO so an interrupted send cannot discard the result.
         await _finalize(
-            "success" if final_output else "failed",
-            output=final_output or None,
-            error=None if final_output else (error_msg or "agent loop failed"),
+            "success" if succeeded else "failed",
+            output=output or None,
+            error=None if succeeded else (error_msg or "agent loop failed"),
             session_id=new_session.id,
         )
+        run = await db.get(CronJobRun, run_id)
+        if run:
+            run.delivery_status = "not_requested"
+            if not succeeded:
+                run.delivery_reason = "execution_failed"
+            elif not job.channel_id:
+                run.delivery_reason = "no_channel"
+            elif response is not None and not response.notify:
+                run.delivery_status = "suppressed"
+                run.delivery_reason = response.reason
+            elif response is None and final_output.strip() == SILENT_REPLY_TOKEN:
+                run.delivery_status = "suppressed"
+                run.delivery_reason = "silent_token"
+            else:
+                # Persist before external IO; a crash must not invite a blind replay.
+                run.delivery_status = "unknown"
+                await db.commit()
+                try:
+                    sent = await push_to_channel(
+                        db, job, (response.notification_text or response.summary)
+                        if response else (notify_ctx.legacy_text or final_output),
+                    )
+                except asyncio.CancelledError:
+                    run.delivery_error = "通知发送已取消，投递结果未知"
+                    await db.commit()
+                    raise
+                except Exception as exc:
+                    run.delivery_error = str(exc) or "渠道发送结果未知"
+                    log.exception("cron_job_delivery_unknown", job_id=str(job.id))
+                else:
+                    run.delivery_status = "sent" if sent else "failed"
+                    if not sent:
+                        run.delivery_error = "渠道推送未成功，请检查渠道连接、启用状态和账号绑定"
 
-        if final_output:
+        await db.commit()
+
+        if succeeded:
             log.info(
                 "cron_job_executed",
                 job_id=str(job.id),

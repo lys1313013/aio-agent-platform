@@ -1163,6 +1163,12 @@ class CronJobRun(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer, comment="执行耗时(毫秒)")
     output: Mapped[str | None] = mapped_column(Text, comment="执行输出")
     error: Mapped[str | None] = mapped_column(Text, comment="错误信息")
+    delivery_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unknown", server_default="unknown",
+        comment="通知状态: pending/sent/suppressed/not_requested/failed/unknown",
+    )
+    delivery_reason: Mapped[str | None] = mapped_column(Text, comment="静默或未请求通知的原因")
+    delivery_error: Mapped[str | None] = mapped_column(Text, comment="通知发送错误，与执行错误分开记录")
 
     __table_args__ = (
         Index("idx_cron_job_runs_job", "job_id", "started_at"),

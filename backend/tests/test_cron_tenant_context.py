@@ -258,3 +258,69 @@ async def test_tool_writes_do_not_follow_ui_tenant(cron_data, monkeypatch):
         assert job_profile.personal_portrait == "updated by cron"
         assert ui_profile.personal_portrait == "UI_PORTRAIT"
         assert (await db.get(User, d.user.id)).tenant_id == d.ui_tenant.id
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("mode", ["default", "silent", "notify", "delivery_failed"])
+async def test_cron_persists_report_and_delivery_separately(cron_data, db_session, monkeypatch, mode):
+    from aio_agent_platform.channels.cron_notify import (
+        current_cron_notify_ctx,
+        handle_cron_respond,
+    )
+
+    d = cron_data
+    d.job.channel_id = uuid4()
+    await db_session.commit()
+    seen = []
+
+    class Loop:
+        provider = object()
+
+        async def run(self, **kwargs):
+            if mode in ("silent", "notify"):
+                result = await handle_cron_respond(
+                    {"notify": mode == "notify", "summary": "完整检查摘要",
+                     "reason": "信号未触发", "notification_text": "精简通知"},
+                    str(d.user.id), str(kwargs["session_id"]),
+                )
+                assert not result.startswith("Error:")
+            yield "text_delta:最终回答"
+
+    async def push(db, job, text):
+        assert execution_tenant_id(d.user.id) == d.tenant.id
+        assert current_cron_notify_ctx.get() is None
+        # A separate connection must see the completed report before sending.
+        async with d.factory() as reader:
+            run = await reader.scalar(select(CronJobRun).where(CronJobRun.job_id == job.id))
+            assert run.status == "success"
+            assert run.output == ("完整检查摘要" if mode == "notify" else "最终回答")
+            assert run.delivery_status == "unknown"
+        seen.append(text)
+        return mode != "delivery_failed"
+
+    monkeypatch.setattr(chat, "build_agent_loop", AsyncMock(return_value=Loop()))
+    monkeypatch.setattr(chat, "refresh_mcp_tools_for_agent", AsyncMock())
+    monkeypatch.setattr(chat, "filter_tools_by_agent", lambda *a, **kw: ([], []))
+    monkeypatch.setattr("aio_agent_platform.core.context.prepare_context",
+                        AsyncMock(return_value=([], None)))
+    scheduler = Scheduler(d.factory, executor=partial(
+        execute_cron_job, tool_executor=object(), push_to_channel=push))
+    try:
+        await scheduler.run_now(d.job.id)
+    finally:
+        await scheduler._claims.close()
+    async with d.factory() as db:
+        run = await db.scalar(select(CronJobRun).where(CronJobRun.job_id == d.job.id))
+        assert run.status == "success", run.error
+        if mode == "silent":
+            assert seen == []
+            assert run.output == "完整检查摘要"
+            assert run.delivery_status == "suppressed"
+            assert run.delivery_reason == "信号未触发"
+        else:
+            assert seen == ["精简通知" if mode == "notify" else "最终回答"]
+            assert run.delivery_status == ("failed" if mode == "delivery_failed" else "sent")
+        assert run.tenant_id == d.tenant.id
+        assert (await db.get(User, d.user.id)).tenant_id == d.ui_tenant.id
+    assert current_cron_notify_ctx.get() is None
+    assert execution_tenant_id(d.user.id) is None
