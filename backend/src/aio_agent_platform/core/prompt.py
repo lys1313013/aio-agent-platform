@@ -12,6 +12,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from aio_agent_platform.core.context import ContextBudget, estimate_tokens
 from aio_agent_platform.memory.presentation import format_memory
+from aio_agent_platform.portrait.presentation import format_portrait_section
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ _env = Environment(
     lstrip_blocks=True,
 )
 _env.filters["memory_record"] = format_memory
+_env.globals["portrait_section"] = format_portrait_section
 
 # Max L1 memories to include when under budget pressure
 _MAX_L1_MEMORIES = 10
@@ -92,10 +94,7 @@ def build_system_prompt(
         # Use agent's custom prompt as base, then append memories/skills context
         parts = [agent_prompt, _env.get_template("artifact_delivery.j2").render(), _env.get_template("skill_authoring.j2").render(), _env.get_template("memory_usage.j2").render()]
 
-        if user_portrait:
-            parts.append("\n## 用户画像 (User Portrait)")
-            parts.append("The following is a self-description provided by the user to help you understand them better. Use this context to personalize your responses, communication style, and advice. Reference it naturally — don't explicitly mention \"your portrait\" or \"your profile\" unless the user brings it up.")
-            parts.append(user_portrait)
+        parts.append(format_portrait_section(user_portrait))
 
         if persistent_memories:
             persistent_memories = _trim_memories(persistent_memories)

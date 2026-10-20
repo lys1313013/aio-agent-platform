@@ -848,6 +848,23 @@ class AgentLoop:
                     if result.file_changes:
                         yield f"file_changes:{json.dumps(result.file_changes, ensure_ascii=False)}"
 
+            # Reload once after the whole parallel batch: result order is call
+            # order, which need not be the order portrait edits committed in.
+            if any(tr.success and tr.name in {"read_user_portrait", "update_user_portrait"}
+                   for tr in step.tool_results):
+                from aio_agent_platform.portrait.handlers import handle_read_user_portrait
+                from aio_agent_platform.portrait.presentation import refresh_portrait_prompt
+
+                try:
+                    portrait_output = await handle_read_user_portrait({}, str(user_id), str(session_id))
+                except Exception:
+                    logger.warning("portrait_prompt_refresh_failed", session_id=str(session_id), exc_info=True)
+                else:
+                    self.system_prompt = refresh_portrait_prompt(self.system_prompt, portrait_output)
+                    for message in messages:
+                        if message.role == "system" and isinstance(message.content, str):
+                            message.content = refresh_portrait_prompt(message.content, portrait_output)
+
             # Inject tool results as messages
             for tr in step.tool_results:
                 if tr.success and tr.name in {"memory_write", "memory_update", "memory_delete"}:

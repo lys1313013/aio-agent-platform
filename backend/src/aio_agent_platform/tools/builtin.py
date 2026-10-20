@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from aio_agent_platform.portrait.service import PortraitUpdate
 from aio_agent_platform.skills.mutations import CreateSkillInput, UpdateSkillInput
 from aio_agent_platform.tools.document_tools import DOCUMENT_TOOLS
 from aio_agent_platform.tools.registry import Tool, ToolRegistry
@@ -36,6 +37,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     registry.register(READ_PDF)
     for document_tool in DOCUMENT_TOOLS:
         registry.register(document_tool)
+    registry.register(READ_USER_PORTRAIT)
     registry.register(UPDATE_USER_PORTRAIT)
     registry.register(CREATE_CRON_JOB)
     registry.register(LIST_CRON_JOBS)
@@ -934,28 +936,30 @@ READ_PDF = Tool(
 
 # ---- User Portrait Tool (non-sandbox) ----
 
+READ_USER_PORTRAIT = Tool(
+    name="read_user_portrait",
+    description="读取当前执行租户中当前用户的完整 Markdown 画像。编辑前及匹配/并发冲突后使用，勿凭旧提示重试。",
+    parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    requires_sandbox=False,
+    permission_level="read",
+    timeout=10,
+)
+
 UPDATE_USER_PORTRAIT = Tool(
     name="update_user_portrait",
     description=(
-        "更新用户的个人画像 —— 一份帮助您理解用户并个性化交互的自我描述。"
-        "当用户要求您记住关于他们的某些信息时、或者当您了解到用户的重要信息"
-        "（如角色、偏好、沟通风格、目标、背景等）时，请使用此工具。"
-        "画像以 Markdown 格式编写，会在每次对话中注入到您的系统提示词中，"
-        "因此请保持简洁但有信息量。"
-        "更新时，请先从系统提示词（'## 用户画像' 部分）中读取当前画像，"
-        "将新信息合并进去，然后写回完整的更新版本。"
-        "如需清除画像，传入空字符串即可。"
+        "编辑当前用户的 Markdown 画像（角色、偏好、沟通风格、目标、背景等），用于个性化回复。"
+        "先调用 read_user_portrait 获取最新全文；通常使用 operation='replace'，"
+        "仅传 old_str（必须精确且唯一匹配）和 new_str（可为空，用于删除片段）。"
+        "新增信息使用 append + portrait（仅新增内容，自动换行）；"
+        "首次创建使用 create + portrait，已有画像时拒绝创建。"
+        "只有用户明确要求清空或全文重写时，才使用 clear + expected_portrait，"
+        "或 overwrite + expected_portrait + portrait；expected_portrait 必须等于最新完整原文。"
+        "每次只传对应操作的字段，不得用空 portrait 隐式清空。"
+        "匹配失败、原文过期或并发冲突后重新读取，禁止改用 overwrite 绕过冲突。"
+        "成功后保留历史快照，并刷新当前对话系统提示中的画像。"
     ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "portrait": {
-                "type": "string",
-                "description": "更新后的完整 Markdown 画像内容，传入空字符串以清除。",
-            },
-        },
-        "required": ["portrait"],
-    },
+    parameters=PortraitUpdate.model_json_schema(),
     requires_sandbox=False,
     permission_level="write",
     timeout=10,

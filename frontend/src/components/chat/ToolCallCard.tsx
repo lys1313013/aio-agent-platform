@@ -66,6 +66,7 @@ const TOOL_LABELS: Record<string, string> = {
   document_search: '文档检索',
   render_document: '文档渲染',
   view_image: '查看图片',
+  read_user_portrait: '读取用户画像',
   update_user_portrait: '更新用户画像',
   create_webpage: '创建网页',
 };

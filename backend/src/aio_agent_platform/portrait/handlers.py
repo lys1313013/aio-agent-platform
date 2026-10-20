@@ -1,63 +1,55 @@
-"""User portrait tool handler for ToolExecutor._execute_direct() dispatch."""
+"""Portrait tool handlers; all reads and writes use a validated execution tenant."""
 
-from __future__ import annotations
-
+import json
 from collections.abc import Callable
 from uuid import UUID
 
 from sqlalchemy import select
 
-from aio_agent_platform.core.execution_scope import resolve_execution_tenant
+from aio_agent_platform.core.execution_scope import (
+    ExecutionAccessError,
+    execution_tenant_id,
+    require_execution_user,
+    resolve_execution_tenant,
+)
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
-from aio_agent_platform.db.models import PortraitVersion, UserProfile
+from aio_agent_platform.db.models import UserProfile
+from aio_agent_platform.portrait.service import PortraitUpdate, update_portrait
 
 
-async def handle_update_user_portrait(
-    arguments: dict, user_id: str, session_id: str, **kwargs
-) -> str:
-    """Handle update_user_portrait tool call — update the user's personal portrait."""
-    portrait = arguments.get("portrait", "")
-
+async def _handle(arguments: dict, user_id: str, *, read: bool) -> str:
+    request = None if read else PortraitUpdate.model_validate(arguments)
+    if read and arguments:
+        raise ValueError("read_user_portrait does not accept arguments")
     uid = UUID(user_id)
+    if execution_tenant_id(uid) is None:
+        raise ExecutionAccessError("画像工具缺少执行租户上下文")
+    token = current_user_id.set(user_id)
+    try:
+        async with get_session_factory()() as db:
+            tenant_id = await resolve_execution_tenant(db, uid)
+            await require_execution_user(db, uid, tenant_id)
+            if read:
+                portrait = await db.scalar(select(UserProfile.personal_portrait).where(
+                    UserProfile.user_id == uid, UserProfile.tenant_id == tenant_id,
+                ))
+                result = {"action": "read", "portrait": portrait or ""}
+            else:
+                result = await update_portrait(db, uid, tenant_id, request)
+        return json.dumps(result, ensure_ascii=False)
+    finally:
+        current_user_id.reset(token)
 
-    factory = get_session_factory()
-    async with factory() as db:
-        current_user_id.set(user_id)
-        # Background jobs keep their original tenant even after a UI switch.
-        tenant_id = await resolve_execution_tenant(db, uid)
-        if not tenant_id:
-            return "用户不存在"
 
-        result = await db.execute(
-            select(UserProfile).where(
-                UserProfile.user_id == uid,
-                UserProfile.tenant_id == tenant_id,
-            )
-        )
-        profile = result.scalar_one_or_none()
+async def handle_read_user_portrait(arguments: dict, user_id: str, session_id: str, **kwargs) -> str:
+    return await _handle(arguments, user_id, read=True)
 
-        if not profile:
-            profile = UserProfile(user_id=uid, tenant_id=tenant_id)
-            db.add(profile)
 
-        # Save a version snapshot before overwriting
-        if profile.personal_portrait and profile.personal_portrait.strip():
-            db.add(PortraitVersion(
-                user_id=uid,
-                tenant_id=tenant_id,
-                content=profile.personal_portrait,
-                source="ai",
-            ))
-
-        profile.personal_portrait = portrait if portrait.strip() else None
-        await db.commit()
-
-    if portrait.strip():
-        return f"已更新个人画像（{len(portrait)} 字符）"
-    else:
-        return "已清除个人画像"
+async def handle_update_user_portrait(arguments: dict, user_id: str, session_id: str, **kwargs) -> str:
+    return await _handle(arguments, user_id, read=False)
 
 
 PORTRAIT_HANDLERS: dict[str, Callable] = {
+    "read_user_portrait": handle_read_user_portrait,
     "update_user_portrait": handle_update_user_portrait,
 }

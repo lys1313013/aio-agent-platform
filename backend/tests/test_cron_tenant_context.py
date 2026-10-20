@@ -247,7 +247,8 @@ async def test_tool_writes_do_not_follow_ui_tenant(cron_data, monkeypatch):
     monkeypatch.setattr(handlers, "get_session_factory", lambda: d.factory)
     with bind_execution_scope(d.user.id, d.tenant.id, agent_id=d.agent.id):
         await handlers.handle_update_user_portrait(
-            {"portrait": "updated by cron"}, str(d.user.id), str(uuid4()))
+            {"operation": "replace", "old_str": "JOB_PORTRAIT", "new_str": "updated by cron"},
+            str(d.user.id), str(uuid4()))
         async with d.factory() as db:
             memory = await MemoryService.create_memory(db, d.user.id, "L2", "cron memory")
             assert memory.tenant_id == d.tenant.id

@@ -39,6 +39,7 @@ TOOL_META: dict[str, dict] = {
     "document_search": {"label": "文档检索", "category": "file"},
     "render_document": {"label": "文档渲染", "category": "file"},
     "view_image": {"label": "查看图片", "category": "file"},
+    "read_user_portrait": {"label": "读取用户画像", "category": "memory"},
     "update_user_portrait": {"label": "更新用户画像", "category": "memory"},
     "create_cron_job": {"label": "创建定时任务", "category": "automation"},
     "list_cron_jobs": {"label": "列出定时任务", "category": "automation"},
