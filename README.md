@@ -111,7 +111,7 @@ cd frontend && npm run lint           # ESLint（JavaScript / TypeScript / React
 | `HOST` / `PORT` | `0.0.0.0` / `8100` | API 服务绑定地址 |
 | `CORS_ORIGINS` | `http://localhost:1717,http://localhost:3000` | 允许的跨域来源 |
 | `AGENT_TRUST_LEVEL` | `ask_dangerous` | 工具执行信任级别：`ask_always` / `ask_dangerous` / `auto_all` |
-| `SANDBOX_IMAGE` | `aio-agent-platform/sandbox:latest` | 沙箱 Docker 镜像 |
+| `SANDBOX_IMAGE` | `crpi-yvha9coypdedaafa.cn-beijing.personal.cr.aliyuncs.com/lys1313013/aio-agent-platform-sandbox:latest` | 沙箱 Docker 镜像 |
 
 LLM 模型通过管理后台配置，不在 `.env` 中设置。
 

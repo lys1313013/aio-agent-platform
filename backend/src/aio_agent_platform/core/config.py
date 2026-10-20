@@ -137,7 +137,9 @@ class SandboxSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="SANDBOX_")
 
-    image: str = Field(default="aio-agent-platform/sandbox:latest")
+    image: str = Field(
+        default="crpi-yvha9coypdedaafa.cn-beijing.personal.cr.aliyuncs.com/lys1313013/aio-agent-platform-sandbox:latest"
+    )
     namespace: str = Field(default="aio-agent-platform", min_length=1)
     lock_dir: str = Field(default="/tmp/aio-sandbox-locks", min_length=1)
     cpu_limit: float = Field(default=1.0, ge=0.1, le=32)

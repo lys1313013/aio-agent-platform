@@ -48,7 +48,7 @@ services:
     build:
       context: ./backend/sandbox
       dockerfile: Dockerfile
-    image: aio-agent-platform/sandbox:latest
+    image: crpi-yvha9coypdedaafa.cn-beijing.personal.cr.aliyuncs.com/lys1313013/aio-agent-platform-sandbox:latest
     profiles: ["build"]
 
 volumes:
