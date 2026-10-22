@@ -1,6 +1,6 @@
-FROM --platform=$BUILDPLATFORM node:22-alpine AS build
+FROM --platform=$BUILDPLATFORM node:24.22.1-alpine AS build
 
-RUN corepack enable && corepack prepare pnpm@11 --activate
+RUN corepack enable && corepack prepare pnpm@11.1.3 --activate
 
 WORKDIR /app
 
@@ -10,9 +10,9 @@ RUN pnpm install --frozen-lockfile
 
 COPY . .
 
-RUN pnpm run build
+RUN test "$(node --version)" = "v$(cat .nvmrc)" && pnpm run build
 
-FROM nginx:alpine
+FROM nginx:1.31.8-alpine
 
 COPY --from=build /app/dist /usr/share/nginx/html
 

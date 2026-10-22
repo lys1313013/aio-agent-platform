@@ -19,13 +19,13 @@
 - **前端**: React + TypeScript, Vite, Ant Design
 - **数据库**: PostgreSQL 16
 - **沙箱**: Docker
-- **包管理**: uv（后端）, npm（前端）
+- **包管理**: uv（后端）, pnpm（前端）
 
 ## 环境要求
 
 - Python 3.13
 - [uv](https://docs.astral.sh/uv/)（Python 包管理器）
-- Node.js >= 18 + npm
+- Node.js 24.22.1 LTS + pnpm 11.1.3（版本分别固定在 `frontend/.nvmrc` 和 `frontend/package.json`）
 - Docker & Docker Compose
 
 ## 项目结构
@@ -69,7 +69,7 @@ cp backend/.env.example backend/.env
 # 2. 启动基础设施 + 装依赖 + 数据库迁移
 docker compose up -d postgres minio
 cd backend && uv sync && uv run alembic upgrade head && cd ..
-cd frontend && npm install && cd ..
+cd frontend && corepack enable && pnpm install --frozen-lockfile && cd ..
 ```
 
 ### 启动后端（终端 1）
@@ -83,7 +83,7 @@ cd backend && uv run uvicorn aio_agent_platform.interface.api:app --host 0.0.0.0
 ### 启动前端（终端 2）
 
 ```bash
-cd frontend && npm run dev
+cd frontend && pnpm run dev
 ```
 
 前端：**http://localhost:1717**（`/api` 请求自动代理到后端）
@@ -94,11 +94,13 @@ cd frontend && npm run dev
 cd backend && uv run aio-cli          # CLI 对话
 cd backend && uv run aio-manage       # 管理命令
 cd backend && uv run alembic upgrade head  # 数据库迁移
-cd frontend && npm run build          # 前端生产构建
-cd frontend && npm run lint           # ESLint（JavaScript / TypeScript / React Hooks）
+cd frontend && pnpm run build         # 前端生产构建
+cd frontend && pnpm run lint          # ESLint（JavaScript / TypeScript / React Hooks）
 ```
 
 前端 lint 配置位于 `frontend/eslint.config.js`，CI 会自动执行检查。代码正确性和 Hooks 调用规则按错误检查；现有 `any` 类型、Hooks 依赖数组和 Fast Refresh 导出问题按警告报告，便于逐步清理。构建产物不参与检查。
+
+前端 Docker 构建固定使用 Node.js 24.22.1 LTS，最终运行镜像固定为 Nginx 1.31.8 Alpine；CI 构建时强制拉取基础镜像。升级后需要重新构建、发布并替换前端容器，已有容器不会因基础镜像标签更新而自动升级。
 
 ## 配置说明
 
