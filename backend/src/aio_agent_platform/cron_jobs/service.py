@@ -15,7 +15,8 @@ from aio_agent_platform.core.execution_scope import (
     require_execution_user,
 )
 from aio_agent_platform.cron_jobs.expressions import normalize_cron
-from aio_agent_platform.db.models import ChannelConfig, CronJob
+from aio_agent_platform.db.models import ChannelConfig, CronJob, LLMModel
+from aio_agent_platform.llm.catalog import available_models_query
 
 logger = structlog.get_logger()
 
@@ -35,6 +36,15 @@ async def validate_job_scope(db, tenant_id, user_id, agent_id, channel_id):
         ))
         if channel is None:
             raise ExecutionAccessError("通知渠道不可用或不属于任务租户")
+
+
+async def validate_job_model(db: AsyncSession, tenant_id: UUID, model_id: UUID) -> None:
+    """An explicit override must remain usable in the job's tenant; never fall back."""
+    model = await db.scalar(
+        available_models_query(tenant_id).with_only_columns(LLMModel.id).where(LLMModel.id == model_id)
+    )
+    if model is None:
+        raise ValueError("指定的执行模型不存在、已停用或不属于任务租户")
 
 
 class CronJobService:
@@ -83,12 +93,15 @@ class CronJobService:
         is_active: bool = True,
         request_id: UUID | None = None,
         allow_duplicate: bool = False,
+        model_id: UUID | None = None,
     ) -> CronJob:
         # 租户必须显式解析，禁止静默回退到默认租户（否则任务归错租户、管理页不可见）。
         tenant_id = await CronJobService._resolve_tenant(
             db, tenant_id, user_id, agent_id
         )
         await validate_job_scope(db, tenant_id, user_id, agent_id, channel_id)
+        if model_id is not None:
+            await validate_job_model(db, tenant_id, model_id)
         if cron_expr:
             cron_expr = normalize_cron(cron_expr)
         elif run_at is None:
@@ -98,7 +111,8 @@ class CronJobService:
             run_at = run_at.replace(tzinfo=TIMEZONE)
         values = {"tenant_id": tenant_id, "user_id": user_id, "agent_id": agent_id, "name": name,
                   "message": message, "cron_expr": cron_expr, "run_at": run_at,
-                  "task_config": task_config, "channel_id": channel_id, "is_active": is_active}
+                  "task_config": task_config, "channel_id": channel_id, "is_active": is_active,
+                  "model_id": model_id}
         # Serialize submissions by owner, including concurrent retries with different names.
         await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
                          {"key": f"cron-create:{tenant_id}:{user_id}"})
@@ -162,6 +176,8 @@ class CronJobService:
         channel_id: UUID | None = None,
         is_active: bool | None = None,
         clear_channel: bool = False,
+        model_id: UUID | None = None,
+        clear_model: bool = False,
     ) -> CronJob | None:
         job = await CronJobService.get_job(db, job_id, tenant_id)
         if not job:
@@ -170,6 +186,8 @@ class CronJobService:
         await validate_job_scope(db, job.tenant_id, job.user_id,
                                  agent_id if agent_id is not None else job.agent_id,
                                  None if clear_channel else (channel_id if channel_id is not None else job.channel_id))
+        if model_id is not None and not clear_model:
+            await validate_job_model(db, job.tenant_id, model_id)
         if cron_expr is not None:
             # A legacy unchanged string is not reinterpreted on unrelated edits.
             cron_expr = normalize_cron(cron_expr, legacy=cron_expr == job.cron_expr) if cron_expr else cron_expr
@@ -185,6 +203,10 @@ class CronJobService:
             job.run_at = run_at
         if task_config is not None:
             job.task_config = task_config
+        if clear_model:
+            job.model_id = None
+        elif model_id is not None:
+            job.model_id = model_id
         if clear_channel:
             job.channel_id = None
         elif channel_id is not None:

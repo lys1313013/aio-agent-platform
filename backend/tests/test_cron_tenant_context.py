@@ -26,6 +26,8 @@ from aio_agent_platform.db.models import (
     CronJob,
     CronJobRun,
     KnowledgeBase,
+    LLMModel,
+    LLMProvider,
     Session,
     Tenant,
     TenantMembership,
@@ -58,9 +60,19 @@ async def cron_data(db_session, engine):
 
 @pytest.mark.postgres
 @pytest.mark.parametrize("manual", [True, False])
-async def test_cron_uses_job_tenant_after_ui_switch(cron_data, monkeypatch, manual):
+@pytest.mark.parametrize("override", [False, True])
+async def test_cron_uses_job_tenant_after_ui_switch(cron_data, db_session, monkeypatch, manual, override):
     d = cron_data
     seen = []
+    provider = LLMProvider(id=uuid4(), tenant_id=d.tenant.id, name="provider", provider_type="openai")
+    agent_model = LLMModel(id=uuid4(), tenant_id=d.tenant.id, provider_id=provider.id,
+                           name="agent", model_name="agent")
+    task_model = LLMModel(id=uuid4(), tenant_id=d.tenant.id, provider_id=provider.id,
+                          name="task", model_name="task")
+    d.agent.model_id = agent_model.id
+    d.job.model_id = task_model.id if override else None
+    db_session.add_all([provider, agent_model, task_model])
+    await db_session.commit()
 
     class Loop:
         provider = object()
@@ -81,6 +93,7 @@ async def test_cron_uses_job_tenant_after_ui_switch(cron_data, monkeypatch, manu
 
     async def build_loop(*args, **kwargs):
         assert kwargs["tenant_id"] == d.tenant.id
+        assert kwargs["agent_model_id"] == (task_model.id if override else agent_model.id)
         assert "JOB_PORTRAIT" in args[1]
         assert "UI_PORTRAIT" not in args[1]
         return Loop()
@@ -108,6 +121,7 @@ async def test_cron_uses_job_tenant_after_ui_switch(cron_data, monkeypatch, manu
         session = await db.get(Session, run.session_id)
         assert session.agent_id == d.agent.id
         assert session.source == "cron"
+        assert session.model_id == (task_model.id if override else None)
         assert (await db.get(User, d.user.id)).tenant_id == d.ui_tenant.id
         assert await resolve_execution_tenant(db, d.user.id) == d.ui_tenant.id
 
@@ -324,4 +338,41 @@ async def test_cron_persists_report_and_delivery_separately(cron_data, db_sessio
         assert run.tenant_id == d.tenant.id
         assert (await db.get(User, d.user.id)).tenant_id == d.ui_tenant.id
     assert current_cron_notify_ctx.get() is None
+    assert execution_tenant_id(d.user.id) is None
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("unavailable", ["deleted", "inactive", "tenant", "provider"])
+async def test_cron_revalidates_model_before_execution(cron_data, db_session, monkeypatch, unavailable):
+    d = cron_data
+    provider = LLMProvider(id=uuid4(), tenant_id=d.tenant.id, name="provider", provider_type="openai")
+    model = LLMModel(id=uuid4(), tenant_id=d.tenant.id, provider_id=provider.id,
+                     name="task model", model_name="task-model")
+    db_session.add_all([provider, model])
+    d.job.model_id = model.id
+    await db_session.commit()
+    if unavailable == "deleted":
+        await db_session.delete(model)
+    elif unavailable == "inactive":
+        model.is_active = False
+    elif unavailable == "tenant":
+        model.tenant_id = d.ui_tenant.id
+    else:
+        provider.is_active = False
+    await db_session.commit()
+    build_loop = AsyncMock()
+    monkeypatch.setattr(chat, "build_agent_loop", build_loop)
+    scheduler = Scheduler(d.factory, executor=partial(
+        execute_cron_job, tool_executor=object(), push_to_channel=AsyncMock()))
+    try:
+        await scheduler.run_now(d.job.id)
+    finally:
+        await scheduler._claims.close()
+    build_loop.assert_not_awaited()
+    async with d.factory() as db:
+        run = await db.scalar(select(CronJobRun).where(CronJobRun.job_id == d.job.id))
+        assert run.status == "failed"
+        assert "执行模型" in run.error
+        assert run.session_id is None
+        assert run.delivery_status == "not_requested"
     assert execution_tenant_id(d.user.id) is None

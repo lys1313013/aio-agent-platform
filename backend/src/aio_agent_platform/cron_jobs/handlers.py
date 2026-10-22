@@ -97,6 +97,7 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
             user_id=uid,
             name=name,
             agent_id=agent_id,
+            model_id=UUID(arguments["model_id"]) if arguments.get("model_id") else None,
             message=message,
             cron_expr=cron_expr,
             run_at=parsed_run_at,
@@ -120,6 +121,7 @@ async def handle_create_cron_job(arguments: dict, user_id: str, session_id: str,
         f"Cron job created successfully.\n"
         f"  ID: {job.id}\n"
         f"  Name: {job.name}\n"
+        f"  Model: {job.model_id or '跟随智能体'}\n"
         f"  Schedule: {job.cron_expr or job.run_at}\n"
         f"{notify_line}"
         f"  Active: {job.is_active}"
@@ -151,6 +153,7 @@ async def handle_list_cron_jobs(arguments: dict, user_id: str, session_id: str, 
             f"  [{j.id}] {j.name}\n"
             f"    Schedule: {schedule}\n"
             f"    Status: {status}\n"
+            f"    Model: {j.model_id or '跟随智能体'}\n"
             f"    Config: {json.dumps(j.task_config or {}, ensure_ascii=False)}\n"
             f"    Last run: {last}"
         )

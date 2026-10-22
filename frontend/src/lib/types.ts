@@ -709,6 +709,7 @@ export interface AgentApiDoc {
 export interface CronJob {
   id: string;
   agent_id: string | null;
+  model_id: string | null;
   name: string;
   cron_expr: string | null;
   run_at: string | null;

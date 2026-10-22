@@ -7,13 +7,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.dependencies import CurrentUser
 from aio_agent_platform.db.connection import get_db
-from aio_agent_platform.db.models import LLMModel
+from aio_agent_platform.llm.catalog import list_available_models
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 
@@ -30,19 +28,4 @@ async def list_models(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[ModelOut]:
-    result = await db.execute(
-        select(LLMModel)
-        .options(selectinload(LLMModel.provider))
-        .where(LLMModel.is_active, LLMModel.tenant_id == user.tenant_id)
-        .order_by(LLMModel.is_default.desc(), LLMModel.name)
-    )
-    models = list(result.scalars().all())
-    return [
-        ModelOut(
-            id=m.id,
-            name=m.name,
-            provider=m.provider.name if m.provider else None,
-            is_default=m.is_default,
-        )
-        for m in models
-    ]
+    return [ModelOut.model_validate(model) for model in await list_available_models(db, user.tenant_id)]

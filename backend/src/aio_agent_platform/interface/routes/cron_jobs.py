@@ -38,6 +38,7 @@ async def _validate_channel(db: AsyncSession, channel_id: UUID, tenant_id: UUID)
 class CronJobOut(BaseModel):
     id: UUID
     agent_id: UUID | None = None
+    model_id: UUID | None = None
     name: str
     cron_expr: str | None = None
     run_at: datetime | None = None
@@ -54,6 +55,7 @@ class CronJobOut(BaseModel):
         return cls(
             id=j.id,
             agent_id=j.agent_id,
+            model_id=j.model_id,
             name=j.name,
             cron_expr=j.cron_expr,
             run_at=j.run_at,
@@ -70,6 +72,7 @@ class CronJobCreate(BaseModel):
     allow_duplicate: bool = False
     name: str = Field(..., min_length=1, max_length=256)
     agent_id: UUID | None = None
+    model_id: UUID | None = None
     cron_expr: str | None = Field(default=None, max_length=128)
     run_at: datetime | None = None
     message: str | None = None
@@ -81,6 +84,7 @@ class CronJobCreate(BaseModel):
 class CronJobUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=256)
     agent_id: UUID | None = None
+    model_id: UUID | None = None
     cron_expr: str | None = Field(default=None, max_length=128)
     run_at: datetime | None = None
     message: str | None = None
@@ -166,6 +170,7 @@ async def create_cron_job(
             user_id=user.id,
             name=req.name,
             agent_id=req.agent_id,
+            model_id=req.model_id,
             message=req.message,
             cron_expr=req.cron_expr,
             run_at=req.run_at,
@@ -273,12 +278,14 @@ async def update_cron_job(
             tenant_id=user.tenant_id,
             name=req.name,
             agent_id=req.agent_id,
+            model_id=req.model_id,
             message=req.message,
             cron_expr=req.cron_expr,
             run_at=req.run_at,
             task_config=req.task_config,
             channel_id=req.channel_id,
             clear_channel="channel_id" in req.model_fields_set and req.channel_id is None,
+            clear_model="model_id" in req.model_fields_set and req.model_id is None,
             is_active=req.is_active,
         )
     except ExecutionAccessError as error:

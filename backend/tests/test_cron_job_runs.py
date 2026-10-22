@@ -765,3 +765,99 @@ async def _add_channel(db, channel_id, tenant_id):
                          app_id="test", app_secret_encrypted="test", mode="webhook",
                          status="enabled", channel_key=str(channel_id), created_by=uuid4()))
     await db.commit()
+
+
+async def test_rest_model_override_create_update_clear(cron_client, db_session):
+    from aio_agent_platform.db.models import LLMModel, LLMProvider
+
+    client, _, user = cron_client
+    provider = LLMProvider(id=uuid4(), tenant_id=user.tenant_id, name="models", provider_type="openai")
+    models = [LLMModel(id=uuid4(), tenant_id=user.tenant_id, provider_id=provider.id,
+                       name=name, model_name=name) for name in ("first", "second")]
+    db_session.add_all([provider, *models])
+    await db_session.commit()
+    payload = {"name": "model override", "cron_expr": "0 9 * * *",
+               "model_id": str(models[0].id), "request_id": str(uuid4())}
+    created = await client.post("/api/cron-jobs", json=payload)
+    assert created.status_code == 201, created.text
+    job_id = created.json()["id"]
+    assert created.json()["model_id"] == str(models[0].id)
+    retry = await client.post("/api/cron-jobs", json=payload)
+    assert retry.json()["id"] == job_id
+    conflict = await client.post("/api/cron-jobs", json={**payload, "model_id": str(models[1].id)})
+    assert conflict.status_code == 409
+    url = f"/api/cron-jobs/{job_id}"
+    renamed = await client.put(url, json={"name": "renamed"})
+    assert renamed.json()["model_id"] == str(models[0].id)
+    updated = await client.put(url, json={"model_id": str(models[1].id)})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["model_id"] == str(models[1].id)
+    assert (await client.get(url)).json()["model_id"] == str(models[1].id)
+    listing = await client.get("/api/cron-jobs")
+    assert listing.json()["items"][0]["model_id"] == str(models[1].id)
+    cleared = await client.put(url, json={"model_id": None})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["model_id"] is None
+
+
+@pytest.mark.parametrize("unavailable", ["missing", "tenant", "inactive", "provider_inactive", "provider_tenant", "provider_missing"])
+async def test_rest_rejects_unavailable_model(cron_client, db_session, unavailable):
+    from aio_agent_platform.db.models import LLMModel, LLMProvider
+
+    client, _, user = cron_client
+    other_tenant = Tenant(id=uuid4(), name="other", slug=str(uuid4()))
+    provider = LLMProvider(id=uuid4(), tenant_id=user.tenant_id, name="models", provider_type="openai")
+    model = LLMModel(id=uuid4(), tenant_id=user.tenant_id, provider_id=provider.id,
+                     name="model", model_name="model")
+    if unavailable == "tenant":
+        model.tenant_id = other_tenant.id
+    elif unavailable == "inactive":
+        model.is_active = False
+    elif unavailable == "provider_inactive":
+        provider.is_active = False
+    elif unavailable == "provider_tenant":
+        provider.tenant_id = other_tenant.id
+    elif unavailable == "provider_missing":
+        model.provider_id = uuid4()
+    db_session.add_all([other_tenant, provider, model])
+    await db_session.commit()
+    model_id = str(uuid4() if unavailable == "missing" else model.id)
+    payload = {"name": "unavailable", "cron_expr": "0 9 * * *", "model_id": model_id}
+    rejected = await client.post("/api/cron-jobs", json=payload)
+    assert rejected.status_code == 422, rejected.text
+    assert "执行模型" in rejected.json()["detail"]
+    job_id = await _create_via_api(client)
+    rejected = await client.put(f"/api/cron-jobs/{job_id}", json={"model_id": model_id})
+    assert rejected.status_code == 422, rejected.text
+    assert (await client.get(f"/api/cron-jobs/{job_id}")).json()["model_id"] is None
+
+
+async def test_model_migration_preserves_existing_jobs(db_session, engine):
+    import runpy
+    from pathlib import Path
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import text
+
+    migration = runpy.run_path(str(Path(__file__).resolve().parents[1]
+                                  / "alembic/versions/b4d5e6f7a8b9_cron_job_model_override.py"))
+    ids = {name: uuid4() for name in ("id", "tenant_id", "user_id")}
+
+    def verify(conn):
+        with Operations.context(MigrationContext.configure(conn)):
+            migration["downgrade"]()
+            conn.execute(text(
+                "INSERT INTO cron_jobs (id, tenant_id, user_id, name, task_config, cron_expr, is_active, created_at) "
+                "VALUES (:id, :tenant_id, :user_id, 'existing job', '{}', '0 9 * * *', true, now())"
+            ), ids)
+            migration["upgrade"]()
+            migration["upgrade"]()
+        row = conn.execute(text("SELECT * FROM cron_jobs WHERE id=:id"), ids).mappings().one()
+        assert row["model_id"] is None
+        assert row["name"] == "existing job"
+        assert row["tenant_id"] == ids["tenant_id"]
+        assert row["cron_expr"] == "0 9 * * *"
+
+    async with engine.begin() as conn:
+        await conn.run_sync(verify)

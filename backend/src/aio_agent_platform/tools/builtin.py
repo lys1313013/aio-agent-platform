@@ -12,6 +12,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     """Register all built-in tools into the registry."""
     registry.register(RUN_SHELL)
     registry.register(RUN_CODE)
+    registry.register(LIST_MODELS)
     registry.register(READ_FILE)
     registry.register(WRITE_FILE)
     registry.register(EDIT_FILE)
@@ -966,6 +967,26 @@ UPDATE_USER_PORTRAIT = Tool(
 )
 
 
+# ---- Model discovery (read-only, execution-tenant scoped) ----
+
+LIST_MODELS = Tool(
+    name="list_models",
+    description=(
+        "List models available in the current execution tenant. Returns each model's UUID id, "
+        "display name, model_name, provider display name, is_default and is_multimodal. "
+        "Use before specifying create_cron_job.model_id or when the user asks which models "
+        "can be selected. Only active models with active providers in this tenant are listed. "
+        "Use an id from this result; never guess UUIDs. Availability reflects platform "
+        "configuration, not an upstream connectivity or inference test. Returns an empty "
+        "models list if none are configured. Does not change the current conversation model."
+    ),
+    parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    requires_sandbox=False,
+    permission_level="read",
+    timeout=10,
+)
+
+
 # ---- Cron Job Tools (non-sandbox) ----
 
 CREATE_CRON_JOB = Tool(
@@ -988,6 +1009,10 @@ CREATE_CRON_JOB = Tool(
                     "The UUID of the agent that should execute this task. "
                     "Omit to default to the current agent in this conversation."
                 ),
+            },
+            "model_id": {
+                "type": "string",
+                "description": "Optional UUID of an active model in the task tenant. Call list_models first and use its returned id when the user specifies a model; never guess an id. Overrides the agent model; omit to follow the agent model, then tenant default.",
             },
             "message": {
                 "type": "string",

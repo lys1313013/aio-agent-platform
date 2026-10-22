@@ -24,7 +24,7 @@ from aio_agent_platform.interface.routes.cron_jobs import CronJobRunOut
 @pytest.fixture
 def execution(monkeypatch):
     job = SimpleNamespace(id=uuid4(), user_id=uuid4(), tenant_id=uuid4(), agent_id=uuid4(),
-                          channel_id=uuid4(), name="Monitor", message="仅触发信号时通知")
+                          model_id=None, channel_id=uuid4(), name="Monitor", message="仅触发信号时通知")
     run = SimpleNamespace(id=uuid4(), job_id=job.id, user_id=job.user_id, status="running",
                           delivery_status="pending", delivery_reason=None, delivery_error=None,
                           session_id=None, started_at=None, finished_at=None, duration_ms=None,
@@ -497,3 +497,34 @@ async def test_prompt_examples_execute_the_documented_delivery_decision(executio
     else:
         d.pushed.assert_not_awaited()
         assert d.run.delivery_reason == example["reason"]
+
+
+@pytest.mark.parametrize("override", [False, True])
+async def test_cron_passes_task_model_or_agent_model(execution, monkeypatch, override):
+    d = execution
+    agent = await chat.load_agent()
+    agent.model_id = uuid4()
+    d.job.model_id = uuid4() if override else None
+    validate = AsyncMock()
+    monkeypatch.setattr("aio_agent_platform.cron_jobs.executor.validate_job_model", validate)
+    await execute(d)
+    assert d.options["agent_model_id"] == (d.job.model_id or agent.model_id)
+    assert d.options["tenant_id"] == d.job.tenant_id
+    if override:
+        validate.assert_awaited_once_with(d.db, d.job.tenant_id, d.job.model_id)
+    else:
+        validate.assert_not_awaited()
+    assert d.run.status == "success"
+
+
+async def test_cron_unavailable_override_fails_without_fallback(execution, monkeypatch):
+    d = execution
+    d.job.model_id = uuid4()
+    monkeypatch.setattr("aio_agent_platform.cron_jobs.executor.validate_job_model",
+                        AsyncMock(side_effect=ValueError("指定的执行模型已停用")))
+    await execute(d)
+    assert d.run.status == "failed"
+    assert d.run.error == "指定的执行模型已停用"
+    assert d.run.session_id is None
+    assert d.options is None
+    d.pushed.assert_not_awaited()

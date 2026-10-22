@@ -65,6 +65,7 @@ from aio_agent_platform.skills.handlers import SKILL_HANDLERS
 from aio_agent_platform.storage.client import ObjectStorage
 from aio_agent_platform.storage.workspace import WorkspaceStorage
 from aio_agent_platform.tools import ToolExecutor, ToolRegistry, register_builtin_tools
+from aio_agent_platform.tools.model_catalog import handle_list_models
 from aio_agent_platform.workspaces.routes import router as workspaces_router
 
 
@@ -125,6 +126,7 @@ async def lifespan(app: FastAPI):
     registry = ToolRegistry()
     register_builtin_tools(registry)
     tool_executor = ToolExecutor(registry=registry, sandbox_mgr=sandbox_mgr)
+    tool_executor.register_direct_handler("list_models", handle_list_models)
 
     # 6. Register memory tool handlers
     for name, handler in MEMORY_HANDLERS.items():

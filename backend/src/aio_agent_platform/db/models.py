@@ -1117,6 +1117,9 @@ class CronJob(Base):
         nullable=True,
         comment="关联智能体ID",
     )
+    model_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), comment="任务执行模型覆盖(缺省跟随智能体模型)",
+    )
     name: Mapped[str] = mapped_column(String(256), nullable=False, comment="任务名称")
     cron_expr: Mapped[str | None] = mapped_column(String(128), comment="Cron表达式")
     run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="单次执行时间")

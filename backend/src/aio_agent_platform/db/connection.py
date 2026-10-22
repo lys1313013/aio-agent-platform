@@ -372,6 +372,7 @@ async def _run_manual_migrations(conn) -> None:
         # CronJob: agent_id and message columns
         "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS agent_id UUID",
         "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS message TEXT",
+        "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS model_id UUID",
         # Cron job tenant isolation
         "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS tenant_id UUID",
         "ALTER TABLE cron_jobs ALTER COLUMN tenant_id SET NOT NULL",

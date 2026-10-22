@@ -26,8 +26,8 @@ import {
   Select,
   Table,
 } from 'antd';
-import { cronJobsApi, agentsApi, channelsApi } from '@/lib/api';
-import type { CronJob, Agent, Channel, CronJobRun } from '@/lib/types';
+import { cronJobsApi, agentsApi, channelsApi, modelsApi } from '@/lib/api';
+import type { CronJob, Agent, Channel, CronJobRun, ModelMeta } from '@/lib/types';
 import { useAuthStore } from '@/stores/authStore';
 import { Navigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
@@ -71,6 +71,7 @@ function CronJobsPageContent() {
 
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [models, setModels] = useState<ModelMeta[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -92,14 +93,16 @@ function CronJobsPageContent() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [result, agentList, channelList] = await Promise.all([
+      const [result, agentList, channelList, modelList] = await Promise.all([
         cronJobsApi.list(),
         agentsApi.adminList(),
         channelsApi.list(),
+        modelsApi.list(),
       ]);
       setJobs(result.items);
       setAgents(agentList);
       setChannels(channelList);
+      setModels(modelList);
     } catch (err: any) {
       message.error(err.message || '加载数据失败');
     } finally {
@@ -118,6 +121,7 @@ function CronJobsPageContent() {
       form.setFieldsValue({
         name: job.name,
         agent_id: job.agent_id || undefined,
+        model_id: job.model_id || undefined,
         cron_expr: job.cron_expr ? storedCronForEditing(job.cron_expr) : '',
         run_at: job.run_at ? toBeijingLocalInput(job.run_at) : '',
         message: job.message || '',
@@ -154,6 +158,7 @@ function CronJobsPageContent() {
       const payload = {
         name: values.name,
         agent_id: values.agent_id || null,
+        model_id: values.model_id || null,
         cron_expr: values.cron_expr || null,
         run_at: values.run_at ? toBeijingIso(values.run_at) : null,
         message: values.message || null,
@@ -443,6 +448,14 @@ function CronJobsPageContent() {
                     </div>
                   )}
 
+                  <div>
+                    <Text type="secondary" className="text-xs">
+                      执行模型: {job.model_id
+                        ? models.find(m => m.id === job.model_id)?.name || '指定模型不可用'
+                        : '跟随智能体（未配置时使用租户默认模型）'}
+                    </Text>
+                  </div>
+
                   {/* Schedule info */}
                   <div>
                     {job.cron_expr ? (
@@ -525,6 +538,26 @@ function CronJobsPageContent() {
                 value: a.id,
                 label: a.name,
               }))}
+            />
+          </Form.Item>
+
+          <Form.Item
+            name="model_id"
+            label="执行模型"
+            tooltip="优先使用任务指定的模型；留空跟随智能体模型，智能体未配置时使用租户默认模型。修改后从下次执行生效。"
+          >
+            <Select
+              placeholder="跟随智能体模型"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              notFoundContent="暂无可用模型，请先在模型管理中配置"
+              options={[
+                ...(editingJob?.model_id && !models.some(m => m.id === editingJob.model_id)
+                  ? [{ value: editingJob.model_id, label: '原指定模型不可用，请重新选择或清空', disabled: true }]
+                  : []),
+                ...models.map(m => ({ value: m.id, label: `${m.name}${m.provider ? ` (${m.provider})` : ''}` })),
+              ]}
             />
           </Form.Item>
 

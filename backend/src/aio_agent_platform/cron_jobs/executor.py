@@ -1,6 +1,7 @@
 """Execute scheduled agents in the tenant captured by the job."""
 
 from aio_agent_platform.core.execution_scope import bind_execution_scope
+from aio_agent_platform.cron_jobs.service import validate_job_model
 
 
 async def execute_cron_job(job, db, run_id, *, tool_executor, push_to_channel):
@@ -94,6 +95,13 @@ async def execute_cron_job(job, db, run_id, *, tool_executor, push_to_channel):
         await _finalize("failed", error="任务关联的智能体不存在、已停用或无权访问")
         return
 
+    if job.model_id is not None:
+        try:
+            await validate_job_model(db, job.tenant_id, job.model_id)
+        except ValueError as exc:
+            await _finalize("failed", error=str(exc))
+            return
+
     with bind_execution_scope(job.user_id, job.tenant_id, agent_id=job.agent_id):
         # Cron jobs have no delegation context; keep delegate_task out so a
         # tool that cannot run is never offered. Also blacklist tools that
@@ -132,7 +140,7 @@ async def execute_cron_job(job, db, run_id, *, tool_executor, push_to_channel):
         )
         loop = await build_agent_loop(
             tool_executor, system_prompt, db,
-            agent_model_id=agent.model_id,
+            agent_model_id=job.model_id or agent.model_id,
             agent_temperature=agent.temperature,
             agent_max_iterations=agent.max_iterations,
             agent_enable_retry=agent.enable_retry if agent.enable_retry is not None else True,
@@ -150,6 +158,7 @@ async def execute_cron_job(job, db, run_id, *, tool_executor, push_to_channel):
             agent_id=job.agent_id,
             title=job.name,
             source="cron",
+            model_id=job.model_id,
         )
         db.add(new_session)
         await db.flush()

@@ -2049,6 +2049,7 @@ export const cronJobsApi = {
     request_id?: string;
     allow_duplicate?: boolean;
     agent_id?: string | null;
+    model_id?: string | null;
     cron_expr?: string | null;
     run_at?: string | null;
     message?: string | null;
@@ -2065,6 +2066,7 @@ export const cronJobsApi = {
   update(id: string, data: {
     name?: string;
     agent_id?: string | null;
+    model_id?: string | null;
     cron_expr?: string | null;
     run_at?: string | null;
     message?: string | null;
