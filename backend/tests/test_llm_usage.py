@@ -15,7 +15,7 @@ def test_openai_usage_only_chunk_parsed():
         choices=[],
         usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
     )
-    chunk = provider._parse_stream_event(event)
+    chunk, = provider._parse_stream_events(event)
     assert chunk is not None
     assert chunk.type == "done"
     assert chunk.usage == {
@@ -28,7 +28,7 @@ def test_openai_usage_only_chunk_parsed():
 def test_openai_empty_chunk_without_usage_ignored():
     provider = _openai_provider()
     event = SimpleNamespace(choices=[], usage=None)
-    assert provider._parse_stream_event(event) is None
+    assert provider._parse_stream_events(event) == []
 
 
 def test_openai_reasoning_content_chunk_parsed():
@@ -45,7 +45,7 @@ def test_openai_reasoning_content_chunk_parsed():
         usage=None,
     )
 
-    chunk = provider._parse_stream_event(event)
+    chunk, = provider._parse_stream_events(event)
 
     assert chunk is not None
     assert chunk.type == "reasoning_delta"
@@ -62,7 +62,7 @@ def test_openai_finish_chunk_with_usage():
         choices=[choice],
         usage=SimpleNamespace(prompt_tokens=3, completion_tokens=7, total_tokens=10),
     )
-    chunk = provider._parse_stream_event(event)
+    chunk, = provider._parse_stream_events(event)
     assert chunk is not None
     assert chunk.type == "done"
     assert chunk.usage["total_tokens"] == 10

@@ -599,8 +599,8 @@ while (true) {
               </tr>
               <tr className="border-t border-border/30">
                 <td className="px-2 py-1 font-mono">done</td>
-                <td className="px-2 py-1 font-mono">{'{ message_id, trace }'}</td>
-                <td className="px-2 py-1">回答完成</td>
+                <td className="px-2 py-1 font-mono">{'{ message_id, content, trace }'}</td>
+                <td className="px-2 py-1">回答完成，content 为最终完整回答</td>
               </tr>
               <tr className="border-t border-border/30">
                 <td className="px-2 py-1 font-mono">error</td>

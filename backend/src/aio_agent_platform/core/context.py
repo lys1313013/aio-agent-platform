@@ -395,6 +395,25 @@ def _fallback_summary(messages: list[LLMMessage], max_chars: int) -> str:
 # ---- Main Entry Point ----
 
 
+def prepared_history(
+    messages: list[LLMMessage], *, system_prompt: str | None, user_input: str,
+) -> list[LLMMessage]:
+    """Remove only the two envelope messages AgentLoop supplies itself.
+
+    Summaries and historical system messages remain part of the history. In
+    particular, a repeated user message is not a reason to delete prior turns.
+    Compression can remove the current input entirely; in that case there is
+    no trailing envelope to remove.
+    """
+    history = list(messages)
+    if (system_prompt and history and history[0].role == "system"
+            and history[0].content == system_prompt):
+        history.pop(0)
+    if history and history[-1].role == "user" and history[-1].content == user_input:
+        history.pop()
+    return history
+
+
 async def prepare_context(
     system_prompt: str | None,
     history: list[LLMMessage],

@@ -59,7 +59,7 @@ from aio_agent_platform.core.chat import (
     update_context_summary,
 )
 from aio_agent_platform.core.chat_history import ChatTurnRecorder
-from aio_agent_platform.core.context import prepare_context
+from aio_agent_platform.core.context import prepare_context, prepared_history
 from aio_agent_platform.core.execution_scope import bind_execution_scope, require_execution_user
 from aio_agent_platform.core.task_event_log import log_event
 from aio_agent_platform.core.task_registry import task_finished, task_started, task_tool
@@ -1081,13 +1081,10 @@ class ChannelInboundPipeline:
             provider=agent_loop.provider,
             existing_summary=context_summary,
         )
-        processed_history = [
-            m for m in prepared_messages
-            if m.role != "system" and not (
-                m.role == "user"
-                and (m.content == user_content or m.content == user_message_for_llm)
-            )
-        ]
+        processed_history = prepared_history(
+            prepared_messages, system_prompt=system_prompt,
+            user_input=user_content if isinstance(user_content, str) else user_message_for_llm,
+        )
 
         # Show a typing indicator on the user's message while the agent runs.
         reaction_id = None

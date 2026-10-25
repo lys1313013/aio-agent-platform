@@ -55,6 +55,7 @@ from aio_agent_platform.core.context import (
     emergency_compress,
     is_context_overflow_error,
     prepare_context,
+    prepared_history,
 )
 from aio_agent_platform.core.execution_scope import (
     ExecutionAccessError,
@@ -608,7 +609,10 @@ async def chat(
 
     # Extract the processed history from prepared_messages (minus system + user input)
     # We pass prepared history to agent loop which will rebuild its own messages
-    processed_history = [m for m in prepared_messages if m.role != "system" and not (m.role == "user" and (m.content == user_message_for_llm or m.content == user_content))]
+    processed_history = prepared_history(
+        prepared_messages, system_prompt=system_prompt,
+        user_input=user_content if isinstance(user_content, str) else user_message_for_llm,
+    )
 
     # Save user message
     user_msg = Message(
@@ -650,7 +654,10 @@ async def chat(
         if is_context_overflow_error(e):
             logger.warning(f"Context overflow in REST chat, emergency compress: {e}")
             emergency_history = emergency_compress(prepared_messages, level=1)
-            emergency_hist = [m for m in emergency_history if m.role != "system" and not (m.role == "user" and (m.content == user_message_for_llm or m.content == user_content))]
+            emergency_hist = prepared_history(
+                emergency_history, system_prompt=system_prompt,
+                user_input=user_content if isinstance(user_content, str) else user_message_for_llm,
+            )
             await turn.consume(agent_loop.run(
                 user_input=user_content,
                 user_id=user.id,
@@ -1117,10 +1124,10 @@ async def chat_stream(
                     provider=agent_loop.provider,
                     existing_summary=context_summary,
                 )
-                processed_history = [
-                    m for m in prepared_messages
-                    if m.role != "system" and not (m.role == "user" and (m.content == _user_message_for_llm or m.content == user_content))
-                ]
+                processed_history = prepared_history(
+                    prepared_messages, system_prompt=system_prompt,
+                    user_input=user_content if isinstance(user_content, str) else _user_message_for_llm,
+                )
                 logger.debug(
                     "stream_context_prepared",
                     session_id=str(session_id),
@@ -1655,10 +1662,9 @@ async def chat_websocket(
                     provider=agent_loop.provider,
                     existing_summary=context_summary,
                 )
-                processed_history = [
-                    m for m in prepared_messages
-                    if m.role != "system" and not (m.role == "user" and m.content == user_message)
-                ]
+                processed_history = prepared_history(
+                    prepared_messages, system_prompt=system_prompt, user_input=user_message,
+                )
 
                 # Only delivery differs from SSE and background execution.
                 turn = ChatTurnRecorder(session_id, user_id)

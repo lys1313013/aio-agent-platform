@@ -144,6 +144,7 @@ class LLMChunk:
     argument_delta: str | None = None  # Raw argument string delta for tool_call_delta
     usage: dict | None = None
     stop_reason: str | None = None
+    tool_call_index: int | None = None
 
 
 @dataclass
@@ -386,10 +387,9 @@ class OpenAIProvider(LLMProvider):
                         if details:
                             cache_read_tokens = getattr(details, "cached_tokens", 0) or 0
                             cache_creation_tokens = getattr(details, "cache_creation", 0) or 0
-                    chunk = self._parse_stream_event(event)
-                    if chunk and first_chunk_at is None and chunk.type in ("text_delta", "tool_call_start"):
-                        first_chunk_at = time.monotonic()
-                    if chunk:
+                    for chunk in self._parse_stream_events(event):
+                        if first_chunk_at is None and chunk.type in ("text_delta", "tool_call_start"):
+                            first_chunk_at = time.monotonic()
                         if chunk.type == "text_delta" and chunk.content:
                             accumulated_text += chunk.content
                         elif chunk.type in ("tool_call_start", "tool_call_delta"):
@@ -531,104 +531,43 @@ class OpenAIProvider(LLMProvider):
             usage=usage,
         )
 
-    def _parse_stream_event(self, event) -> LLMChunk | None:
+    def _parse_stream_events(self, event) -> list[LLMChunk]:
+        """Preserve every delta, including parallel calls in the same SSE event."""
+        usage = None
+        if event.usage:
+            usage = {
+                "prompt_tokens": event.usage.prompt_tokens,
+                "completion_tokens": event.usage.completion_tokens,
+                "total_tokens": event.usage.total_tokens,
+            }
         if not event.choices:
-            # Final usage-only chunk (stream_options.include_usage)
-            if event.usage:
-                return LLMChunk(
-                    type="done",
-                    usage={
-                        "prompt_tokens": event.usage.prompt_tokens,
-                        "completion_tokens": event.usage.completion_tokens,
-                        "total_tokens": event.usage.total_tokens,
-                    },
-                )
-            return None
+            return [LLMChunk(type="done", usage=usage)] if usage else []
+
         choice = event.choices[0]
         delta = choice.delta
-        if not delta:
-            # Check for finish_reason without delta (some providers)
-            if choice.finish_reason:
-                usage = None
-                if event.usage:
-                    usage = {
-                        "prompt_tokens": event.usage.prompt_tokens,
-                        "completion_tokens": event.usage.completion_tokens,
-                        "total_tokens": event.usage.total_tokens,
-                    }
-                return LLMChunk(
-                    type="done",
-                    stop_reason=choice.finish_reason,
-                    usage=usage,
-                )
-            return None
-
-        # Reasoning-model deltas (DeepSeek and compatible OpenAI APIs).
-        reasoning_content = getattr(delta, "reasoning_content", None)
-        if reasoning_content:
-            return LLMChunk(type="reasoning_delta", content=reasoning_content)
-
-        # Tool call events
-        if getattr(delta, "tool_calls", None):
-            tc = delta.tool_calls[0]
-            has_name = bool(tc.function.name)
-            has_args = tc.function.arguments is not None and tc.function.arguments != ""
-
-            if has_name:
-                if has_args:
-                    # Complete tool call in single chunk (some APIs like mimo-v2.5-pro)
-                    # Yield as start with arguments included
-                    return LLMChunk(
-                        type="tool_call_start",
-                        argument_delta=tc.function.arguments,
-                        tool_call=ToolCall(
-                            id=tc.id or "",
-                            name=tc.function.name,
-                            arguments={},
-                        ),
-                    )
-                else:
-                    # Streaming start without arguments (standard OpenAI)
-                    return LLMChunk(
-                        type="tool_call_start",
-                        tool_call=ToolCall(
-                            id=tc.id or "",
-                            name=tc.function.name,
-                            arguments={},
-                        ),
-                    )
-            elif has_args:
-                # Delta chunk: raw argument string fragment
-                return LLMChunk(
-                    type="tool_call_delta",
-                    argument_delta=tc.function.arguments,
-                    tool_call=ToolCall(
-                        id=tc.id or "",
-                        name="",
-                        arguments={},
-                    ),
-                )
-
-        # Text delta
-        if delta.content:
-            return LLMChunk(type="text_delta", content=delta.content)
-
-        # Done
-        if choice.finish_reason:
-            usage = None
-            if event.usage:
-                usage = {
-                    "prompt_tokens": event.usage.prompt_tokens,
-                    "completion_tokens": event.usage.completion_tokens,
-                    "total_tokens": event.usage.total_tokens,
-                }
-            return LLMChunk(
-                type="done",
-                stop_reason=choice.finish_reason,
-                usage=usage,
-            )
-
-        return None
+        chunks: list[LLMChunk] = []
+        if delta:
+            reasoning_content = getattr(delta, "reasoning_content", None)
+            if reasoning_content:
+                chunks.append(LLMChunk(type="reasoning_delta", content=reasoning_content))
+            if delta.content:
+                chunks.append(LLMChunk(type="text_delta", content=delta.content))
+            for tc in getattr(delta, "tool_calls", None) or []:
+                function = tc.function
+                if function is None:
+                    continue
+                name = function.name or ""
+                arguments = function.arguments
+                if name or arguments:
+                    chunks.append(LLMChunk(
+                        type="tool_call_start" if name else "tool_call_delta",
+                        tool_call=ToolCall(id=tc.id or "", name=name, arguments={}),
+                        argument_delta=arguments or None,
+                        tool_call_index=getattr(tc, "index", None),
+                    ))
+        if choice.finish_reason or usage:
+            chunks.append(LLMChunk(type="done", stop_reason=choice.finish_reason, usage=usage))
+        return chunks
 
 
 # ---- Anthropic Provider ----
@@ -987,6 +926,7 @@ class AnthropicProvider(LLMProvider):
             if block.type == "tool_use":
                 return LLMChunk(
                     type="tool_call_start",
+                    tool_call_index=getattr(event, "index", None),
                     tool_call=ToolCall(
                         id=block.id or "",
                         name=block.name,
@@ -1001,9 +941,17 @@ class AnthropicProvider(LLMProvider):
                 return LLMChunk(type="text_delta", content=delta.text)
             elif delta.type == "thinking_delta":
                 return LLMChunk(type="reasoning_delta", content=delta.thinking)
+            elif delta.type == "input_json_delta":
+                return LLMChunk(
+                    type="tool_call_delta",
+                    argument_delta=delta.partial_json,
+                    tool_call_index=getattr(event, "index", None),
+                )
             elif delta.type == "tool_use_delta":
                 return LLMChunk(
                     type="tool_call_delta",
+                    argument_delta=json.dumps(delta.input) if delta.input is not None else None,
+                    tool_call_index=getattr(event, "index", None),
                     tool_call=ToolCall(
                         id=delta.id or "",
                         name="",

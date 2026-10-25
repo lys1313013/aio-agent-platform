@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Annotated
 from uuid import UUID, uuid4
 
 import structlog
+from anyio import CancelScope
 from fastapi import (
     APIRouter,
     Depends,
@@ -21,13 +24,15 @@ from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser, ExecutionUser
 from aio_agent_platform.core.agent import AgentLoop, AgentStep
+from aio_agent_platform.core.chat_history import ChatTurnRecorder
 from aio_agent_platform.core.config import settings
 from aio_agent_platform.core.context import (
-    current_agent_id,
     emergency_compress,
     is_context_overflow_error,
     prepare_context,
+    prepared_history,
 )
+from aio_agent_platform.core.execution_scope import bind_execution_scope
 from aio_agent_platform.core.prompt import build_system_prompt
 from aio_agent_platform.db import Message, Session
 from aio_agent_platform.db.connection import get_db
@@ -460,19 +465,22 @@ async def _execute_agent_inner(
             detail={"code": 40401, "message": "Agent 不存在"},
         )
 
-    current_agent_id.set(str(agent.id))
-
     # Get or create session
     session = None
     if req.session_rid:
         try:
             sid = UUID(req.session_rid)
             result = await db.execute(
-                select(Session).where(Session.id == sid, Session.user_id == user.id)
+                select(Session).where(
+                    Session.id == sid, Session.user_id == user.id,
+                    Session.agent_id == agent.id, Session.source != "room",
+                )
             )
             session = result.scalar_one_or_none()
-        except ValueError:
-            pass
+            if session is None:
+                raise HTTPException(status_code=404, detail="Session not found for this agent")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid session_rid") from exc
 
     if not session:
         session = Session(
@@ -503,9 +511,10 @@ async def _execute_agent_inner(
     tools_list, tools_schema = _filter_tools_for_agent(tool_executor, config_snapshot)
 
     memory_top_k = 5
-    memory_data = await MemoryService.get_memories_for_prompt(
-        db, user.id, req.user_input, top_k=memory_top_k, agent_id=agent_id
-    )
+    with bind_execution_scope(user.id, agent.tenant_id, agent_id=agent.id):
+        memory_data = await MemoryService.get_memories_for_prompt(
+            db, user.id, req.user_input, top_k=memory_top_k, agent_id=agent_id,
+        )
     from aio_agent_platform.db import UserProfile
     profile_result = await db.execute(
         select(UserProfile).where(
@@ -550,12 +559,12 @@ async def _execute_agent_inner(
         history=history,
         user_input=req.user_input,
         provider=agent_loop.provider,
+        existing_summary=session.context_summary,
     )
 
-    processed_history = [
-        m for m in prepared_messages
-        if m.role != "system" and not (m.role == "user" and m.content == req.user_input)
-    ]
+    processed_history = prepared_history(
+        prepared_messages, system_prompt=system_prompt, user_input=req.user_input,
+    )
 
     # Save user message
     user_msg = Message(
@@ -583,10 +592,9 @@ async def _execute_agent_inner(
         if is_context_overflow_error(e):
             logger.warning(f"Context overflow in execute, emergency compress: {e}")
             emergency_history = emergency_compress(prepared_messages, level=1)
-            emergency_hist = [
-                m for m in emergency_history
-                if m.role != "system" and not (m.role == "user" and m.content == req.user_input)
-            ]
+            emergency_hist = prepared_history(
+                emergency_history, system_prompt=system_prompt, user_input=req.user_input,
+            )
             async for event in agent_loop.run(
                 user_input=req.user_input,
                 user_id=user.id,
@@ -707,13 +715,11 @@ async def sse_chat(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    current_agent_id.set(str(agent.id))
-
-    async def event_generator():
+    async def event_generator() -> AsyncIterator[str]:
         """Generate SSE events for streaming chat."""
         from aio_agent_platform.db.connection import get_session_factory
 
-        async with get_session_factory() as db_session:
+        async with get_session_factory()() as db_session:
             # Send session event
             yield f"event: session\ndata: {json.dumps({'session_id': str(session_id)}, ensure_ascii=False)}\n\n"
 
@@ -735,9 +741,10 @@ async def sse_chat(
                 )
             tools_list, tools_schema = _filter_tools_for_agent(tool_executor, config_snapshot)
 
-            memory_data = await MemoryService.get_memories_for_prompt(
-                db_session, user.id, req.message, top_k=5, agent_id=agent_id
-            )
+            with bind_execution_scope(user.id, agent.tenant_id, agent_id=agent.id):
+                memory_data = await MemoryService.get_memories_for_prompt(
+                    db_session, user.id, req.message, top_k=5, agent_id=agent_id,
+                )
             from aio_agent_platform.db import UserProfile
             profile_result = await db_session.execute(
                 select(UserProfile).where(
@@ -782,11 +789,11 @@ async def sse_chat(
                 history=history,
                 user_input=req.message,
                 provider=agent_loop.provider,
+                existing_summary=session.context_summary,
             )
-            processed_history = [
-                m for m in prepared_messages
-                if m.role != "system" and not (m.role == "user" and m.content == req.message)
-            ]
+            processed_history = prepared_history(
+                prepared_messages, system_prompt=system_prompt, user_input=req.message,
+            )
 
             # Save user message
             user_msg = Message(
@@ -798,60 +805,40 @@ async def sse_chat(
             db_session.add(user_msg)
             await db_session.flush()
 
-            # Run agent loop with streaming
-            final_output = ""
-            tool_calls_data = []
-
+            # Use the same recorder as interactive and background execution.
+            turn = ChatTurnRecorder(session_id, user.id)
             try:
-                async for event in agent_loop.run(
+                async with aclosing(agent_loop.run(
                     user_input=req.message,
                     user_id=user.id,
                     session_id=session_id,
                     conversation_history=processed_history,
                     tools=tools_schema,
-                ):
-                    if isinstance(event, AgentStep):
-                        if event.thinking:
-                            yield f"event: thinking\ndata: {json.dumps({'content': event.thinking}, ensure_ascii=False)}\n\n"
-                        if event.tool_call:
-                            tc = event.tool_call
-                            tc_data = {
-                                "id": tc.id,
-                                "name": tc.name,
-                                "arguments": tc.arguments,
-                            }
-                            tool_calls_data.append(tc_data)
-                            yield f"event: tool_call\ndata: {json.dumps(tc_data, ensure_ascii=False)}\n\n"
-                        if event.tool_result:
-                            tr = event.tool_result
-                            yield f"event: tool_result\ndata: {json.dumps({'tool_call_id': tr.tool_call_id, 'status': tr.status, 'preview': tr.preview}, ensure_ascii=False)}\n\n"
-                        if event.text_delta:
-                            yield f"event: text_delta\ndata: {json.dumps({'text': event.text_delta}, ensure_ascii=False)}\n\n"
-                        if event.done:
-                            final_output = event.final_output
-                    elif isinstance(event, str) and event.startswith("tool_result:"):
-                        pass  # Already handled via AgentStep
-
+                )) as events:
+                    async for event in events:
+                        previous_content = turn.content
+                        payload = await turn.process(event, db_session)
+                        if isinstance(event, AgentStep) and event.done and not previous_content and turn.content:
+                            payload = {"type": "text_delta", "content": turn.content}
+                        if payload:
+                            event_type = payload.pop("type")
+                            # Preserve the published API's text_delta payload contract.
+                            if event_type == "text_delta":
+                                payload = {"text": payload["content"]}
+                            yield f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
             except Exception as e:
+                logger.exception("external_chat_failed", session_id=str(session_id))
                 yield f"event: error\ndata: {json.dumps({'code': 50002, 'message': str(e)}, ensure_ascii=False)}\n\n"
                 return
+            finally:
+                # Commit before done, and retain partial answers on disconnect.
+                with CancelScope(shield=True):
+                    await turn.save(db_session, force=True)
 
-            # Save assistant message
-            assistant_msg = Message(
-                session_id=session_id,
-                user_id=user.id,
-                role="assistant",
-                content=final_output,
-            )
-            db_session.add(assistant_msg)
-            await db_session.flush()
-
-            # Send done event
             done_data = {
-                "message_id": str(assistant_msg.id),
-                "trace": {
-                    "tool_calls": tool_calls_data,
-                },
+                "message_id": str(turn.message_id),
+                "content": turn.content,
+                "trace": {"tool_calls": turn.tool_calls},
             }
             yield f"event: done\ndata: {json.dumps(done_data, ensure_ascii=False)}\n\n"
 

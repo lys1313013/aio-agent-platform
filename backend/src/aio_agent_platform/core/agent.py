@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC
@@ -263,7 +263,7 @@ class AgentLoop:
         session_id: UUID,
         conversation_history: list[LLMMessage],
         tools: list[dict],
-    ) -> AsyncIterator[AgentStep | str]:
+    ) -> AsyncGenerator[AgentStep | str]:
         # Consumers may advance/close the iterator from different tasks (e.g.
         # wait_for on Python 3.11). One worker owns the complete generator
         # lifecycle, including ContextVar tokens and provider stream contexts.
@@ -511,18 +511,25 @@ class AgentLoop:
                                 provider_reasoning_emitted = True
                             # New tool call starting
                             tc = chunk.tool_call
-                            idx = len(pending_tool_calls)
-                            pending_tool_calls[idx] = {
-                                "id": tc.id,
-                                "name": tc.name,
-                                "args_str": chunk.argument_delta or "",
-                            }
+                            idx = chunk.tool_call_index
+                            if idx is None:
+                                idx = max(pending_tool_calls, default=-1) + 1
+                            pending = pending_tool_calls.setdefault(idx, {
+                                "id": "", "name": "", "args_str": "",
+                            })
+                            pending["id"] = tc.id or pending["id"]
+                            pending["name"] += tc.name
+                            pending["args_str"] += chunk.argument_delta or ""
 
                         elif chunk.type == "tool_call_delta" and chunk.argument_delta:
-                            # Accumulate argument string delta
-                            if pending_tool_calls:
-                                last_idx = max(pending_tool_calls.keys())
-                                pending_tool_calls[last_idx]["args_str"] += chunk.argument_delta
+                            # Native providers carry an index; legacy sequential
+                            # adapters may omit it, retaining their last-call behavior.
+                            idx = chunk.tool_call_index
+                            if idx is None and pending_tool_calls:
+                                idx = next(reversed(pending_tool_calls))
+                            if idx not in pending_tool_calls:
+                                raise ValueError("Tool argument delta has no matching tool call")
+                            pending_tool_calls[idx]["args_str"] += chunk.argument_delta
 
                         elif chunk.type == "done" and chunk.usage:
                             step_usage = chunk.usage
@@ -560,8 +567,16 @@ class AgentLoop:
             for _idx, tc_data in pending_tool_calls.items():
                 try:
                     args = json.loads(tc_data["args_str"]) if tc_data["args_str"] else {}
-                except json.JSONDecodeError:
-                    args = {}
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        f"Invalid JSON arguments for tool '{tc_data['name']}' "
+                        f"(call {tc_data['id']}); no tools in this batch were executed"
+                    ) from error
+                if not isinstance(args, dict):
+                    raise ValueError(
+                        f"Arguments for tool '{tc_data['name']}' must be a JSON object; "
+                        "no tools in this batch were executed"
+                    )
                 step.tool_calls.append(
                     ToolCall(id=tc_data["id"], name=tc_data["name"], arguments=args)
                 )

@@ -326,7 +326,7 @@ POST /api/sessions/{session_id}/chat
 | `thinking` | `{ "content": "..." }` | 模型推理过程 |
 | `tool_call` | `{ "id", "name", "arguments" }` | 工具调用 |
 | `tool_result` | `{ "tool_call_id", "status", "preview" }` | 工具结果 |
-| `done` | `{ "message_id", "trace" }` | 回答完成 |
+| `done` | `{ "message_id", "content", "trace" }` | 回答完成；`content` 是最终完整回答，客户端应以它校正累计增量 |
 | `error` | `{ "code", "message" }` | 错误 |
 
 ### 6.4 代码示例
@@ -653,7 +653,7 @@ event: text_delta
 data: {"text": "好"}
 
 event: done
-data: {"message_id": "msg_xxx", "trace": {...}}
+data: {"message_id": "msg_xxx", "content": "最终完整回答", "trace": {...}}
 ```
 
 ---
