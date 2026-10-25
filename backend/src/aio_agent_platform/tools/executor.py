@@ -278,6 +278,7 @@ class ToolExecutor:
                         tool_call_id=tool_call_id,
                         workspace_id=workspace_id,
                         workspace_slug=workspace_slug,
+                        allowed_tools=allowed_tools,
                     )
                     return ToolResult(
                         tool_call_id=tool_call_id,
@@ -336,6 +337,7 @@ class ToolExecutor:
                     tool_call_id=tool_call_id,
                     workspace_id=workspace_id,
                     workspace_slug=workspace_slug,
+                    allowed_tools=allowed_tools,
                 )
                 file_changes = []
 
@@ -1304,6 +1306,7 @@ except Exception as e:
         tool_call_id: str | None = None,
         workspace_id: str | None = None,
         workspace_slug: str | None = None,
+        allowed_tools: set[str] | None = None,
     ) -> str:
         """Execute a non-sandbox tool via registered direct handlers."""
         handler = self.direct_handlers.get(tool_name)
@@ -1318,6 +1321,7 @@ except Exception as e:
                 tool_call_id=tool_call_id,
                 workspace_id=workspace_id,
                 workspace_slug=workspace_slug,
+                allowed_tools=allowed_tools,
             )
         return f"Tool '{tool_name}' is not yet implemented."
 

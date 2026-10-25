@@ -11,13 +11,23 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.auth.dependencies import CurrentUser
+from aio_agent_platform.auth.dependencies import CurrentUser, ExecutionUser
 from aio_agent_platform.core.execution_scope import ExecutionAccessError
 from aio_agent_platform.cron_jobs.service import CronJobConflict, CronJobService
 from aio_agent_platform.db.connection import get_db
 from aio_agent_platform.db.models import ChannelConfig, CronJob, CronJobRun
 
 router = APIRouter(prefix="/api/cron-jobs", tags=["cron-jobs"])
+
+
+async def _owned_job(db: AsyncSession, job_id: UUID, actor_user_id: UUID) -> CronJob:
+    try:
+        job = await CronJobService.get_job(db, job_id, None, actor_user_id=actor_user_id)
+    except ExecutionAccessError as error:
+        raise HTTPException(403, str(error)) from error
+    if job is None:
+        raise HTTPException(404, "Cron job not found")
+    return job
 
 
 async def _validate_channel(db: AsyncSession, channel_id: UUID, tenant_id: UUID) -> None:
@@ -132,11 +142,11 @@ async def list_cron_jobs(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
-    """List cron jobs for current tenant."""
-    jobs = await CronJobService.list_jobs(db, user.tenant_id, limit=limit, offset=offset)
+    """List the caller's cron jobs in the selected tenant."""
+    jobs = await CronJobService.list_jobs(db, user.tenant_id, limit=limit, offset=offset, actor_user_id=user.id)
 
     count_stmt = (
-        select(func.count()).select_from(CronJob).where(CronJob.tenant_id == user.tenant_id)
+        select(func.count()).select_from(CronJob).where(CronJob.tenant_id == user.tenant_id, CronJob.user_id == user.id)
     )
     total_result = await db.execute(count_stmt)
     total = total_result.scalar()
@@ -203,16 +213,16 @@ async def list_all_cron_job_runs(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
-    """List run records across all cron jobs of the current tenant.
+    """List the caller's run records in the selected tenant.
 
     Supports filtering by job (tenant-validated) and status, with
     server-side pagination. LEFT JOINs CronJob so the job name survives
     even after the job itself is deleted.
     """
-    filters = [CronJobRun.tenant_id == user.tenant_id]
+    filters = [CronJobRun.tenant_id == user.tenant_id, CronJobRun.user_id == user.id]
 
     if job_id is not None:
-        job = await CronJobService.get_job(db, job_id, user.tenant_id)
+        job = await _owned_job(db, job_id, user.id)
         if not job:
             raise HTTPException(status_code=404, detail="Cron job not found")
         filters.append(CronJobRun.job_id == job_id)
@@ -250,11 +260,11 @@ async def list_all_cron_job_runs(
 @router.get("/{job_id}", response_model=CronJobOut)
 async def get_cron_job(
     job_id: UUID,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Get a single cron job."""
-    job = await CronJobService.get_job(db, job_id, user.tenant_id)
+    job = await _owned_job(db, job_id, user.id)
     if not job:
         raise HTTPException(status_code=404, detail="Cron job not found")
     return CronJobOut.from_model(job).model_dump(mode="json")
@@ -264,18 +274,17 @@ async def get_cron_job(
 async def update_cron_job(
     job_id: UUID,
     req: CronJobUpdate,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     request: Request,
 ) -> dict:
     """Update a cron job."""
-    if req.channel_id is not None:
-        await _validate_channel(db, req.channel_id, user.tenant_id)
     try:
         job = await CronJobService.update_job(
             db=db,
             job_id=job_id,
-            tenant_id=user.tenant_id,
+            tenant_id=None,
+            actor_user_id=user.id,
             name=req.name,
             agent_id=req.agent_id,
             model_id=req.model_id,
@@ -308,12 +317,15 @@ async def update_cron_job(
 @router.delete("/{job_id}", status_code=204)
 async def delete_cron_job(
     job_id: UUID,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     request: Request,
 ) -> None:
     """Delete a cron job."""
-    deleted = await CronJobService.delete_job(db, job_id, user.tenant_id)
+    try:
+        deleted = await CronJobService.delete_job(db, job_id, None, actor_user_id=user.id)
+    except ExecutionAccessError as error:
+        raise HTTPException(403, str(error)) from error
     if not deleted:
         raise HTTPException(status_code=404, detail="Cron job not found")
     await db.commit()
@@ -326,7 +338,7 @@ async def delete_cron_job(
 @router.post("/{job_id}/run", status_code=200)
 async def run_cron_job_now(
     job_id: UUID,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     request: Request,
 ) -> dict:
@@ -335,7 +347,7 @@ async def run_cron_job_now(
     Reuses the exact same pipeline as the scheduler trigger: creates a run
     record, runs the job's agent, and finalizes the record with output/error.
     """
-    job = await CronJobService.get_job(db, job_id, user.tenant_id)
+    job = await _owned_job(db, job_id, user.id)
     if not job:
         raise HTTPException(status_code=404, detail="Cron job not found")
 
@@ -350,19 +362,19 @@ async def run_cron_job_now(
 @router.get("/{job_id}/runs", response_model=CronJobRunListResponse)
 async def list_cron_job_runs(
     job_id: UUID,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
     """List execution logs for a cron job."""
-    job = await CronJobService.get_job(db, job_id, user.tenant_id)
+    job = await _owned_job(db, job_id, user.id)
     if not job:
         raise HTTPException(status_code=404, detail="Cron job not found")
 
     runs_stmt = (
         select(CronJobRun)
-        .where(CronJobRun.job_id == job_id)
+        .where(CronJobRun.job_id == job_id, CronJobRun.user_id == user.id)
         .order_by(CronJobRun.started_at.desc())
         .limit(limit)
         .offset(offset)
@@ -373,7 +385,7 @@ async def list_cron_job_runs(
     count_stmt = (
         select(func.count())
         .select_from(CronJobRun)
-        .where(CronJobRun.job_id == job_id)
+        .where(CronJobRun.job_id == job_id, CronJobRun.user_id == user.id)
     )
     total = (await db.execute(count_stmt)).scalar()
 

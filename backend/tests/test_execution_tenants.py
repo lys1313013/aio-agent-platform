@@ -387,13 +387,13 @@ async def test_cron_creation_validates_scope_and_deduplicates(scope_env, db_sess
             await CronJobService.create_job(**{**kwargs, **overrides})
     job.cron_expr = "0 18 * * 0"
     await db_session.flush()
-    await CronJobService.update_job(db_session, job.id, d.a.id, cron_expr=job.cron_expr, name="renamed")
+    await CronJobService.update_job(db_session, job.id, d.a.id, actor_user_id=d.user.id, cron_expr=job.cron_expr, name="renamed")
     assert job.cron_expr == "0 18 * * mon"
     foreign = Agent(id=uuid4(), tenant_id=d.b.id, created_by=d.user.id, name="foreign")
     db_session.add(foreign)
     await db_session.flush()
     with pytest.raises(ExecutionAccessError):
-        await CronJobService.update_job(db_session, job.id, d.a.id, agent_id=foreign.id)
+        await CronJobService.update_job(db_session, job.id, d.a.id, actor_user_id=d.user.id, agent_id=foreign.id)
 
 
 @pytest.mark.postgres

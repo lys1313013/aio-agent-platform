@@ -139,7 +139,7 @@ async def handle_list_cron_jobs(arguments: dict, user_id: str, session_id: str, 
         tenant_id = await _get_tenant_id(db, uid)
         if tenant_id is None:
             return f"Error: user {uid} not found"
-        jobs = await CronJobService.list_jobs(db, tenant_id)
+        jobs = await CronJobService.list_jobs(db, tenant_id, actor_user_id=uid)
 
     if not jobs:
         return "No cron jobs found."
@@ -181,7 +181,7 @@ async def handle_delete_cron_job(arguments: dict, user_id: str, session_id: str,
         tenant_id = await _get_tenant_id(db, uid)
         if tenant_id is None:
             return f"Error: user {uid} not found"
-        deleted = await CronJobService.delete_job(db, job_id, tenant_id)
+        deleted = await CronJobService.delete_job(db, job_id, tenant_id, actor_user_id=uid)
         await db.commit()
 
     if deleted:

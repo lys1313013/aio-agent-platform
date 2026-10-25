@@ -85,6 +85,7 @@ async def handle_delegate_task(
     delegation: DelegationContext | None = None,
     tool_executor: ToolExecutor | None = None,
     tool_call_id: str | None = None,
+    allowed_tools: set[str] | None = None,
     **kwargs,
 ) -> str:
     """
@@ -98,6 +99,9 @@ async def handle_delegate_task(
 
     if not tool_executor:
         return "Error: tool executor not available"
+
+    if allowed_tools is None or "delegate_task" not in allowed_tools:
+        return "Error: delegation requires an explicit parent tool permission grant"
 
     child_agent_id = arguments.get("child_agent_id", "")
     role_name = (arguments.get("role_name", "") or "").strip()
@@ -194,7 +198,7 @@ async def handle_delegate_task(
         try:
             # 3. Build child agent configuration (with inheritance)
             child_tools_list, child_tools_schema = _build_child_tools(
-                tool_executor, child_agent, new_depth, max_depth
+                tool_executor, child_agent, new_depth, max_depth, parent_allowed_tools=allowed_tools
             )
 
             child_system_prompt = await _build_child_system_prompt(
@@ -368,6 +372,8 @@ def _build_child_tools(
     child_agent: Agent | DynamicSubAgent,
     current_depth: int,
     max_depth: int,
+    *,
+    parent_allowed_tools: set[str] | None,
 ) -> tuple[list, list]:
     """Build tool list for child agent with depth-aware filtering."""
     all_tools = tool_executor.registry.list_tools()
@@ -408,6 +414,10 @@ def _build_child_tools(
         dt_tool = next((t for t in all_tools if t.name == "delegate_task"), None)
         if dt_tool:
             filtered.append(dt_tool)
+
+    # Dynamic and configured descendants may only narrow the parent grant.
+    # None means the caller did not supply authorization; an empty set denies all.
+    filtered = [tool for tool in filtered if tool.name in (parent_allowed_tools or set())]
 
     # Build OpenAI schema
     tools_schema = []

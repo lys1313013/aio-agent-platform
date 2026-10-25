@@ -6,14 +6,15 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aio_agent_platform.auth.dependencies import CurrentUser
+from aio_agent_platform.auth.dependencies import ExecutionUser
+from aio_agent_platform.core.execution_scope import ExecutionAccessError, require_agent_tenant
 from aio_agent_platform.db.connection import get_db
-from aio_agent_platform.db.models import Agent, Delegation, Session
+from aio_agent_platform.db.models import Agent, Delegation, Session, User
 
 router = APIRouter(prefix="/api/delegations", tags=["delegations"])
 
@@ -48,79 +49,83 @@ class DelegationOut(BaseModel):
 @router.get("/sessions/{session_id}", response_model=list[DelegationOut])
 async def get_session_delegations(
     session_id: UUID,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> list[dict]:
-    """Get all delegations for a session (owner only)."""
-    owned = await db.scalar(
-        select(Session.id).where(
-            Session.id == session_id, Session.user_id == user.id
-        )
-    )
-    if not owned:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    """Page through an authorized session's delegations (default 50, maximum 200)."""
+    await _require_session_access(db, session_id, user)
 
     result = await db.execute(
         select(Delegation)
-        .where(Delegation.parent_session_id == session_id)
-        .order_by(Delegation.created_at)
+        .where(Delegation.parent_session_id == session_id, Delegation.user_id == user.id)
+        .order_by(Delegation.created_at, Delegation.id)
+        .limit(limit).offset(offset)
     )
     delegations = result.scalars().all()
-    return [await _delegation_to_dict(db, d) for d in delegations]
+    names = await _agent_names(db, delegations)
+    return [_delegation_to_dict(d, names) for d in delegations]
 
 
 @router.get("/{delegation_id}", response_model=DelegationOut)
 async def get_delegation(
     delegation_id: UUID,
-    user: CurrentUser,
+    user: ExecutionUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Get a single delegation by ID (owner only)."""
     result = await db.execute(
-        select(Delegation).where(Delegation.id == delegation_id)
+        select(Delegation).where(Delegation.id == delegation_id, Delegation.user_id == user.id)
     )
     delegation = result.scalar_one_or_none()
     if not delegation:
         raise HTTPException(status_code=404, detail="委派记录不存在")
 
-    # Delegation records belong to the session that spawned them.
-    owner_id = await db.scalar(
-        select(Session.user_id).where(
-            Session.id == delegation.parent_session_id
-        )
-    )
-    if owner_id != user.id:
-        raise HTTPException(status_code=404, detail="委派记录不存在")
+    await _require_session_access(db, delegation.parent_session_id, user)
 
-    return await _delegation_to_dict(db, delegation)
+    return _delegation_to_dict(delegation, await _agent_names(db, [delegation]))
 
 
 # ---- Helpers ----
 
 
-async def _delegation_to_dict(db: AsyncSession, d: Delegation) -> dict:
-    """Convert delegation to dict with agent names resolved."""
-    # Resolve agent names
-    parent_name = None
-    child_name = None
+async def _require_session_access(db: AsyncSession, session_id: UUID, user: User) -> None:
+    session = await db.scalar(select(Session).where(
+        Session.id == session_id, Session.user_id == user.id,
+    ))
+    if session is None:
+        raise HTTPException(404, "会话不存在")
+    if session.source == "room":
+        from aio_agent_platform.rooms.service import owned_room
+        await owned_room(db, session.id, user)
+        return
+    # Historical unbound sessions do not carry a reliable tenant. Never infer
+    # their ownership from the user's mutable UI selection.
+    if session.agent_id is None:
+        raise HTTPException(403, "无法确定历史会话的执行租户")
+    try:
+        await require_agent_tenant(db, user.id, session.agent_id)
+    except ExecutionAccessError as error:
+        raise HTTPException(403, str(error)) from error
 
-    result = await db.execute(
-        select(Agent.name).where(Agent.id == d.parent_agent_id)
-    )
-    parent_name = result.scalar_one_or_none()
 
-    result = await db.execute(
-        select(Agent.name).where(Agent.id == d.child_agent_id)
-    )
-    child_name = result.scalar_one_or_none()
+async def _agent_names(db: AsyncSession, delegations: list[Delegation]) -> dict[UUID, str]:
+    ids = {agent_id for d in delegations for agent_id in (d.parent_agent_id, d.child_agent_id)}
+    if not ids:
+        return {}
+    rows = await db.execute(select(Agent.id, Agent.name).where(Agent.id.in_(ids)))
+    return dict(rows.all())
 
+
+def _delegation_to_dict(d: Delegation, names: dict[UUID, str]) -> dict:
     return {
         "id": d.id,
         "parent_session_id": d.parent_session_id,
         "parent_agent_id": d.parent_agent_id,
-        "parent_agent_name": parent_name,
+        "parent_agent_name": names.get(d.parent_agent_id),
         "child_agent_id": d.child_agent_id,
-        "child_agent_name": child_name,
+        "child_agent_name": names.get(d.child_agent_id),
         "depth": d.depth,
         "task": d.task,
         "context": d.context,

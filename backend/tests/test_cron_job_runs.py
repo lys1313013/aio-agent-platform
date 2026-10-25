@@ -38,7 +38,7 @@ def allow_occurrence_claim(monkeypatch):
 @pytest_asyncio.fixture
 async def cron_client(client: AsyncClient, db_session: AsyncSession, engine):
     """HTTP client with auth bypassed and a real Scheduler on app.state."""
-    from aio_agent_platform.auth.dependencies import get_current_user
+    from aio_agent_platform.auth.dependencies import get_current_user, get_execution_user
 
     db_session.add(Tenant(id=DEFAULT_TENANT_ID, name="default", slug="default"))
     user = User(
@@ -60,6 +60,7 @@ async def cron_client(client: AsyncClient, db_session: AsyncSession, engine):
     scheduler = Scheduler(_factory(engine))
     app.state.scheduler = scheduler
     app.dependency_overrides[get_current_user] = override_current_user
+    app.dependency_overrides[get_execution_user] = override_current_user
     try:
         yield client, scheduler, user
     finally:
@@ -389,7 +390,7 @@ async def test_rest_manual_run_now(cron_client, db_session: AsyncSession):
 
 async def test_cron_job_tenant_isolation(client, db_session: AsyncSession):
     """A user must not see or manage a cron job belonging to another tenant."""
-    from aio_agent_platform.auth.dependencies import get_current_user
+    from aio_agent_platform.auth.dependencies import get_current_user, get_execution_user
 
     tenant_a = Tenant(name="tenant-a", slug="cron-iso-a")
     tenant_b = Tenant(name="tenant-b", slug="cron-iso-b")
@@ -413,6 +414,7 @@ async def test_cron_job_tenant_isolation(client, db_session: AsyncSession):
         async def override_current_user():
             return user
         app.dependency_overrides[get_current_user] = override_current_user
+        app.dependency_overrides[get_execution_user] = override_current_user
 
     # user A creates a job in tenant A
     await act_as(user_a)

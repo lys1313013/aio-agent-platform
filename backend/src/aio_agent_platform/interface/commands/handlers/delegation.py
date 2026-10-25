@@ -5,7 +5,11 @@ from __future__ import annotations
 from uuid import UUID, uuid4
 
 from aio_agent_platform.core.agent import DelegationContext
-from aio_agent_platform.core.chat import resolve_workspace
+from aio_agent_platform.core.chat import (
+    filter_tools_by_agent,
+    load_execution_agent,
+    resolve_workspace,
+)
 from aio_agent_platform.core.config import settings
 from aio_agent_platform.delegation.handler import handle_delegate_task
 
@@ -28,6 +32,16 @@ async def cmd_delegate(ctx: CommandContext) -> CommandResult:
     if not ctx.session_id:
         return CommandResult(content="当前没有会话，请先开始对话。")
 
+    agent_id = ctx.session.agent_id if ctx.session else None
+    agent = await load_execution_agent(ctx.db, agent_id, ctx.user)
+    if agent_id is not None and agent is None:
+        return CommandResult(content="智能体不存在或无权访问。")
+    _, schemas = filter_tools_by_agent(ctx.tool_executor, agent)
+    allowed_tools = {schema["function"]["name"] for schema in schemas}
+    # Explicit user delegation without a configured agent still needs a grant.
+    if agent is None:
+        allowed_tools.add("delegate_task")
+
     role = ctx.args["role"]
     task = ctx.args["task"]
 
@@ -39,6 +53,7 @@ async def cmd_delegate(ctx: CommandContext) -> CommandResult:
 
     delegation = DelegationContext(
         parent_agent_id=(ctx.session.agent_id if ctx.session and ctx.session.agent_id else uuid4()),
+        tenant_id=ctx.tenant_id,
         delegation_depth=0,
         max_depth=settings.agent.max_delegation_depth,
         event_queue=None,
@@ -51,5 +66,6 @@ async def cmd_delegate(ctx: CommandContext) -> CommandResult:
         session_id=ctx.session_id,
         delegation=delegation,
         tool_executor=ctx.tool_executor,
+        allowed_tools=allowed_tools,
     )
     return CommandResult(content=text)
