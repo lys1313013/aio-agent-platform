@@ -5,8 +5,8 @@ Revises: 111deac801c6
 Create Date: 2026-08-08
 
 """
+
 from alembic import op
-import sqlalchemy as sa
 
 revision: str = "b2c3d4e5f7a8"
 down_revision: str | None = "111deac801c6"

@@ -1,56 +1,56 @@
 """Test fixtures for agent tests."""
 
 import asyncio
-import configparser
 import os
 from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
-# Provide required settings so app modules import cleanly in environments
-# without a .env (e.g. CI). DB-dependent tests skip when unreachable.
-os.environ.setdefault(
-    "DATABASE_URL", "postgresql+asyncpg://agent_user:changeme@localhost:5435/aio_agent_platform"
+
+# Never inherit the application's DATABASE_URL or alembic.ini. Even tests that
+# import services directly must not connect to a developer's business database.
+def _guard_test_db(database_url: str) -> None:
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(database_url)
+    if (
+        parsed.get_backend_name() != "postgresql"
+        or (parsed.host or "").lower() not in {"localhost", "127.0.0.1", "::1"}
+        or not (parsed.database or "").endswith("_test")
+        or parsed.query
+    ):
+        raise RuntimeError(
+            "TEST_DATABASE_URL must point to a loopback PostgreSQL database "
+            "ending in _test, without connection query overrides"
+        )
+
+
+if _test_database_url := os.environ.get("TEST_DATABASE_URL"):
+    _guard_test_db(_test_database_url)
+os.environ["DATABASE_URL"] = _test_database_url or (
+    "postgresql+asyncpg://test:test@127.0.0.1:1/unconfigured_test"
 )
 os.environ.setdefault("JWT_SECRET", "ci-test-secret-key-0123456789abcdef")
 os.environ.setdefault("STORAGE_ACCESS_KEY", "ci-test-access-key")
 os.environ.setdefault("STORAGE_SECRET_KEY", "ci-test-secret-key")
 
-from sqlalchemy import text
-from sqlalchemy.engine import make_url
-from sqlalchemy.pool import NullPool
-
-from aio_agent_platform.db.models import Base
-from aio_agent_platform.interface.api import app
+# Application imports must follow the test connection override above.
+from aio_agent_platform.db.models import Base  # noqa: E402
+from aio_agent_platform.interface.api import app  # noqa: E402
 
 
 def get_test_database_url():
-    """Get database URL from DATABASE_URL env var or alembic.ini."""
-    url = os.environ.get("DATABASE_URL")
+    """Only explicitly opted-in disposable test databases may be used."""
+    url = os.environ.get("TEST_DATABASE_URL")
     if url:
-        return url
-    try:
-        config = configparser.ConfigParser()
-        config.read('alembic.ini')
-        url = config.get('alembic', 'sqlalchemy.url', fallback=None)
-        if url:
-            return url
-    except Exception:
-        pass
-    return None
-
-
-def _guard_test_db(database_url: str) -> None:
-    """拒绝在非回环地址上执行 TRUNCATE，防止误伤远程生产库。"""
-    host = (make_url(database_url).host or "").lower()
-    if host not in ("localhost", "127.0.0.1"):
-        raise RuntimeError(
-            f"refusing to truncate non-loopback test database host: {host}"
-        )
+        _guard_test_db(url)
+    return url
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
@@ -62,9 +62,10 @@ async def engine(request):
     """
     database_url = get_test_database_url()
     if not database_url and request.config.getoption("--run-postgres"):
-        pytest.fail("PostgreSQL integration tests require DATABASE_URL")
+        pytest.fail("PostgreSQL integration tests require TEST_DATABASE_URL")
     if not database_url:
-        pytest.skip("DATABASE_URL not configured")
+        pytest.skip("TEST_DATABASE_URL not configured")
+    _guard_test_db(database_url)
     engine = create_async_engine(database_url, echo=False, poolclass=NullPool)
     try:
         async with asyncio.timeout(5):
@@ -74,7 +75,7 @@ async def engine(request):
         await engine.dispose()
         if request.config.getoption("--run-postgres"):
             pytest.fail("PostgreSQL integration test database is unreachable")
-        pytest.skip(f"test database not reachable: {database_url}")
+        pytest.skip("disposable test database not reachable")
     async with engine.begin() as conn:
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pg_trgm"'))
@@ -87,7 +88,7 @@ async def engine(request):
 
 
 @pytest_asyncio.fixture
-async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
+async def db_session(engine) -> AsyncGenerator[AsyncSession]:
     """Create a database session for each test, with all tables truncated first."""
     _guard_test_db(engine.url.render_as_string(hide_password=True))
     tables = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
@@ -101,7 +102,7 @@ async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest_asyncio.fixture
-async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient]:
     """Create an HTTP client for testing."""
     async def override_get_db():
         yield db_session

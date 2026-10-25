@@ -1,19 +1,14 @@
 """Tests for chat attachment upload and multimodal support."""
 
-import io
-import pytest
-from unittest.mock import MagicMock, patch
-from uuid import uuid4
 
+from aio_agent_platform.core.context import (
+    _light_truncate_message,
+    estimate_message_tokens,
+)
 from aio_agent_platform.llm.client import (
     LLMMessage,
     build_user_content,
     supports_vision,
-)
-from aio_agent_platform.core.context import (
-    estimate_message_tokens,
-    _light_truncate_message,
-    IMAGE_TOKEN_ESTIMATE,
 )
 
 

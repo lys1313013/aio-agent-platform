@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from aio_agent_platform.interface.routes.agents import AgentCreate, AgentUpdate, AgentOut
+from aio_agent_platform.interface.routes.agents import AgentCreate, AgentOut, AgentUpdate
 
 
 class TestAgentSchemas:

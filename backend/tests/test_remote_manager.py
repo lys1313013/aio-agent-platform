@@ -1,11 +1,12 @@
 """Tests for RemoteToolManager."""
 
-import pytest
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import Mock
 from uuid import uuid4
 
-from aio_agent_platform.tools.remote.manager import RemoteToolManager, RemoteToolConfig
+import pytest
+
 from aio_agent_platform.tools.registry import ToolRegistry
+from aio_agent_platform.tools.remote.manager import RemoteToolConfig, RemoteToolManager
 
 
 def make_config(name="test_tool", is_active=True, **kwargs):
@@ -89,7 +90,7 @@ class TestRemoteToolManager:
 
     @pytest.mark.asyncio
     async def test_list_all_tools(self, setup):
-        registry, manager = setup
+        _registry, manager = setup
         config1 = make_config(name="tool1")
         config2 = make_config(name="tool2")
         await manager.add_tool(config1)
@@ -102,11 +103,11 @@ class TestRemoteToolManager:
         assert names == {"tool1", "tool2"}
 
     def test_is_remote_tool_negative(self, setup):
-        registry, manager = setup
+        _registry, manager = setup
         assert not manager.is_remote_tool("nonexistent")
 
     def test_get_config_negative(self, setup):
-        registry, manager = setup
+        _registry, manager = setup
         assert manager.get_config("nonexistent") is None
 
     @pytest.mark.asyncio

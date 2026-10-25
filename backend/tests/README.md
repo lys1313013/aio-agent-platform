@@ -22,7 +22,7 @@ uv run pytest --run-postgres -m postgres tests/test_memory_reconciliation_postgr
 
 运行前配置独立测试数据库：
 
-- `DATABASE_URL`：记忆测试数据库，必须使用本机回环地址。测试会清空其中的表，禁止指向业务数据库。
+- `TEST_DATABASE_URL`：独立测试数据库，必须使用本机回环地址，数据库名必须以 `_test` 结尾，且不能包含连接查询参数。测试会清空其中的表，禁止指向业务数据库。不会回退到应用的 `DATABASE_URL`、`.env` 或 `alembic.ini`；测试进程内的应用连接也会改用该测试库。所有连接、建表、迁移之前都会校验目标。
 - `ROOM_TEST_DATABASE_URL`：聊天室测试数据库，必须使用本机回环地址且数据库名为 `room_test`；每项测试使用独立 schema。
 
 显式选跑时数据库不可用会报错，不再静默跳过。Mock 测试不证明 PostgreSQL 并发锁、事务或隔离有效；仍需要这组集成测试提供证据。

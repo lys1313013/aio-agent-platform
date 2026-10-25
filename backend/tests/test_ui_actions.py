@@ -274,9 +274,15 @@ def test_legacy_all_tools_default_is_preserved(enabled_tools):
     assert set(FRONTEND_TOOL_NAMES) <= {s["function"]["name"] for s in schema}
 
 
-async def test_unconfigured_ui_call_is_denied_before_browser_dispatch():
+async def test_unconfigured_ui_call_is_denied_before_browser_dispatch(monkeypatch):
+    import aio_agent_platform.core.agent as agent_module
     from aio_agent_platform.core.chat import filter_tools_by_agent
 
+    # This permission regression tests the real agent/tool boundary, not
+    # background accounting or observability I/O against a database.
+    monkeypatch.setattr(agent_module, "record_llm_usage", lambda *args: None)
+    monkeypatch.setattr(agent_module, "get_recorder", MagicMock())
+    monkeypatch.setattr(agent_module, "get_hook_manager", MagicMock())
     executor = _make_executor_with_builtin_tools()
     _, schema = filter_tools_by_agent(executor, _make_agent(["run_shell"]))
     queue = asyncio.Queue()

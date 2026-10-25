@@ -64,15 +64,15 @@ def test_invalid_command_combinations():
 
 def test_attachments_reject_cross_user_and_path_traversal():
     owner, room_id = uuid4(), uuid4()
-    req = RoomSend(request_id=uuid4(), attachments=[dict(
-        key=f"chat-attachments/{uuid4()}/{room_id}/image.png", mime="image/png", size=1, filename="image.png",
-    )])
+    req = RoomSend(request_id=uuid4(), attachments=[{
+        "key": f"chat-attachments/{uuid4()}/{room_id}/image.png", "mime": "image/png", "size": 1, "filename": "image.png",
+    }])
     with pytest.raises(HTTPException) as error:
         service.validate_attachments(req, SimpleNamespace(id=room_id), SimpleNamespace(id=owner))
     assert error.value.status_code == 403
-    req = RoomSend(request_id=uuid4(), file_attachments=[dict(
-        file_id="a", filename="f", mime="text/plain", size=1, workspace_path="uploads/../secret",
-    )])
+    req = RoomSend(request_id=uuid4(), file_attachments=[{
+        "file_id": "a", "filename": "f", "mime": "text/plain", "size": 1, "workspace_path": "uploads/../secret",
+    }])
     with pytest.raises(HTTPException):
         service.validate_attachments(req, SimpleNamespace(id=room_id), SimpleNamespace(id=owner))
 

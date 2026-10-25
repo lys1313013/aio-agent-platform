@@ -1,14 +1,14 @@
 """Tests for RemoteToolExecutor."""
 
-import pytest
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import httpx
+import pytest
 
-from aio_agent_platform.tools.remote.executor import RemoteToolExecutor, _split_path
-from aio_agent_platform.tools.remote.manager import RemoteToolManager, RemoteToolConfig
 from aio_agent_platform.tools.registry import ToolRegistry
+from aio_agent_platform.tools.remote.executor import RemoteToolExecutor, _split_path
+from aio_agent_platform.tools.remote.manager import RemoteToolConfig, RemoteToolManager
 
 
 def make_config(**kwargs):
@@ -304,7 +304,7 @@ class TestCall:
 
     @pytest.mark.asyncio
     async def test_tool_not_found(self, setup):
-        manager, executor = setup
+        _manager, executor = setup
 
         from aio_agent_platform.tools.remote.executor import RemoteToolError
         with pytest.raises(RemoteToolError, match="not found"):

@@ -9,18 +9,18 @@ Create Date: 2026-08-04 12:00:00.000000
 - user_pets: agent_id(实例级绑定), action_aliases(实例级动作名覆盖), state_mapping(实例级状态映射覆盖)
 - sessions: source(会话来源 chat/pet)
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'a1b2c3d4e5f6'
-down_revision: Union[str, None] = 'e6f8a1b4c5d6'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = 'e6f8a1b4c5d6'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

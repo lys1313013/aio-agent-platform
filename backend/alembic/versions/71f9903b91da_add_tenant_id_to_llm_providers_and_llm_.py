@@ -4,17 +4,17 @@ Revision ID: 71f9903b91da
 Revises: b2c3d4e5f7a8
 Create Date: 2026-08-09 00:00:19.709313
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = '71f9903b91da'
-down_revision: Union[str, None] = 'b2c3d4e5f7a8'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = 'b2c3d4e5f7a8'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 DEFAULT_TENANT = '00000000-0000-0000-0000-000000000001'
 

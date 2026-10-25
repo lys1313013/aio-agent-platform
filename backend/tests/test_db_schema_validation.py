@@ -29,7 +29,7 @@ async def _db_column_names(db: AsyncSession, table_name: str) -> set[str]:
 
 
 @pytest.mark.parametrize(
-    "table", [t for t in Base.metadata.sorted_tables], ids=lambda t: t.name
+    "table", list(Base.metadata.sorted_tables), ids=lambda t: t.name
 )
 class TestDatabaseSchemaValidation:
     @pytest.mark.asyncio

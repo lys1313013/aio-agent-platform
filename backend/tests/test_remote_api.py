@@ -1,13 +1,15 @@
 """Tests for remote tools API endpoints - schema and validation focused."""
 
-import pytest
 from uuid import uuid4
+
+import pytest
+from pydantic import ValidationError
 
 from aio_agent_platform.interface.routes.remote_tools import (
     RemoteToolCreate,
-    RemoteToolUpdate,
     RemoteToolOut,
     RemoteToolTestRequest,
+    RemoteToolUpdate,
     _mask_auth_config,
 )
 
@@ -82,7 +84,7 @@ class TestRemoteToolCreateSchema:
             "method": "INVALID",
             "url_template": "https://example.com",
         }
-        with pytest.raises(Exception):  # Pydantic ValidationError
+        with pytest.raises(ValidationError):
             RemoteToolCreate(**data)
 
     @pytest.mark.parametrize("auth_type", ["none", "bearer", "api_key", "basic", "custom_header"])
@@ -109,7 +111,7 @@ class TestRemoteToolCreateSchema:
             "url_template": "https://example.com",
             "auth_type": "invalid",
         }
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             RemoteToolCreate(**data)
 
     @pytest.mark.parametrize("invalid_name", [
@@ -129,7 +131,7 @@ class TestRemoteToolCreateSchema:
             "method": "GET",
             "url_template": "https://example.com",
         }
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             RemoteToolCreate(**data)
 
     @pytest.mark.parametrize("valid_name", [
@@ -164,11 +166,11 @@ class TestRemoteToolCreateSchema:
         }
 
         # Too low
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             RemoteToolCreate(**{**data, "timeout": 4})
 
         # Too high
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             RemoteToolCreate(**{**data, "timeout": 601})
 
         # Valid
@@ -198,7 +200,7 @@ class TestRemoteToolUpdateSchema:
     def test_validation_still_applies(self):
         """Validation should still apply to provided fields."""
         data = {"name": "invalid name"}
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             RemoteToolUpdate(**data)
 
 

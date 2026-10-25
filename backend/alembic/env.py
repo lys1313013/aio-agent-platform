@@ -1,21 +1,21 @@
 """Alembic env.py — async PostgreSQL migration support."""
 
 import asyncio
-import os
 from logging.config import fileConfig
 
-from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from alembic import context
+
 # Load .env before importing settings (pydantic-settings nested env_file bug workaround)
 load_dotenv()
 
 # Import our models and Base so alembic can detect schema changes
-from aio_agent_platform.core.config import settings
-from aio_agent_platform.db.models import Base  # noqa: F401 — registers all models
+from aio_agent_platform.core.config import settings  # noqa: E402
+from aio_agent_platform.db.models import Base  # noqa: E402
 
 # Alembic Config object
 config = context.config

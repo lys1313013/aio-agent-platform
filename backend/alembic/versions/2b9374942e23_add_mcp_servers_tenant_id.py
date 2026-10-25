@@ -4,17 +4,17 @@ Revision ID: 2b9374942e23
 Revises: f3b0c1d2e4a5
 Create Date: 2026-08-06 16:46:15.296831
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = '2b9374942e23'
-down_revision: Union[str, None] = 'f3b0c1d2e4a5'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = 'f3b0c1d2e4a5'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

@@ -1,8 +1,7 @@
 """Tests for remote tools template engine."""
 
-import pytest
 
-from aio_agent_platform.tools.remote.template import render_url, render_body
+from aio_agent_platform.tools.remote.template import render_body, render_url
 
 
 class TestRenderUrl:

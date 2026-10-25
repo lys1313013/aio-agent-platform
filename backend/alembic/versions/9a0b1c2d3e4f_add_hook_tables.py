@@ -5,9 +5,10 @@ Revises: 6b09c3d8bdb8
 Create Date: 2026-08-08
 
 """
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+
+from alembic import op
 
 revision: str = "9a0b1c2d3e4f"
 down_revision: str | None = "6b09c3d8bdb8"

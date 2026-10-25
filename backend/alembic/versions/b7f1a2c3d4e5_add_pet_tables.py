@@ -4,18 +4,18 @@ Revision ID: b7f1a2c3d4e5
 Revises: 6fea3105d1cf
 Create Date: 2026-08-02 18:30:00.000000
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'b7f1a2c3d4e5'
-down_revision: Union[str, None] = '6fea3105d1cf'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = '6fea3105d1cf'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

@@ -20,27 +20,23 @@ pytest.importorskip("mcp", reason="mcp is an optional dependency; install with: 
 import asyncio
 import json
 import socket
-import time
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import AsyncIterator
 
 import pytest
 import pytest_asyncio
 import uvicorn
+from mcp.shared.exceptions import McpError
+from mcp.types import ErrorData
 
-from aio_agent_platform.core.agent import AgentLoop, AgentStep
+from aio_agent_platform.core.agent import AgentLoop
 from aio_agent_platform.llm import LLMMessage
-from aio_agent_platform.sandbox import SandboxManager
 from aio_agent_platform.tools.executor import ToolExecutor
 from aio_agent_platform.tools.mcp.adapter import MCPServerConnection
 from aio_agent_platform.tools.mcp.manager import MCPManager
 from aio_agent_platform.tools.registry import ToolRegistry
-
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData
-
 
 # --------------------------------------------------------------------------- #
 # Fake MCP Server (SSE transport, one test tool)                              #

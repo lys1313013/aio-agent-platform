@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aio_agent_platform.db.models import LLMModel, LLMProvider
 from aio_agent_platform.interface.routes.chat import _build_agent_loop
-from aio_agent_platform.db.models import LLMProvider, LLMModel
 
 
 class TestAgentTemperatureIntegration:
