@@ -265,10 +265,16 @@ class WorkspaceStorage:
                     # Skip directories and empty names
                     if member.isdir() or not member.name or member.name in (".", "./"):
                         continue
-                    # Normalize path (remove leading ./)
-                    rel_path = member.name.lstrip("./")
-                    if not rel_path:
-                        continue
+                    # Remove the tar prefix, not the leading dots of hidden
+                    # files. Validate the full inventory before any writes or
+                    # deletions so invalid names cannot corrupt stored files.
+                    rel_path = member.name.removeprefix("./")
+                    if (
+                        "\x00" in rel_path
+                        or any(part in ("", ".", "..") for part in rel_path.split("/"))
+                        or rel_path in container_files
+                    ):
+                        raise ValueError(f"Unsafe or duplicate workspace archive path: {member.name!r}")
                     f = tar.extractfile(member)
                     if f:
                         container_files[rel_path] = f.read()

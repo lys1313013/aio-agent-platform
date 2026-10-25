@@ -14,7 +14,7 @@ from aio_agent_platform.core.execution_scope import resolve_execution_tenant
 from aio_agent_platform.db.connection import get_session_factory
 from aio_agent_platform.tools.web.cache import TTLCache
 from aio_agent_platform.tools.web.config import WebConfigService
-from aio_agent_platform.tools.web.ssrf import SSRFError, assert_public_url, ssrf_check_hook
+from aio_agent_platform.tools.web.ssrf import PinnedAsyncTransport, SSRFError, assert_public_url
 
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -90,7 +90,8 @@ class WebFetcher:
                     "User-Agent": _USER_AGENT,
                     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                 },
-                event_hooks={"request": [ssrf_check_hook]},
+                transport=PinnedAsyncTransport(),
+                trust_env=False,
             ) as client:
                 html, content_type = await self._get_with_size_limit(client, url, s)
         except SSRFError as e:

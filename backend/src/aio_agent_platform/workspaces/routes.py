@@ -175,13 +175,18 @@ async def delete_workspace(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
     """Delete a workspace and all its files from MinIO."""
+    # Authorize ownership and reject the default workspace before touching
+    # object storage: a database rollback cannot restore deleted objects.
+    try:
+        deleted = await WorkspaceService.delete_workspace(db, workspace_id, user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
     ws_storage = _get_workspace_storage()
     if ws_storage:
         ws_storage.delete_workspace(str(workspace_id))
-
-    deleted = await WorkspaceService.delete_workspace(db, workspace_id, user.id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Workspace not found")
 
 
 # ---- File browsing ----

@@ -43,6 +43,8 @@ async def test_rejects_bad_scheme_or_format(url):
         "http://[fe80::1]/",
         "http://224.0.0.1/",  # multicast
         "http://192.0.0.8/",  # reserved (IANA)
+        "http://100.64.0.1/",  # shared/CGNAT space is not public
+        "http://100.127.255.254/",
     ],
 )
 async def test_rejects_private_literal_ips(url):

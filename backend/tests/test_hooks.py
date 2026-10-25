@@ -278,7 +278,7 @@ async def test_webhook_action_rejects_ssrf_url():
     hook = _def(config={"url": "http://127.0.0.1:1/hook"})
     result = await dispatcher.execute(hook, {"event": "PostToolUse", "data": {}})
     assert result.status == "failed"
-    assert "内网" in (result.error or "")
+    assert "private/internal address" in (result.error or "")
 
 
 @pytest.mark.asyncio

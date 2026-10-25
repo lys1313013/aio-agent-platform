@@ -82,3 +82,66 @@ async def test_tar_failure_never_uploads_or_deletes_stored_files():
     storage.put.assert_not_called()
     storage.delete.assert_not_called()
     assert objects[key] == b'original'
+
+
+def archive_sync_fixture(files, previous):
+    """Use a real tar archive and an in-memory object store, without Docker/MinIO."""
+    objects = {f"workspaces/w/files/{path}": content for path, content in previous.items()}
+    storage = Mock(spec=ObjectStorage)
+    storage.list.return_value = [ObjectInfo(key, len(data), "etag") for key, data in objects.items()]
+    storage.get.side_effect = objects.__getitem__
+    storage.put.side_effect = lambda key, data, content_type: objects.__setitem__(key, data)
+    storage.delete.side_effect = objects.pop
+    workspace = WorkspaceStorage(storage)
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        for path, data in files:
+            member = tarfile.TarInfo(path)
+            member.size = len(data)
+            tar.addfile(member, io.BytesIO(data))
+    workspace._read_file_as_base64 = AsyncMock(
+        return_value=base64.b64encode(archive.getvalue()).decode()
+    )
+    manager = SimpleNamespace(execute=AsyncMock(
+        return_value=SimpleNamespace(exit_code=0, stderr="")
+    ))
+    return workspace, storage, manager, objects
+
+
+async def test_sync_preserves_hidden_files_and_distinct_plain_names():
+    files = {
+        "env": b"ordinary", ".env": b"secret", ".git/config": b"git config",
+        "git/config": b"plain config", "...config": b"dots", "nested/.env": b"nested",
+    }
+    previous = dict.fromkeys(files, b"old") | {"removed.txt": b"stale"}
+    workspace, storage, manager, objects = archive_sync_fixture(
+        [(f"./{path}", data) for path, data in files.items()], previous
+    )
+
+    stats = await workspace.extract_and_sync(manager, object(), "w")
+
+    assert stats.errors == []
+    assert stats.files_deleted == 1
+    storage.delete.assert_called_once_with("workspaces/w/files/removed.txt")
+    assert {key.removeprefix("workspaces/w/files/"): value for key, value in objects.items()
+            if key.startswith("workspaces/w/files/")} == files
+    manifest = json.loads(objects["workspaces/w/meta.json"])
+    assert {entry["path"] for entry in manifest["files"]} == set(files)
+
+
+@pytest.mark.parametrize("unsafe_path", [
+    "../outside.txt", "./../outside.txt", "/absolute.txt", "./nested/../../outside.txt",
+    "./nested//file.txt", "./nested/./file.txt", "./report.txt",
+])
+async def test_sync_rejects_unsafe_or_duplicate_paths_before_storage_mutation(unsafe_path):
+    previous = {"report.txt": b"original", ".env": b"preserve"}
+    workspace, storage, manager, objects = archive_sync_fixture(
+        [("./report.txt", b"changed"), (unsafe_path, b"invalid")], previous
+    )
+
+    stats = await workspace.extract_and_sync(manager, object(), "w")
+
+    assert stats.errors and "Unsafe or duplicate" in stats.errors[0]
+    storage.put.assert_not_called()
+    storage.delete.assert_not_called()
+    assert objects == {f"workspaces/w/files/{path}": data for path, data in previous.items()}

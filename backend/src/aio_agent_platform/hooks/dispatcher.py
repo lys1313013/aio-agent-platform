@@ -112,12 +112,9 @@ async def _webhook(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> ActionResult:
+    from aio_agent_platform.tools.web.ssrf import PinnedAsyncTransport
+
     url = (hook.config or {}).get("url", "")
-    validate_url(
-        url,
-        allow_private=settings.hook.allow_private_urls,
-        allowlist=settings.hook.url_allowlist,
-    )
     headers = {str(k): str(v) for k, v in (hook.config.get("headers") or {}).items()}
     body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
     if len(body) > settings.hook.max_payload_bytes:
@@ -129,7 +126,12 @@ async def _webhook(
 
     timeout = httpx.Timeout(hook.timeout_ms / 1000.0)
     attempts = (hook.retry_count or 0) + 1
-    async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
+    pinned_transport = PinnedAsyncTransport(
+        allow_private=settings.hook.allow_private_urls,
+        allowlist=settings.hook.url_allowlist,
+        transport=transport,
+    )
+    async with httpx.AsyncClient(timeout=timeout, transport=pinned_transport, trust_env=False) as client:
         for attempt in range(attempts):
             try:
                 resp = await client.post(url, content=body, headers=headers)
