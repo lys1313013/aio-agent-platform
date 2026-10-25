@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { App } from 'antd';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useAuthStore } from '@/stores/authStore';
-import { agentsApi, channelsApi, cronJobsApi, graphKnowledgeApi, knowledgeApi, mcpApi, ragflowSettingsApi, remoteToolsApi } from '@/lib/api';
+import { agentsApi, channelsApi, cronJobsApi, graphKnowledgeApi, knowledgeApi, mcpApi, modelsApi, ragflowSettingsApi, remoteToolsApi } from '@/lib/api';
 import CronJobsPage from './CronJobsPage';
 import KnowledgeGraphPage from './KnowledgeGraphPage';
 import KnowledgeManagementPage from './KnowledgeManagementPage';
@@ -24,6 +24,7 @@ beforeEach(() => {
   vi.spyOn(cronJobsApi, 'list').mockResolvedValue({ items: [], total: 0 });
   vi.spyOn(agentsApi, 'adminList').mockResolvedValue([]);
   vi.spyOn(channelsApi, 'list').mockResolvedValue([]);
+  vi.spyOn(modelsApi, 'list').mockResolvedValue([]);
   vi.spyOn(graphKnowledgeApi, 'list').mockResolvedValue([]);
   vi.spyOn(knowledgeApi, 'list').mockResolvedValue([]);
   vi.spyOn(ragflowSettingsApi, 'get').mockResolvedValue({ base_url: '', has_api_key: false });

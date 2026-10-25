@@ -1,3 +1,5 @@
+import { invalidateAuthSession } from './authSession';
+
 const ACCESS_KEY = 'aio_access_token';
 const REFRESH_KEY = 'aio_refresh_token';
 
@@ -42,6 +44,7 @@ export const tokenStorage = {
   clear(): void {
     localStorage.removeItem(ACCESS_KEY);
     localStorage.removeItem(REFRESH_KEY);
+    invalidateAuthSession();
   },
 
   hasTokens(): boolean {

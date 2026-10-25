@@ -1,3 +1,4 @@
+import { getAuthGeneration, assertAuthGeneration } from '@/lib/authSession';
 import { useCallback, useEffect, useState } from 'react';
 import { LinkOutlined, ReloadOutlined } from '@ant-design/icons';
 import { App, Button, Drawer, Empty, Select, Segmented, Space, Table, Tag, Typography } from 'antd';
@@ -77,10 +78,12 @@ export default function CronJobRunsPage() {
   }, [isAdmin]);
 
   const openSession = async (sessionId: string) => {
+    const generation = getAuthGeneration();
     if (openingSessionId) return;
     setOpeningSessionId(sessionId);
     try {
       const session = await sessionsApi.get(sessionId);
+      assertAuthGeneration(generation);
       useChatStore.setState((state) => ({
         sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)],
         messages: { ...state.messages, [session.id]: session.messages },

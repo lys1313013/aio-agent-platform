@@ -8,6 +8,7 @@
  * 回包自动携带 delta_snapshot；ui_screenshot 依赖 M4（当前返回明确错误）。
  */
 
+import { assertAuthGeneration, getAuthGeneration, isCurrentAuthGeneration, onAuthSessionChange } from '@/lib/authSession';
 import { uiActionsApi, type UiActionRespondPayload } from '@/lib/api';
 import { cursorController } from '@/components/ui-agent/cursorController';
 import { uiActionStore, type UiActionPayload } from '@/stores/uiActionStore';
@@ -80,17 +81,21 @@ function elementLabel(el: Element): string {
 }
 
 async function moveCursorTo(el: Element, labelPrefix: string): Promise<void> {
+  const generation = getAuthGeneration();
   el.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior });
   await sleep(120); // 等滚动稳定
+  assertAuthGeneration(generation);
   const rect = el.getBoundingClientRect();
   const x = rect.left + rect.width / 2;
   const y = rect.top + rect.height / 2;
   await cursorController.moveTo(x, y);
+  assertAuthGeneration(generation);
   cursorController.spotlight({
     rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
     label: `${labelPrefix}：${elementLabel(el)}`,
   });
   await sleep(300); // 让用户看清目标
+  assertAuthGeneration(generation);
   if (abortRequested) throw new Error('__aborted__');
 }
 
@@ -286,6 +291,7 @@ function log(...args: unknown[]): void {
 }
 
 async function execute(action: UiActionPayload): Promise<void> {
+  const generation = getAuthGeneration();
   const store = uiActionStore.getState();
   // 宠物联动（§3.4）：执行开始切 work 动作
   usePetStore.getState().reportEvent('tool_call', {
@@ -320,6 +326,7 @@ async function execute(action: UiActionPayload): Promise<void> {
       default:
         throw new Error(`unknown_action: ${action.action}`);
     }
+    assertAuthGeneration(generation);
     // 点击/输入/滚动后自动附带增量快照：多数情况下 Agent 无需再调 ui_read_screen
     // （delta 不变量：未展开子树的旧 ref 继续有效；新 ref 单调递增不复用）
     const mutating = ['ui_click', 'ui_input', 'ui_scroll_to', 'ui_navigate'].includes(
@@ -336,6 +343,7 @@ async function execute(action: UiActionPayload): Promise<void> {
       ...(image ? { image } : {}),
     };
     await uiActionsApi.respond(action.action_id, payload);
+    assertAuthGeneration(generation);
     store.markResolved({
       action_id: action.action_id,
       tool_call_id: action.tool_call_id,
@@ -345,6 +353,7 @@ async function execute(action: UiActionPayload): Promise<void> {
     // 成功 → think（终态 celebrate 由 SSE done 事件驱动，避免提前把任务条标记完成）
     usePetStore.getState().reportEvent('tool_result', { sessionId: action.session_id });
   } catch (err) {
+    if (!isCurrentAuthGeneration(generation)) return;
     const message = err instanceof Error ? err.message : String(err);
     const aborted = message === '__aborted__';
     await uiActionsApi
@@ -355,6 +364,7 @@ async function execute(action: UiActionPayload): Promise<void> {
         page_context: buildPageContext(),
       })
       .catch(() => {});
+    if (!isCurrentAuthGeneration(generation)) return;
     store.markResolved({
       action_id: action.action_id,
       tool_call_id: action.tool_call_id,
@@ -366,8 +376,10 @@ async function execute(action: UiActionPayload): Promise<void> {
       sessionId: action.session_id,
     });
   } finally {
-    cursorController.clear();
-    cursorController.setVisible(false);
+    if (isCurrentAuthGeneration(generation)) {
+      cursorController.clear();
+      cursorController.setVisible(false);
+    }
   }
 }
 
@@ -376,10 +388,12 @@ async function rejectBusy(
   action: UiActionPayload,
   result?: Record<string, unknown>,
 ): Promise<void> {
+  const generation = getAuthGeneration();
   const store = uiActionStore.getState();
   await uiActionsApi
     .respond(action.action_id, { status: 'error', error: 'ui_busy', result })
     .catch(() => {});
+  if (!isCurrentAuthGeneration(generation)) return;
   store.markResolved({
     action_id: action.action_id,
     tool_call_id: action.tool_call_id,
@@ -390,6 +404,7 @@ async function rejectBusy(
 }
 
 async function pump(): Promise<void> {
+  const generation = getAuthGeneration();
   const store = uiActionStore.getState();
   // 会话互斥：同时刻只服务一个 session
   const next = store.queue[0];
@@ -403,6 +418,7 @@ async function pump(): Promise<void> {
   }
   // 跨标签页互斥：等待锁就绪（启动窗口或对方持锁时最多等 1.5s，避免干等 60s 超时）
   await Promise.race([lockReady, sleep(1500)]);
+  if (!isCurrentAuthGeneration(generation)) return;
   if (uiActionStore.getState().queue[0] !== next) return pump(); // await 期间队列已变化
   if (!holdsTabLock) {
     store.activateNext();
@@ -422,11 +438,13 @@ async function pump(): Promise<void> {
   const watchdog = new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
       void (async () => {
+        if (!isCurrentAuthGeneration(generation)) { resolve(); return; }
         watchdogFired = true;
         log('watchdog fired', action.action_id);
         await uiActionsApi
           .respond(action.action_id, { status: 'error', error: 'execution_timeout' })
           .catch(() => {});
+        if (!isCurrentAuthGeneration(generation)) { resolve(); return; }
         uiActionStore.getState().markResolved({
           action_id: action.action_id,
           tool_call_id: action.tool_call_id,
@@ -443,6 +461,7 @@ async function pump(): Promise<void> {
   });
   await Promise.race([execute(action), watchdog]);
   cancelWatchdog();
+  if (!isCurrentAuthGeneration(generation)) return;
   if (watchdogFired) cursorController.clear();
   activeSessionId = null;
   store.finishActive();
@@ -476,3 +495,10 @@ export function startUiActionRunner(): () => void {
     window.removeEventListener('beforeunload', onBeforeUnload);
   };
 }
+
+onAuthSessionChange(() => {
+  abortRequested = true;
+  activeSessionId = null;
+  cursorController.clear();
+  cursorController.setVisible(false);
+});

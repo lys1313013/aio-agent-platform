@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { assertAuthGeneration, getAuthGeneration, isCurrentAuthGeneration, onAuthSessionChange } from '@/lib/authSession';
 import { sessionsApi, workspacesApi } from '@/lib/api';
 import type { Session, Message } from '@/lib/types';
 import type { Workspace } from '@/lib/api';
@@ -45,30 +46,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isWorkspacesLoading: false,
 
   loadSessions: async (agentId) => {
+    const generation = getAuthGeneration();
     // Full reset — only use on initial page load / navigation
     set({ sessions: [], activeSessionId: null, messages: {}, isSessionsLoading: true, messagesLoading: false });
     try {
       const sessions = await sessionsApi.list(agentId);
+      assertAuthGeneration(generation);
       set({ sessions, isSessionsLoading: false });
     } catch {
+      if (!isCurrentAuthGeneration(generation)) return;
       set({ isSessionsLoading: false });
     }
   },
 
   refreshSessions: async (agentId) => {
+    const generation = getAuthGeneration();
     // Lightweight refresh — preserves activeSessionId so chat messages stay visible
     set({ isSessionsLoading: true });
     try {
       const sessions = await sessionsApi.list(agentId);
+      assertAuthGeneration(generation);
       set({ sessions, isSessionsLoading: false });
     } catch {
+      if (!isCurrentAuthGeneration(generation)) return;
       set({ isSessionsLoading: false });
     }
   },
 
   createSession: async (title, agentId) => {
+    const generation = getAuthGeneration();
     const workspaceId = get().selectedWorkspaceId;
     const session = await sessionsApi.create(title, agentId, workspaceId);
+    assertAuthGeneration(generation);
     set((state) => ({
       sessions: [session, ...state.sessions],
       activeSessionId: session.id,
@@ -79,7 +88,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   deleteSession: async (id) => {
+    const generation = getAuthGeneration();
     await sessionsApi.delete(id);
+    assertAuthGeneration(generation);
     set((state) => ({
       sessions: state.sessions.filter((s) => s.id !== id),
       activeSessionId: state.activeSessionId === id ? null : state.activeSessionId,
@@ -98,14 +109,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   loadSessionMessages: async (id) => {
+    const generation = getAuthGeneration();
     try {
       const detail = await sessionsApi.get(id);
+      assertAuthGeneration(generation);
       set((state) => ({
         messages: { ...state.messages, [id]: detail.messages },
         // 仅当仍是当前会话才清 loading，避免快速切换时旧加载误清新会话的指示
         messagesLoading: get().activeSessionId === id ? false : state.messagesLoading,
       }));
     } catch {
+      if (!isCurrentAuthGeneration(generation)) return;
       set((state) => ({
         messagesLoading: get().activeSessionId === id ? false : state.messagesLoading,
       }));
@@ -124,7 +138,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   renameSession: async (id, title) => {
+    const generation = getAuthGeneration();
     await sessionsApi.rename(id, title);
+    assertAuthGeneration(generation);
     set((state) => ({
       sessions: state.sessions.map((s) => (s.id === id ? { ...s, title } : s)),
     }));
@@ -138,14 +154,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   pinSession: async (id, isPinned) => {
+    const generation = getAuthGeneration();
     await sessionsApi.pin(id, isPinned);
+    assertAuthGeneration(generation);
     set((state) => ({
       sessions: state.sessions.map((s) => (s.id === id ? { ...s, is_pinned: isPinned } : s)),
     }));
   },
 
   archiveSession: async (id, isArchived) => {
+    const generation = getAuthGeneration();
     await sessionsApi.archive(id, isArchived);
+    assertAuthGeneration(generation);
     set((state) => ({
       sessions: state.sessions.map((s) =>
         s.id === id ? { ...s, is_archived: isArchived } : s,
@@ -154,9 +174,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   loadWorkspaces: async () => {
+    const generation = getAuthGeneration();
     set({ isWorkspacesLoading: true });
     try {
       const workspaces = await workspacesApi.list();
+      assertAuthGeneration(generation);
       // Default to the default workspace, or the first one
       const defaultWs = workspaces.find((w) => w.is_default) || workspaces[0];
       set({
@@ -165,6 +187,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isWorkspacesLoading: false,
       });
     } catch {
+      if (!isCurrentAuthGeneration(generation)) return;
       set({ isWorkspacesLoading: false });
     }
   },
@@ -173,3 +196,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ selectedWorkspaceId: id });
   },
 }));
+
+onAuthSessionChange(() => {
+  useChatStore.setState({ sessions: [], activeSessionId: null, messages: {}, isSessionsLoading: false, messagesLoading: false, workspaces: [], selectedWorkspaceId: null, isWorkspacesLoading: false });
+});

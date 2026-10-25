@@ -1,4 +1,5 @@
 import { tokenStorage } from './auth';
+import { assertAuthGeneration, getAuthGeneration, getAuthSignal, onAuthSessionChange, scopeAuthCallback } from './authSession';
 import { pollTaskSnapshots } from './pollTaskSnapshots';
 import type {
   TokenPair,
@@ -45,6 +46,27 @@ import type {
 
 const API_BASE = '/api';
 
+/** Cover direct uploads/downloads as well as JSON requests, including slow bodies. */
+async function fetchWithAuthScope(input: RequestInfo | URL, options: RequestInit = {}): Promise<Response> {
+  const generation = getAuthGeneration();
+  const signal = options.signal ? AbortSignal.any([options.signal, getAuthSignal()]) : getAuthSignal();
+  const response = await fetch(input, { ...options, signal });
+  assertAuthGeneration(generation);
+  const bodyMethods = new Set(['json', 'text', 'blob', 'arrayBuffer', 'formData']);
+  return new Proxy(response, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (typeof value !== 'function') return value;
+      if (!bodyMethods.has(String(property))) return value.bind(target);
+      return async (...args: unknown[]) => {
+        const result: unknown = await value.apply(target, args);
+        assertAuthGeneration(generation);
+        return result;
+      };
+    },
+  });
+}
+
 /** Custom error for API failures */
 export class ApiError extends Error {
   constructor(
@@ -85,33 +107,44 @@ function isTokenExpiringSoon(token: string | null): boolean {
  * Call the refresh endpoint to get a new token pair.
  * Concurrent callers share a single in-flight request.
  */
+onAuthSessionChange(() => { refreshPromise = null; });
+
 async function refreshAccessToken(): Promise<boolean> {
   if (refreshPromise) return refreshPromise;
-
-  refreshPromise = (async () => {
-    const refreshToken = tokenStorage.getRefresh();
-    if (!refreshToken) return false;
-
+  const refreshToken = tokenStorage.getRefresh();
+  if (!refreshToken) return false;
+  const generation = getAuthGeneration();
+  const pending = (async () => {
     try {
-      const resp = await fetch(`${API_BASE}/auth/refresh`, {
+      const resp = await fetchWithAuthScope(`${API_BASE}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: refreshToken }),
+        signal: getAuthSignal(),
       });
-
+      assertAuthGeneration(generation);
       if (!resp.ok) return false;
-
       const data: TokenPair = await resp.json();
+      assertAuthGeneration(generation);
+      // Another tab can rotate/replace credentials without touching this module.
+      if (tokenStorage.getRefresh() !== refreshToken) {
+        throw new DOMException('登录凭据已变更', 'AbortError');
+      }
       tokenStorage.set(data.access_token, data.refresh_token);
       return true;
-    } catch {
+    } catch (error) {
+      assertAuthGeneration(generation);
+      if (error instanceof DOMException && error.name === 'AbortError') throw error;
       return false;
-    } finally {
-      refreshPromise = null;
     }
   })();
-
-  return refreshPromise;
+  refreshPromise = pending;
+  try {
+    return await pending;
+  } finally {
+    // A previous identity must not clear the new identity's in-flight refresh.
+    if (refreshPromise === pending) refreshPromise = null;
+  }
 }
 
 /** Force logout when refresh fails */
@@ -126,17 +159,21 @@ export async function apiFetch(
   path: string,
   options: RequestInit = {},
 ): Promise<Response> {
+  const generation = getAuthGeneration();
+  const signal = options.signal ? AbortSignal.any([options.signal, getAuthSignal()]) : getAuthSignal();
   const isAuthPath = AUTH_PATHS.some((p) => path.startsWith(p));
 
   // Proactively refresh if access token is about to expire
   if (!isAuthPath && isTokenExpiringSoon(tokenStorage.getAccess())) {
     const refreshed = await refreshAccessToken();
+    assertAuthGeneration(generation);
     if (!refreshed && tokenStorage.getRefresh()) {
       // Refresh token exists but refresh failed — session is truly over
       forceLogout();
     }
   }
 
+  assertAuthGeneration(generation);
   const token = tokenStorage.getAccess();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -146,17 +183,22 @@ export async function apiFetch(
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  let resp = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  let resp = await fetchWithAuthScope(`${API_BASE}${path}`, { ...options, headers, signal });
+
+  assertAuthGeneration(generation);
 
   // Token expired or invalid — attempt refresh + retry once
   if (resp.status === 401 && !isAuthPath) {
     const refreshed = await refreshAccessToken();
+    assertAuthGeneration(generation);
+    assertAuthGeneration(generation);
     if (refreshed) {
       // Retry with the new access token
       const newToken = tokenStorage.getAccess();
       headers['Authorization'] = `Bearer ${newToken}`;
-      resp = await fetch(`${API_BASE}${path}`, { ...options, headers });
+      resp = await fetchWithAuthScope(`${API_BASE}${path}`, { ...options, headers, signal });
     }
+    assertAuthGeneration(generation);
     // Still 401 after refresh — give up
     if (resp.status === 401) {
       forceLogout();
@@ -171,6 +213,7 @@ export async function apiFetch(
     } catch {
       /* ignore parse error */
     }
+    assertAuthGeneration(generation);
     throw new ApiError(resp.status, message);
   }
 
@@ -178,9 +221,12 @@ export async function apiFetch(
 }
 
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const generation = getAuthGeneration();
   const resp = await apiFetch(path, options);
   if (resp.status === 204) return undefined as T;
-  return resp.json();
+  const data: T = await resp.json();
+  assertAuthGeneration(generation);
+  return data;
 }
 
 // ---- Auth ----
@@ -230,11 +276,14 @@ export const sessionsApi = {
    */
   watchEvents(id: string, onEvent: (event: Record<string, unknown>) => void): AbortController {
     const controller = new AbortController();
+    onEvent = scopeAuthCallback(onEvent);
 
     (async () => {
+      const generation = getAuthGeneration();
       // Ensure access token is fresh before opening the stream
       if (isTokenExpiringSoon(tokenStorage.getAccess())) {
         const refreshed = await refreshAccessToken();
+        assertAuthGeneration(generation);
         if (!refreshed && tokenStorage.getRefresh()) {
           onEvent({ type: 'error', message: 'Session expired' });
           forceLogout();
@@ -243,9 +292,10 @@ export const sessionsApi = {
       }
 
       const token = tokenStorage.getAccess() || '';
-      const resp = await fetch(`${API_BASE}/sessions/${id}/events`, {
+      assertAuthGeneration(generation);
+      const resp = await fetchWithAuthScope(`${API_BASE}/sessions/${id}/events`, {
         headers: { Authorization: `Bearer ${token}` },
-        signal: controller.signal,
+        signal: AbortSignal.any([controller.signal, getAuthSignal()]),
       });
 
       if (!resp.ok || !resp.body) {
@@ -343,11 +393,14 @@ function openChatStream(
   req?: ChatRequest | Record<string, never>,
 ): AbortController {
   const controller = new AbortController();
+  onEvent = scopeAuthCallback(onEvent);
 
   (async () => {
+    const generation = getAuthGeneration();
     // Ensure access token is fresh before opening the stream
     if (isTokenExpiringSoon(tokenStorage.getAccess())) {
       const refreshed = await refreshAccessToken();
+      assertAuthGeneration(generation);
       if (!refreshed && tokenStorage.getRefresh()) {
         onEvent({ type: 'error', message: 'Session expired' });
         forceLogout();
@@ -356,14 +409,15 @@ function openChatStream(
     }
 
     const token = tokenStorage.getAccess() || '';
-    const resp = await fetch(`${API_BASE}${path}`, {
+    assertAuthGeneration(generation);
+    const resp = await fetchWithAuthScope(`${API_BASE}${path}`, {
       method: req ? 'POST' : 'GET',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
       body: req ? JSON.stringify(req) : undefined,
-      signal: controller.signal,
+      signal: AbortSignal.any([controller.signal, getAuthSignal()]),
     });
 
     if (!resp.ok || !resp.body) {
@@ -469,9 +523,11 @@ export const chatApi = {
     sessionId?: string | null,
   ): Promise<ChatAttachment> {
     return (async () => {
+      const generation = getAuthGeneration();
       // Ensure access token is fresh before upload
       if (isTokenExpiringSoon(tokenStorage.getAccess())) {
         const refreshed = await refreshAccessToken();
+        assertAuthGeneration(generation);
         if (!refreshed && tokenStorage.getRefresh()) {
           throw new ApiError(401, 'Session expired');
         }
@@ -482,7 +538,8 @@ export const chatApi = {
       if (sessionId) form.append('session_id', sessionId);
 
       const token = tokenStorage.getAccess() || '';
-      const resp = await fetch(`${API_BASE}/chat/attachments`, {
+      assertAuthGeneration(generation);
+      const resp = await fetchWithAuthScope(`${API_BASE}/chat/attachments`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         // Do NOT set Content-Type — browser auto-sets multipart boundary
@@ -509,8 +566,10 @@ export const chatApi = {
     sessionId: string,
   ): Promise<import('./types').FileAttachmentRef> {
     return (async () => {
+      const generation = getAuthGeneration();
       if (isTokenExpiringSoon(tokenStorage.getAccess())) {
         const refreshed = await refreshAccessToken();
+        assertAuthGeneration(generation);
         if (!refreshed && tokenStorage.getRefresh()) {
           throw new ApiError(401, 'Session expired');
         }
@@ -521,7 +580,8 @@ export const chatApi = {
       form.append('session_id', sessionId);
 
       const token = tokenStorage.getAccess() || '';
-      const resp = await fetch(`${API_BASE}/chat/files`, {
+      assertAuthGeneration(generation);
+      const resp = await fetchWithAuthScope(`${API_BASE}/chat/files`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: form,
@@ -1266,8 +1326,10 @@ export const graphKnowledgeApi = {
   async uploadDocument(id: string, file: File, title?: string): Promise<{
     id: string; title: string; status: string; chunk_count: number;
   }> {
+    const generation = getAuthGeneration();
     if (isTokenExpiringSoon(tokenStorage.getAccess())) {
       const refreshed = await refreshAccessToken();
+      assertAuthGeneration(generation);
       if (!refreshed && tokenStorage.getRefresh()) {
         throw new ApiError(401, 'Session expired');
       }
@@ -1278,7 +1340,8 @@ export const graphKnowledgeApi = {
     if (title) form.append('title', title);
 
     const token = tokenStorage.getAccess() || '';
-    const resp = await fetch(`${API_BASE}/admin/graph-knowledge-bases/${id}/documents/upload`, {
+    assertAuthGeneration(generation);
+    const resp = await fetchWithAuthScope(`${API_BASE}/admin/graph-knowledge-bases/${id}/documents/upload`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
       // Do NOT set Content-Type — browser auto-sets multipart boundary
@@ -1741,13 +1804,16 @@ export const skillsApi = {
 
   download(id: string, version?: number) {
     return (async () => {
+      const generation = getAuthGeneration();
       // Ensure token is fresh
       if (isTokenExpiringSoon(tokenStorage.getAccess())) {
         const refreshed = await refreshAccessToken();
+        assertAuthGeneration(generation);
         if (!refreshed && tokenStorage.getRefresh()) forceLogout();
       }
       const token = tokenStorage.getAccess();
-      const resp = await fetch(`${API_BASE}/skills/${id}${version === undefined ? '' : `/versions/${version}`}/download`, {
+      assertAuthGeneration(generation);
+      const resp = await fetchWithAuthScope(`${API_BASE}/skills/${id}${version === undefined ? '' : `/versions/${version}`}/download`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!resp.ok) throw new ApiError(resp.status, 'Download failed');
@@ -1777,14 +1843,17 @@ export const skillsApi = {
   // Import skill from zip
   importFromZip(file: File) {
     return (async () => {
+      const generation = getAuthGeneration();
       if (isTokenExpiringSoon(tokenStorage.getAccess())) {
         const refreshed = await refreshAccessToken();
+        assertAuthGeneration(generation);
         if (!refreshed && tokenStorage.getRefresh()) forceLogout();
       }
       const token = tokenStorage.getAccess();
       const form = new FormData();
       form.append('file', file);
-      const resp = await fetch(`${API_BASE}/skills/import`, {
+      assertAuthGeneration(generation);
+      const resp = await fetchWithAuthScope(`${API_BASE}/skills/import`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: form,
@@ -1810,8 +1879,10 @@ export const skillsApi = {
     descriptions?: Array<{ description: string; language?: string }>,
   ) {
     return (async () => {
+      const generation = getAuthGeneration();
       if (isTokenExpiringSoon(tokenStorage.getAccess())) {
         const refreshed = await refreshAccessToken();
+        assertAuthGeneration(generation);
         if (!refreshed && tokenStorage.getRefresh()) forceLogout();
       }
       const token = tokenStorage.getAccess();
@@ -1820,7 +1891,8 @@ export const skillsApi = {
       form.append('file_type', fileType);
       form.append('expected_version', String(expectedVersion));
       form.append('descriptions', JSON.stringify(descriptions || []));
-      const resp = await fetch(`${API_BASE}/skills/${skillId}/files`, {
+      assertAuthGeneration(generation);
+      const resp = await fetchWithAuthScope(`${API_BASE}/skills/${skillId}/files`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: form,
@@ -1839,12 +1911,15 @@ export const skillsApi = {
 
   downloadFile(skillId: string, filePath: string) {
     return (async () => {
+      const generation = getAuthGeneration();
       if (isTokenExpiringSoon(tokenStorage.getAccess())) {
         const refreshed = await refreshAccessToken();
+        assertAuthGeneration(generation);
         if (!refreshed && tokenStorage.getRefresh()) forceLogout();
       }
       const token = tokenStorage.getAccess();
-      const resp = await fetch(`${API_BASE}/skills/${skillId}/files/${filePath}/download`, {
+      assertAuthGeneration(generation);
+      const resp = await fetchWithAuthScope(`${API_BASE}/skills/${skillId}/files/${filePath}/download`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!resp.ok) throw new ApiError(resp.status, 'Download failed');
@@ -2163,8 +2238,10 @@ export const workspacesApi = {
   },
 
   async uploadFile(id: string, path: string, file: File): Promise<{ path: string; size: number }> {
+    const generation = getAuthGeneration();
     if (isTokenExpiringSoon(tokenStorage.getAccess())) {
       const refreshed = await refreshAccessToken();
+      assertAuthGeneration(generation);
       if (!refreshed && tokenStorage.getRefresh()) {
         throw new ApiError(401, 'Session expired');
       }
@@ -2174,7 +2251,8 @@ export const workspacesApi = {
     form.append('file', file);
 
     const token = tokenStorage.getAccess() || '';
-    const resp = await fetch(
+    assertAuthGeneration(generation);
+    const resp = await fetchWithAuthScope(
       `${API_BASE}/workspaces/${id}/files/content?path=${encodeURIComponent(path)}`,
       {
         method: 'POST',
@@ -2195,15 +2273,18 @@ export const workspacesApi = {
   },
 
   async downloadFile(id: string, path: string): Promise<Blob> {
+    const generation = getAuthGeneration();
     if (isTokenExpiringSoon(tokenStorage.getAccess())) {
       const refreshed = await refreshAccessToken();
+      assertAuthGeneration(generation);
       if (!refreshed && tokenStorage.getRefresh()) {
         throw new ApiError(401, 'Session expired');
       }
     }
 
     const token = tokenStorage.getAccess() || '';
-    const resp = await fetch(
+    assertAuthGeneration(generation);
+    const resp = await fetchWithAuthScope(
       `${API_BASE}/workspaces/${id}/files/content?path=${encodeURIComponent(path)}`,
       { headers: { Authorization: `Bearer ${token}` } },
     );
@@ -2332,8 +2413,10 @@ export const petsApi = {
     rowMapping: Record<string, number>,
     visibility: PetVisibility = 'private',
   ): Promise<PetPackage> {
+    const generation = getAuthGeneration();
     if (isTokenExpiringSoon(tokenStorage.getAccess())) {
       const refreshed = await refreshAccessToken();
+      assertAuthGeneration(generation);
       if (!refreshed && tokenStorage.getRefresh()) {
         throw new ApiError(401, 'Session expired');
       }
@@ -2343,7 +2426,8 @@ export const petsApi = {
     form.append('row_mapping', JSON.stringify(rowMapping));
     form.append('visibility', visibility);
     const token = tokenStorage.getAccess() || '';
-    const resp = await fetch(`${API_BASE}/pets/packages`, {
+    assertAuthGeneration(generation);
+    const resp = await fetchWithAuthScope(`${API_BASE}/pets/packages`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
       body: form,
@@ -2362,14 +2446,17 @@ export const petsApi = {
   },
   /** 带 token 拉取精灵图（<img src> 无法带 Authorization，需 blob URL） */
   async spritesheetBlob(packageId: string): Promise<Blob> {
+    const generation = getAuthGeneration();
     if (isTokenExpiringSoon(tokenStorage.getAccess())) {
       const refreshed = await refreshAccessToken();
+      assertAuthGeneration(generation);
       if (!refreshed && tokenStorage.getRefresh()) {
         throw new ApiError(401, 'Session expired');
       }
     }
     const token = tokenStorage.getAccess() || '';
-    const resp = await fetch(`${API_BASE}/pets/packages/${packageId}/spritesheet`, {
+    assertAuthGeneration(generation);
+    const resp = await fetchWithAuthScope(`${API_BASE}/pets/packages/${packageId}/spritesheet`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!resp.ok) {
@@ -2385,14 +2472,17 @@ export const petsApi = {
 
   /** 带 token 拉取原始 zip 并触发下载 */
   async download(packageId: string, filename: string): Promise<void> {
+    const generation = getAuthGeneration();
     if (isTokenExpiringSoon(tokenStorage.getAccess())) {
       const refreshed = await refreshAccessToken();
+      assertAuthGeneration(generation);
       if (!refreshed && tokenStorage.getRefresh()) {
         throw new ApiError(401, 'Session expired');
       }
     }
     const token = tokenStorage.getAccess() || '';
-    const resp = await fetch(`${API_BASE}/pets/packages/${packageId}/download`, {
+    assertAuthGeneration(generation);
+    const resp = await fetchWithAuthScope(`${API_BASE}/pets/packages/${packageId}/download`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!resp.ok) {
@@ -2498,9 +2588,12 @@ export const petsApi = {
     }) => void,
   ): () => void {
     const controller = new AbortController();
+    onEvent = scopeAuthCallback(onEvent);
     (async () => {
+      const generation = getAuthGeneration();
       if (isTokenExpiringSoon(tokenStorage.getAccess())) {
         const refreshed = await refreshAccessToken();
+        assertAuthGeneration(generation);
         if (!refreshed && tokenStorage.getRefresh()) {
           onEvent({ type: 'error' });
           forceLogout();
@@ -2508,10 +2601,11 @@ export const petsApi = {
         }
       }
       const token = tokenStorage.getAccess() || '';
-      const resp = await fetch(`${API_BASE}/pets/${userPetId}/bubble`, {
+      assertAuthGeneration(generation);
+      const resp = await fetchWithAuthScope(`${API_BASE}/pets/${userPetId}/bubble`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
-        signal: controller.signal,
+        signal: AbortSignal.any([controller.signal, getAuthSignal()]),
       });
       if (!resp.ok || !resp.body) {
         onEvent({ type: 'error' });
@@ -2566,7 +2660,7 @@ export const petsApi = {
   watchActiveTasks(onEvent: (event: Record<string, unknown>) => void): () => void {
     return pollTaskSnapshots(
       (signal) => request<unknown[]>('/pets/active-tasks', { signal }),
-      onEvent,
+      scopeAuthCallback(onEvent),
     );
   },
 };

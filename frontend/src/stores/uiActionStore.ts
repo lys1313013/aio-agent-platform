@@ -1,3 +1,4 @@
+import { onAuthSessionChange } from '@/lib/authSession';
 /** UI action store — 页内浏览器操作的全局事件分发层（docs/22-浏览器页面自动化 §3.3）。
  *
  * 4 处 SSE 消费点（AgentChatPage handleSend / handleReconnect、ChatPage、
@@ -78,3 +79,7 @@ export const useUiActionStore = create<UiActionState>((set, get) => ({
 
 /** 非 React 上下文读取 store（runner 用） */
 export const uiActionStore = useUiActionStore;
+
+onAuthSessionChange(() => {
+  useUiActionStore.setState({ queue: [], active: null, seen: {}, resolved: {} });
+});

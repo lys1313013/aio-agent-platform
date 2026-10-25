@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getAuthGeneration, isCurrentAuthGeneration, onAuthSessionChange } from '@/lib/authSession';
 import { petsApi } from '@/lib/api';
 import type { PetActiveTask, PetMood, PetPackage, UserPet } from '@/lib/types';
 
@@ -133,7 +134,9 @@ function markDone(tasks: Record<string, PetTask>, sessionId: string | undefined,
 
 /** doneAt 校验防止误删：linger 期间同会话又起了新任务（队列下一条/渠道新消息）则不移除 */
 function scheduleRemoval(sessionId: string, doneAt: number) {
+  const generation = getAuthGeneration();
   setTimeout(() => {
+    if (!isCurrentAuthGeneration(generation)) return;
     usePetStore.setState((s) => {
       const t = s.tasks[sessionId];
       if (!t || t.status !== 'done' || t.doneAt !== doneAt) return s;
@@ -200,10 +203,13 @@ export const usePetStore = create<PetState>((set, get) => ({
   loaded: false,
 
   loadActive: async () => {
+    const generation = getAuthGeneration();
     try {
       const pet = await petsApi.active();
+      if (!isCurrentAuthGeneration(generation)) return;
       set({ activePet: pet, loaded: true });
     } catch {
+      if (!isCurrentAuthGeneration(generation)) return;
       // 宠物接口失败不影响主流程 — 静默降级为不显示
       set({ activePet: null, loaded: true });
     }
@@ -376,6 +382,7 @@ export const usePetStore = create<PetState>((set, get) => ({
   },
 
   playRow: async (row, opts) => {
+    const generation = getAuthGeneration();
     const pet = get().activePet;
     if (!pet) return;
     // 本地立即反馈（不依赖接口）：直接播放该行动画
@@ -383,6 +390,7 @@ export const usePetStore = create<PetState>((set, get) => ({
     scheduleReset(set, opts?.durationMs ?? HAPPY_MS);
     try {
       const updated = await petsApi.interact(pet.id);
+      if (!isCurrentAuthGeneration(generation)) return;
       set({ activePet: updated });
     } catch {
       // 互动上报失败不影响体验
@@ -406,3 +414,9 @@ setInterval(() => {
   const pruned = pruneTasks(s.tasks);
   if (pruned !== s.tasks) usePetStore.setState({ tasks: pruned });
 }, TASK_SWEEP_MS);
+
+onAuthSessionChange(() => {
+  if (resetTimer) clearTimeout(resetTimer);
+  resetTimer = null;
+  usePetStore.setState({ activePet: null, loaded: false, tasks: {}, mood: 'idle', actionRow: null, actionFps: null });
+});

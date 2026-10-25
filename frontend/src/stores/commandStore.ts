@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getAuthGeneration, isCurrentAuthGeneration, onAuthSessionChange } from '@/lib/authSession';
 import { commandsApi } from '@/lib/api';
 import type { CommandMeta } from '@/lib/types';
 
@@ -28,15 +29,18 @@ export const useCommandStore = create<CommandState>((set, get) => ({
   loading: false,
 
   load: async (force = false) => {
+    const generation = getAuthGeneration();
     const { loaded, loading } = get();
     if (loaded && !force) return true;
     if (loading) return true;
     set({ loading: true });
     try {
       const commands = await commandsApi.list();
+      if (!isCurrentAuthGeneration(generation)) return false;
       set({ commands, loaded: true, loading: false });
       return true;
     } catch {
+      if (!isCurrentAuthGeneration(generation)) return false;
       set({ loading: false });
       return false;
     }
@@ -64,3 +68,7 @@ export const useCommandStore = create<CommandState>((set, get) => ({
       });
   },
 }));
+
+onAuthSessionChange(() => {
+  useCommandStore.setState({ commands: [], loaded: false, loading: false });
+});

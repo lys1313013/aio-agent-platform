@@ -1,3 +1,4 @@
+import { onAuthSessionChange } from '@/lib/authSession';
 import { create } from 'zustand';
 
 export interface WebpagePreview {
@@ -22,3 +23,7 @@ export const useWebpagePreviewStore = create<WebpagePreviewState>((set) => ({
   closePreview: () => set({ preview: null }),
   setPanelAvailable: (available) => set({ panelAvailable: available }),
 }));
+
+onAuthSessionChange(() => {
+  useWebpagePreviewStore.setState({ preview: null, panelAvailable: false });
+});

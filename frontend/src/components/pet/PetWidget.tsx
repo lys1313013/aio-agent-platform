@@ -1,3 +1,4 @@
+import { scopeAuthCallback } from '@/lib/authSession';
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -268,7 +269,7 @@ function PetWidgetInner() {
     // 互动上报（刷新实例数据，无经验奖励）
     void petsApi
       .interact(pet.id)
-      .then((updated) => usePetStore.setState({ activePet: updated }))
+      .then(scopeAuthCallback((updated) => usePetStore.setState({ activePet: updated })))
       .catch(() => {});
     if (bubbleStreamRef.current) {
       bubbleStreamRef.current();

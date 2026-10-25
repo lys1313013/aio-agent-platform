@@ -1,41 +1,42 @@
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
-import LoginPage from '@/pages/LoginPage';
-import RegisterPage from '@/pages/RegisterPage';
-import ChatPage from '@/pages/ChatPage';
-import RoomsPage from '@/pages/RoomsPage';
-import AgentsPage from '@/pages/AgentsPage';
-import AgentChatPage from '@/pages/AgentChatPage';
-import AgentApiPage from '@/pages/AgentApiPage';
-import DashboardPage from '@/pages/DashboardPage';
-import UsagePage from '@/pages/UsagePage';
-import ObservabilityPage from '@/pages/ObservabilityPage';
-import MemoryPage from '@/pages/MemoryPage';
-import SkillsPage from '@/pages/SkillsPage';
-import SkillDetailPage from '@/pages/SkillDetailPage';
-import PetsPage from '@/pages/PetsPage';
-import WorkspacesPage from '@/pages/WorkspacesPage';
-import SettingsPage from '@/pages/SettingsPage';
-import PortraitPage from '@/pages/PortraitPage';
-import ModelManagementPage from '@/pages/ModelManagementPage';
-import McpManagementPage from '@/pages/McpManagementPage';
-import KnowledgeManagementPage from '@/pages/KnowledgeManagementPage';
-import KnowledgeGraphPage from '@/pages/KnowledgeGraphPage';
-import KnowledgeGraphDetailPage from '@/pages/KnowledgeGraphDetailPage';
-import RemoteToolManagementPage from '@/pages/RemoteToolManagementPage';
-import WebToolSettingsPage from '@/pages/WebToolSettingsPage';
-import SystemConfigPage from '@/pages/SystemConfigPage';
-import ChannelsPage from '@/pages/ChannelsPage';
-import CronJobsPage from '@/pages/CronJobsPage';
-import CronJobRunsPage from '@/pages/CronJobRunsPage';
-import TenantManagementPage from '@/pages/TenantManagementPage';
-import UserManagementPage from '@/pages/UserManagementPage';
-import PortalAgentListPage from '@/pages/portal/PortalAgentListPage';
-import PortalChatPage from '@/pages/portal/PortalChatPage';
-import PortalSkillsPage from '@/pages/portal/PortalSkillsPage';
-import AppLayout from '@/components/layout/AppLayout';
-import PortalLayout from '@/components/layout/PortalLayout';
+const AppLayout = lazy(() => import('@/components/layout/AppLayout'));
+const PortalLayout = lazy(() => import('@/components/layout/PortalLayout'));
+
+const LoginPage = lazy(() => import('@/pages/LoginPage'));
+const RegisterPage = lazy(() => import('@/pages/RegisterPage'));
+const ChatPage = lazy(() => import('@/pages/ChatPage'));
+const RoomsPage = lazy(() => import('@/pages/RoomsPage'));
+const AgentsPage = lazy(() => import('@/pages/AgentsPage'));
+const AgentChatPage = lazy(() => import('@/pages/AgentChatPage'));
+const AgentApiPage = lazy(() => import('@/pages/AgentApiPage'));
+const DashboardPage = lazy(() => import('@/pages/DashboardPage'));
+const UsagePage = lazy(() => import('@/pages/UsagePage'));
+const ObservabilityPage = lazy(() => import('@/pages/ObservabilityPage'));
+const MemoryPage = lazy(() => import('@/pages/MemoryPage'));
+const SkillsPage = lazy(() => import('@/pages/SkillsPage'));
+const SkillDetailPage = lazy(() => import('@/pages/SkillDetailPage'));
+const PetsPage = lazy(() => import('@/pages/PetsPage'));
+const WorkspacesPage = lazy(() => import('@/pages/WorkspacesPage'));
+const SettingsPage = lazy(() => import('@/pages/SettingsPage'));
+const PortraitPage = lazy(() => import('@/pages/PortraitPage'));
+const ModelManagementPage = lazy(() => import('@/pages/ModelManagementPage'));
+const McpManagementPage = lazy(() => import('@/pages/McpManagementPage'));
+const KnowledgeManagementPage = lazy(() => import('@/pages/KnowledgeManagementPage'));
+const KnowledgeGraphPage = lazy(() => import('@/pages/KnowledgeGraphPage'));
+const KnowledgeGraphDetailPage = lazy(() => import('@/pages/KnowledgeGraphDetailPage'));
+const RemoteToolManagementPage = lazy(() => import('@/pages/RemoteToolManagementPage'));
+const WebToolSettingsPage = lazy(() => import('@/pages/WebToolSettingsPage'));
+const SystemConfigPage = lazy(() => import('@/pages/SystemConfigPage'));
+const ChannelsPage = lazy(() => import('@/pages/ChannelsPage'));
+const CronJobsPage = lazy(() => import('@/pages/CronJobsPage'));
+const CronJobRunsPage = lazy(() => import('@/pages/CronJobRunsPage'));
+const TenantManagementPage = lazy(() => import('@/pages/TenantManagementPage'));
+const UserManagementPage = lazy(() => import('@/pages/UserManagementPage'));
+const PortalAgentListPage = lazy(() => import('@/pages/portal/PortalAgentListPage'));
+const PortalChatPage = lazy(() => import('@/pages/portal/PortalChatPage'));
+const PortalSkillsPage = lazy(() => import('@/pages/portal/PortalSkillsPage'));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -43,7 +44,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     checkAuth();
-  }, []);
+  }, [checkAuth]);
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
@@ -70,6 +71,7 @@ function HomeRedirect() {
 
 export default function App() {
   return (
+    <Suspense fallback={<div role="status" className="p-6 text-muted-foreground">加载中…</div>}>
     <Routes>
       {/* Public routes */}
       <Route
@@ -151,5 +153,6 @@ export default function App() {
       {/* Catch all */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </Suspense>
   );
 }

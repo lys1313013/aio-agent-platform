@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getAuthGeneration, isCurrentAuthGeneration, onAuthSessionChange } from '@/lib/authSession';
 import { tokenStorage, getUserRole } from '@/lib/auth';
 import { authApi, settingsApi } from '@/lib/api';
 
@@ -39,14 +40,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   tenantName: null,
 
   login: async (usernameOrEmail, password) => {
+    tokenStorage.clear();
+    const generation = getAuthGeneration();
     set({ isLoading: true, error: null });
     try {
       const tokens = await authApi.login(usernameOrEmail, password);
+      if (!isCurrentAuthGeneration(generation)) return false;
       tokenStorage.set(tokens.access_token, tokens.refresh_token);
       set({ isAuthenticated: true, isLoading: false, role: getUserRole() });
       await get().loadProfile();
-      return true;
+      return isCurrentAuthGeneration(generation);
     } catch (err) {
+      if (!isCurrentAuthGeneration(generation)) return false;
       set({
         error: err instanceof Error ? err.message : 'Login failed',
         isLoading: false,
@@ -56,14 +61,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   register: async (username, email, password, tenantName) => {
+    tokenStorage.clear();
+    const generation = getAuthGeneration();
     set({ isLoading: true, error: null });
     try {
       const tokens = await authApi.register(username, email, password, tenantName);
+      if (!isCurrentAuthGeneration(generation)) return false;
       tokenStorage.set(tokens.access_token, tokens.refresh_token);
       set({ isAuthenticated: true, isLoading: false, role: getUserRole() });
       await get().loadProfile();
-      return true;
+      return isCurrentAuthGeneration(generation);
     } catch (err) {
+      if (!isCurrentAuthGeneration(generation)) return false;
       set({
         error: err instanceof Error ? err.message : 'Registration failed',
         isLoading: false,
@@ -74,6 +83,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: async () => {
     const refresh = tokenStorage.getRefresh();
+    // Invalidate immediately; a slow logout response must not clear a later login.
+    tokenStorage.clear();
     if (refresh) {
       try {
         await authApi.logout(refresh);
@@ -81,8 +92,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         /* ignore */
       }
     }
-    tokenStorage.clear();
-    set({ isAuthenticated: false, role: null, username: null, tenantId: null, tenantName: null });
   },
 
   checkAuth: () => {
@@ -99,8 +108,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   clearError: () => set({ error: null }),
 
   loadProfile: async () => {
+    const generation = getAuthGeneration();
     try {
       const profile = await settingsApi.getProfile();
+      if (!isCurrentAuthGeneration(generation)) return;
       set({
         username: profile.display_name || profile.username,
         tenantId: profile.tenant_id,
@@ -111,3 +122,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 }));
+
+onAuthSessionChange(() => {
+  useAuthStore.setState({ isAuthenticated: false, isLoading: false, error: null, role: null, username: null, tenantId: null, tenantName: null });
+});
