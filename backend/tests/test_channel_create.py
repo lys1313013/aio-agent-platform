@@ -17,7 +17,7 @@ async def test_create_starts_saved_channel(monkeypatch, mode, startup_error):
     user = SimpleNamespace(id=uuid4(), tenant_id=uuid4())
     req = channels.ChannelCreate(
         name="test channel", agent_id=uuid4(), app_id="test_app",
-        app_secret="test_secret", mode=mode,
+        app_secret="test_secret", mode=mode, verification_token="test-token",
     )
     db = MagicMock()
     db.execute = AsyncMock(return_value=MagicMock())
@@ -61,3 +61,51 @@ async def test_create_without_manager_does_not_save():
         await channels.create_channel(req, request, SimpleNamespace(), db)
     assert exc.value.status_code == 503
     db.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_feishu_webhook_without_auth_does_not_save(monkeypatch):
+    user = SimpleNamespace(id=uuid4(), tenant_id=uuid4())
+    req = channels.ChannelCreate(name="unsafe", agent_id=uuid4(), app_id="test_app", app_secret="test_secret", mode="webhook")
+    db = MagicMock(execute=AsyncMock(return_value=MagicMock()))
+    manager = SimpleNamespace(start_channel=AsyncMock())
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(channel_connection_manager=manager)))
+    verify = AsyncMock()
+    monkeypatch.setattr(channels, "_verify_channel_credentials", verify)
+    with pytest.raises(HTTPException) as exc:
+        await channels.create_channel(req, request, user, db)
+    assert exc.value.status_code == 400
+    db.add.assert_not_called()
+    verify.assert_not_called()
+    manager.start_channel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_enable_feishu_webhook_without_auth_does_not_start(monkeypatch):
+    channel = SimpleNamespace(channel_type="feishu", mode="webhook", verification_token_encrypted=None, encrypt_key_encrypted=None)
+    row = MagicMock()
+    row.scalar_one_or_none.return_value = channel
+    db = MagicMock(execute=AsyncMock(return_value=row))
+    manager = SimpleNamespace(start_channel=AsyncMock())
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(channel_connection_manager=manager)))
+    verify = AsyncMock()
+    monkeypatch.setattr(channels, "_verify_channel_credentials", verify)
+    with pytest.raises(HTTPException) as exc:
+        await channels.enable_channel(uuid4(), request, SimpleNamespace(tenant_id=uuid4()), db)
+    assert exc.value.status_code == 400
+    verify.assert_not_called()
+    manager.start_channel.assert_not_called()
+    db.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_cannot_clear_last_webhook_credential():
+    channel = SimpleNamespace(channel_type="feishu", mode="webhook", verification_token_encrypted="token", encrypt_key_encrypted=None)
+    row = MagicMock()
+    row.scalar_one_or_none.return_value = channel
+    db = MagicMock(execute=AsyncMock(return_value=row))
+    with pytest.raises(HTTPException) as exc:
+        await channels.update_channel(uuid4(), channels.ChannelUpdate(verification_token=""), SimpleNamespace(tenant_id=uuid4()), db)
+    assert exc.value.status_code == 400
+    assert channel.verification_token_encrypted == "token"
+    db.commit.assert_not_called()

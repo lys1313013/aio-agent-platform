@@ -3,7 +3,7 @@
 from urllib.parse import quote
 
 from dotenv import load_dotenv
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Load .env file early so nested BaseSettings subclasses can read env vars
@@ -53,7 +53,7 @@ class RedisSettings(BaseSettings):
 class JWTSettings(BaseSettings):
     """JWT authentication configuration."""
 
-    model_config = SettingsConfigDict(env_prefix="JWT_")
+    model_config = SettingsConfigDict(env_prefix="JWT_", populate_by_name=True)
 
     secret: str = Field(
         default="",
@@ -61,8 +61,14 @@ class JWTSettings(BaseSettings):
         min_length=32,
     )
     algorithm: str = Field(default="HS256")
-    access_token_expire_minutes: int = Field(default=21600, ge=1, le=525600)  # 15 days
-    refresh_token_expire_days: int = Field(default=7, ge=1, le=365)
+    access_token_expire_minutes: int = Field(
+        default=15, ge=1, le=525600,
+        validation_alias=AliasChoices("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "ACCESS_TOKEN_EXPIRE_MINUTES"),
+    )
+    refresh_token_expire_days: int = Field(
+        default=7, ge=1, le=365,
+        validation_alias=AliasChoices("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "REFRESH_TOKEN_EXPIRE_DAYS"),
+    )
 
     @field_validator("secret")
     @classmethod

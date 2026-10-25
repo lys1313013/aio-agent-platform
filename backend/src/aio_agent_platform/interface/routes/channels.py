@@ -160,6 +160,13 @@ class WebhookURLOut(BaseModel):
 # ---- Helper ----
 
 
+def _validate_feishu_webhook_auth(
+    channel_type: str, mode: str, verification_token: str | None, encrypt_key: str | None
+) -> None:
+    if channel_type == "feishu" and mode == "webhook" and not (verification_token or encrypt_key):
+        raise HTTPException(status_code=400, detail="飞书 Webhook 必须配置 Verification Token 或 Encrypt Key")
+
+
 def _channel_to_dict(ch: ChannelConfig) -> dict:
     result = {
         "id": ch.id,
@@ -256,6 +263,7 @@ async def create_channel(
 
     # Validate credentials + mode through the channel-type spec.
     _validate_channel_mode(req.channel_type, req.mode)
+    _validate_feishu_webhook_auth(req.channel_type, req.mode, req.verification_token, req.encrypt_key)
     if req.channel_type == "wecom":
         _validate_wecom_agentid(req.extra_config or {})
         if not req.verification_token:
@@ -314,6 +322,11 @@ async def update_channel(
     if channel is None:
         raise HTTPException(status_code=404, detail="渠道不存在")
 
+    _validate_feishu_webhook_auth(
+        channel.channel_type, req.mode if req.mode is not None else channel.mode,
+        req.verification_token if req.verification_token is not None else channel.verification_token_encrypted,
+        req.encrypt_key if req.encrypt_key is not None else channel.encrypt_key_encrypted,
+    )
     sensitive_changed = _sensitive_config_changed(channel, req)
 
     if req.name is not None:
@@ -381,6 +394,9 @@ async def enable_channel(
 
     try:
         _validate_channel_mode(channel.channel_type, channel.mode)
+        _validate_feishu_webhook_auth(
+            channel.channel_type, channel.mode, channel.verification_token_encrypted, channel.encrypt_key_encrypted
+        )
         if channel.channel_type == "wecom":
             _validate_wecom_agentid(channel.extra_config or {})
             if not channel.verification_token_encrypted:

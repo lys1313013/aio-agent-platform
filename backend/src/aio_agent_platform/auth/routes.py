@@ -17,7 +17,12 @@ from aio_agent_platform.auth.jwt_handler import (
     create_refresh_token,
     decode_token,
 )
-from aio_agent_platform.auth.password import hash_password, verify_password
+from aio_agent_platform.auth.password import (
+    NewPassword,
+    Password,
+    async_hash_password,
+    async_verify_password,
+)
 from aio_agent_platform.core.config import settings
 from aio_agent_platform.db import (
     RefreshToken,
@@ -35,13 +40,13 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=64)
     email: EmailStr
-    password: str = Field(..., min_length=8, max_length=128)
+    password: NewPassword
     tenant_name: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class LoginRequest(BaseModel):
     username_or_email: str
-    password: str
+    password: Password
 
 
 class RefreshRequest(BaseModel):
@@ -103,7 +108,7 @@ async def register(
     user = User(
         username=req.username,
         email=req.email,
-        password_hash=hash_password(req.password),
+        password_hash=await async_hash_password(req.password),
         role="superadmin" if is_first_user else "user",
         tenant_id=tenant.id,
     )
@@ -140,7 +145,7 @@ async def login(
     )
     user = result.scalar_one_or_none()
 
-    if not user or not verify_password(req.password, user.password_hash):
+    if not user or not await async_verify_password(req.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",

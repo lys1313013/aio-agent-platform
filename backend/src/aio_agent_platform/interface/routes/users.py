@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.dependencies import SuperAdminUser
-from aio_agent_platform.auth.password import hash_password
+from aio_agent_platform.auth.password import NewPassword, async_hash_password
 from aio_agent_platform.db.connection import get_db
 from aio_agent_platform.db.models import Tenant, TenantMembership, User, UserConfig, UserProfile
 
@@ -35,7 +35,7 @@ class UserAdminOut(BaseModel):
 class UserAdminCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=64)
     email: EmailStr
-    password: str = Field(..., min_length=8, max_length=128)
+    password: NewPassword
     display_name: str | None = Field(default=None, max_length=128)
     role: str = Field(default="user", pattern="^(user|admin|superadmin)$")
     tenant_ids: list[UUID] = Field(..., min_length=1)
@@ -46,7 +46,7 @@ class UserAdminUpdate(BaseModel):
     username: str | None = Field(default=None, min_length=3, max_length=64)
     email: EmailStr | None = None
     display_name: str | None = Field(default=None, max_length=128)
-    password: str | None = Field(default=None, min_length=8, max_length=128)
+    password: NewPassword | None = None
     role: str | None = Field(default=None, pattern="^(user|admin|superadmin)$")
     is_active: bool | None = None
 
@@ -111,7 +111,7 @@ async def create_user(
     user = User(
         username=req.username,
         email=str(req.email),
-        password_hash=hash_password(req.password),
+        password_hash=await async_hash_password(req.password),
         role=req.role,
         tenant_id=active_tenant_id,
     )
@@ -155,7 +155,7 @@ async def update_user(
             raise HTTPException(status_code=409, detail="邮箱已存在")
         user.email = str(req.email)
     if req.password is not None:
-        user.password_hash = hash_password(req.password)
+        user.password_hash = await async_hash_password(req.password)
     if req.role is not None:
         user.role = req.role
     if req.is_active is not None:

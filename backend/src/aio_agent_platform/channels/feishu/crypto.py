@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 
 def verify_signature(
-    verification_token: str,
+    encrypt_key: str,
     timestamp: str,
     nonce: str,
     body: bytes,
@@ -24,8 +24,8 @@ def verify_signature(
     Returns True when the signature matches. The comparison is constant-time
     to avoid leaking partial matches.
     """
-    content = timestamp + nonce + verification_token + body.decode("utf-8", errors="replace")
-    computed = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    content = (timestamp + nonce + encrypt_key).encode("utf-8") + body
+    computed = hashlib.sha256(content).hexdigest()
     return _constant_time_eq(computed, signature)
 
 
@@ -45,7 +45,11 @@ def decrypt_event(encrypt_key: str, encrypted: str) -> dict[str, Any]:
     decryptor = cipher.decryptor()
     plaintext = decryptor.update(ciphertext) + decryptor.finalize()
     # Remove PKCS#7 padding.
+    if not plaintext:
+        raise ValueError("empty encrypted event")
     pad_len = plaintext[-1]
+    if not 1 <= pad_len <= 16 or plaintext[-pad_len:] != bytes([pad_len]) * pad_len:
+        raise ValueError("invalid PKCS#7 padding")
     plaintext = plaintext[:-pad_len]
     return json.loads(plaintext.decode("utf-8"))
 

@@ -11,6 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.dependencies import CurrentUser
+from aio_agent_platform.auth.password import (
+    NewPassword,
+    Password,
+    async_hash_password,
+    async_verify_password,
+)
 from aio_agent_platform.db import (
     PortraitVersion,
     Tenant,
@@ -77,8 +83,8 @@ class PortraitVersionListOut(BaseModel):
 
 
 class PasswordUpdate(BaseModel):
-    current_password: str
-    new_password: str = Field(..., min_length=8)
+    current_password: Password
+    new_password: NewPassword
 
 
 class SecurityConfigOut(BaseModel):
@@ -388,12 +394,10 @@ async def update_password(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    from aio_agent_platform.auth.password import hash_password, verify_password
-
-    if not verify_password(req.current_password, user.password_hash):
+    if not await async_verify_password(req.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="当前密码不正确")
 
-    user.password_hash = hash_password(req.new_password)
+    user.password_hash = await async_hash_password(req.new_password)
     await db.flush()
     return {"message": "密码已更新"}
 

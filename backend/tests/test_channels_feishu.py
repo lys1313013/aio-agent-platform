@@ -1023,7 +1023,7 @@ def _make_webhook_app(channel: SimpleNamespace) -> tuple[FastAPI, MagicMock]:
 
 def _message_event_payload(event_id: str = "evt_wh_1", event_type: str = "im.message.receive_v1") -> dict:
     return {
-        "header": {"event_type": event_type, "event_id": event_id},
+        "header": {"event_type": event_type, "event_id": event_id, "token": "vtok"},
         "event": {
             "message": {
                 "chat_id": "oc_wh",
@@ -1065,12 +1065,12 @@ async def test_webhook_invalid_json_returns_400() -> None:
 
 
 async def test_webhook_url_verification_challenge() -> None:
-    channel = SimpleNamespace(id=uuid4(), app_id=BOT_APP_ID, channel_key="k_chal")
+    channel = SimpleNamespace(id=uuid4(), app_id=BOT_APP_ID, channel_key="k_chal", _verification_token="vtok")
     app, _ = _make_webhook_app(channel)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         resp = await c.post(
             "/api/channels/feishu/events/k_chal",
-            json={"type": "url_verification", "challenge": "abc123"},
+            json={"type": "url_verification", "challenge": "abc123", "token": "vtok"},
         )
     assert resp.status_code == 200
     assert resp.json() == {"challenge": "abc123"}
@@ -1095,7 +1095,7 @@ async def test_webhook_challenge_rejects_wrong_token() -> None:
 
 
 async def test_webhook_dispatches_message_event() -> None:
-    channel = SimpleNamespace(id=uuid4(), app_id=BOT_APP_ID, channel_key="k_evt")
+    channel = SimpleNamespace(id=uuid4(), app_id=BOT_APP_ID, channel_key="k_evt", _verification_token="vtok")
     app, pipeline = _make_webhook_app(channel)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         resp = await c.post("/api/channels/feishu/events/k_evt", json=_message_event_payload())
@@ -1108,7 +1108,7 @@ async def test_webhook_dispatches_message_event() -> None:
 
 
 async def test_webhook_ignores_non_message_events() -> None:
-    channel = SimpleNamespace(id=uuid4(), app_id=BOT_APP_ID, channel_key="k_other")
+    channel = SimpleNamespace(id=uuid4(), app_id=BOT_APP_ID, channel_key="k_other", _verification_token="vtok")
     app, pipeline = _make_webhook_app(channel)
     payload = _message_event_payload(event_type="im.chat.updated_v1")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
@@ -1117,12 +1117,12 @@ async def test_webhook_ignores_non_message_events() -> None:
     pipeline.submit.assert_not_called()
 
 
-async def test_webhook_signature_enforced_when_token_set() -> None:
+async def test_webhook_signature_uses_encrypt_key_not_verification_token() -> None:
     channel = SimpleNamespace(
-        id=uuid4(), app_id=BOT_APP_ID, channel_key="k_sig", _verification_token="vtok"
+        id=uuid4(), app_id=BOT_APP_ID, channel_key="k_sig", _verification_token="vtok", _encrypt_key="enc-key"
     )
     app, pipeline = _make_webhook_app(channel)
-    body = json.dumps(_message_event_payload()).encode("utf-8")
+    body = json.dumps({"encrypt": _encrypt("enc-key", _message_event_payload())}).encode("utf-8")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         # 缺少签名 → 401
         resp = await c.post(
@@ -1133,7 +1133,7 @@ async def test_webhook_signature_enforced_when_token_set() -> None:
         assert resp.status_code == 401
         # 正确签名 → 200
         ts, nonce = "1700000000", "n1"
-        sig = _sign("vtok", ts, nonce, body)
+        sig = _sign("enc-key", ts, nonce, body)
         resp = await c.post(
             "/api/channels/feishu/events/k_sig",
             content=body,
@@ -1159,7 +1159,12 @@ async def test_webhook_decrypts_encrypted_payload() -> None:
         resp = await c.post(
             "/api/channels/feishu/events/k_enc",
             content=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "X-Lark-Signature": _sign("enc-key-1", "1700000000", "n1", body),
+                "X-Lark-Request-Timestamp": "1700000000",
+                "X-Lark-Request-Nonce": "n1",
+            },
         )
     assert resp.status_code == 200
     pipeline.submit.assert_called_once()
@@ -1548,3 +1553,67 @@ async def test_legacy_binding_does_not_resolve_for_any_channel(db_session):
     db_session.add(ChannelBinding(tenant_id=tenant_id, external_id='legacy', user_id=user.id))
     await db_session.flush()
     assert await resolve_external_user(db_session, tenant_id, uuid4(), 'legacy') is None
+
+
+@pytest.mark.parametrize("payload", [
+    _message_event_payload(),
+    {"type": "url_verification", "challenge": "unauthenticated"},
+])
+async def test_webhook_without_authentication_fails_closed(payload):
+    channel = SimpleNamespace(id=uuid4(), app_id=BOT_APP_ID, channel_key="no_auth")
+    app, pipeline = _make_webhook_app(channel)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        response = await client.post("/api/channels/webhook/no_auth", json=payload)
+    assert response.status_code == 401
+    pipeline.submit.assert_not_called()
+
+
+@pytest.mark.parametrize("token", [None, "wrong"])
+async def test_plaintext_webhook_requires_payload_token(token):
+    channel = SimpleNamespace(id=uuid4(), app_id=BOT_APP_ID, channel_key="plain", _verification_token="vtok")
+    app, pipeline = _make_webhook_app(channel)
+    payload = _message_event_payload()
+    payload["header"]["token"] = token
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        response = await client.post("/api/channels/webhook/plain", json=payload)
+    assert response.status_code == 401
+    pipeline.submit.assert_not_called()
+
+
+async def test_encrypted_webhook_rejects_plaintext_downgrade():
+    channel = SimpleNamespace(id=uuid4(), app_id=BOT_APP_ID, channel_key="encrypted", _encrypt_key="enc-key")
+    app, pipeline = _make_webhook_app(channel)
+    body = json.dumps(_message_event_payload()).encode()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        response = await client.post("/api/channels/webhook/encrypted", content=body, headers={
+            "X-Lark-Signature": _sign("enc-key", "1700000000", "n1", body),
+            "X-Lark-Request-Timestamp": "1700000000", "X-Lark-Request-Nonce": "n1",
+        })
+    assert response.status_code == 401
+    pipeline.submit.assert_not_called()
+
+
+@pytest.mark.parametrize("signing_key", [None, "vtok"])
+async def test_encrypted_webhook_rejects_missing_or_wrong_signing_key(signing_key):
+    channel = SimpleNamespace(id=uuid4(), app_id=BOT_APP_ID, channel_key="wrong_sig", _encrypt_key="enc-key", _verification_token="vtok")
+    app, pipeline = _make_webhook_app(channel)
+    body = json.dumps({"encrypt": _encrypt("enc-key", _message_event_payload())}).encode()
+    headers = {} if signing_key is None else {
+        "X-Lark-Signature": _sign(signing_key, "1700000000", "n1", body),
+        "X-Lark-Request-Timestamp": "1700000000", "X-Lark-Request-Nonce": "n1",
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        response = await client.post("/api/channels/webhook/wrong_sig", content=body, headers=headers)
+    assert response.status_code == 401
+    pipeline.submit.assert_not_called()
+
+
+async def test_encrypted_url_challenge_works_without_signature_headers():
+    channel = SimpleNamespace(id=uuid4(), app_id=BOT_APP_ID, channel_key="encrypted_challenge", _encrypt_key="enc-key", _verification_token="vtok")
+    app, pipeline = _make_webhook_app(channel)
+    payload = {"type": "url_verification", "challenge": "valid-challenge", "token": "vtok"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        response = await client.post("/api/channels/webhook/encrypted_challenge", json={"encrypt": _encrypt("enc-key", payload)})
+    assert response.status_code == 200
+    assert response.json() == {"challenge": "valid-challenge"}
+    pipeline.submit.assert_not_called()

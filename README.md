@@ -110,10 +110,14 @@ cd frontend && pnpm run lint          # ESLint（JavaScript / TypeScript / React
 |------|--------|------|
 | `DATABASE_URL` | `postgresql+asyncpg://agent_user:changeme@localhost:5435/aio_agent_platform` | 数据库连接字符串 |
 | `JWT_SECRET` | *（必填）* | JWT 签名密钥 |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | 访问令牌有效期（分钟） |
+| `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `7` | 刷新令牌有效期（天） |
 | `HOST` / `PORT` | `0.0.0.0` / `8100` | API 服务绑定地址 |
 | `CORS_ORIGINS` | `http://localhost:1717,http://localhost:3000` | 允许的跨域来源 |
 | `AGENT_TRUST_LEVEL` | `ask_dangerous` | 工具执行信任级别：`ask_always` / `ask_dangerous` / `auto_all` |
 | `SANDBOX_IMAGE` | `crpi-yvha9coypdedaafa.cn-beijing.personal.cr.aliyuncs.com/lys1313013/aio-agent-platform-sandbox:latest` | 沙箱 Docker 镜像 |
+
+JWT 有效期兼容旧的无 `JWT_` 前缀变量；两者同时配置时以带前缀变量为准。修改有效期只影响新签发令牌，旧令牌保留原过期时间；需要立即使全部旧令牌失效时，由运维轮换 `JWT_SECRET`，用户须重新登录。密码至少 8 个字符，UTF-8 编码最多 72 字节（例如最多 24 个常见汉字），超过限制直接拒绝，不截断。API 中 bcrypt 使用最多 4 个并发工作线程，避免阻塞事件循环。
 
 LLM 模型通过管理后台配置，不在 `.env` 中设置。
 
