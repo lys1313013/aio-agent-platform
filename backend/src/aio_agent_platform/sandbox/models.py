@@ -31,6 +31,31 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 
+def docker_unavailable_reason(exc: Exception) -> str:
+    """Return a useful reason without leaking connection URLs or credentials."""
+    cause = exc
+    seen: set[int] = set()
+    while id(cause) not in seen:
+        seen.add(id(cause))
+        nested = cause.__cause__ or cause.__context__
+        if nested is None or id(nested) in seen:
+            break
+        cause = nested
+    if isinstance(cause, FileNotFoundError):
+        return "Docker socket 或配置文件不存在"
+    if isinstance(cause, PermissionError):
+        return "没有访问 Docker socket 或配置文件的权限"
+    if isinstance(cause, ConnectionRefusedError):
+        return "Docker 拒绝连接，服务可能尚未启动"
+    if isinstance(cause, TimeoutError) or "timeout" in type(cause).__name__.lower():
+        return "连接 Docker 超时"
+    return "Docker 不可用或连接配置无效"
+
+
+class SandboxUnavailableError(RuntimeError):
+    """Docker is unavailable; backend-only features can still run."""
+
+
 @dataclass
 class ExecResult:
     """Result from sandbox command execution."""
@@ -73,40 +98,9 @@ class SandboxManager:
     """
 
     def __init__(self, workspace_storage: "WorkspaceStorage | None" = None):
-        try:
-            self._client = docker.from_env()
-        except DockerException as exc:
-            # The SDK wraps socket failures in several HTTP exceptions.
-            # Surface the cause before FastAPI prints its lifespan traceback.
-            cause = exc
-            seen = set()
-            while id(cause) not in seen:
-                seen.add(id(cause))
-                nested = cause.__cause__ or cause.__context__
-                if nested is None or id(nested) in seen:
-                    break
-                cause = nested
-            if isinstance(cause, FileNotFoundError):
-                reason = "Docker 连接所需的 socket 或配置文件不存在"
-            elif isinstance(cause, PermissionError):
-                reason = "当前用户没有访问 Docker socket 或配置文件的权限"
-            elif isinstance(cause, ConnectionRefusedError):
-                reason = "Docker 服务拒绝连接，可能尚未启动或连接地址不正确"
-            elif isinstance(cause, TimeoutError):
-                reason = "连接 Docker 服务超时"
-            else:
-                reason = "Docker 服务不可用或连接配置无效"
-            hint = (
-                "请启动 Docker Desktop / Docker Engine，并运行 `docker info` 确认服务可用；"
-                "若仍失败，请检查后端进程的 DOCKER_HOST、socket 访问权限及 TLS 配置。"
-            )
-            message = f"Docker 沙箱初始化失败，后端停止启动：{reason}。{hint}"
-            logger.error(
-                message, phase="init_sandbox", error_type=type(cause).__name__,
-            )
-            if settings.server.log_level == "DEBUG":
-                logger.debug("sandbox_docker_init_traceback", exc_info=True)
-            raise RuntimeError(message) from None
+        # Connect lazily: Docker failure must not disable backend-only tools.
+        self._client: docker.DockerClient | None = None
+        self._client_lock = asyncio.Lock()
         # key: "user:{user_id}" — sandbox is user-bound, shared across sessions
         self._active: dict[str, Sandbox] = {}
         self._workspace_storage = workspace_storage
@@ -116,6 +110,34 @@ class SandboxManager:
         self._namespace = settings.sandbox.namespace
         self._lock_dir = Path(settings.sandbox.lock_dir)
         self._lock_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _connect_client() -> docker.DockerClient:
+        client = docker.from_env(timeout=3)
+        # A short connection probe must not shorten actual command execution.
+        client.api.timeout = docker.constants.DEFAULT_TIMEOUT_SECONDS
+        return client
+
+    async def _ensure_client(self) -> None:
+        if self._client is not None:
+            return
+        async with self._client_lock:
+            if self._client is not None:
+                return
+            task = asyncio.create_task(asyncio.to_thread(self._connect_client))
+            try:
+                self._client = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # Keep ownership of a connection that finishes after cancellation.
+                try:
+                    self._client = await self._finish_task(task)
+                except Exception:
+                    pass
+                raise
+            except DockerException as exc:
+                raise SandboxUnavailableError(
+                    f"沙箱不可用：{docker_unavailable_reason(exc)}。请启动或检查 Docker 后重试。"
+                ) from None
 
     def _name(self, user_id: str) -> str:
         digest = hashlib.sha256(f"{self._namespace}:{user_id}".encode()).hexdigest()[:32]
@@ -194,6 +216,7 @@ class SandboxManager:
             raise
 
     async def _container(self, container_id: str):
+        await self._ensure_client()
         try:
             return await self._docker_call(self._client.containers.get, container_id)
         except NotFound:
@@ -225,6 +248,7 @@ class SandboxManager:
         )
 
     async def _discover(self, user_id: str):
+        await self._ensure_client()
         containers = await self._docker_call(
             self._client.containers.list,
             all=True,
@@ -537,17 +561,26 @@ class SandboxManager:
                     error=str(exc),
                 )
         self._active.clear()
-        await self._docker_call(self._client.close)
+        if self._client is not None:
+            await self._docker_call(self._client.close)
+            self._client = None
 
     async def start_periodic_sync(self, interval_seconds: int | None = None) -> None:
         """Recover this deployment's containers and start sync/idle cleanup."""
         if self._sync_task is not None:
             return
-        await self._recover()
+        try:
+            await self._recover()
+        except (SandboxUnavailableError, DockerException) as exc:
+            logger.warning(
+                "sandbox_startup_degraded",
+                reason=str(exc) if isinstance(exc, SandboxUnavailableError) else docker_unavailable_reason(exc),
+            )
         interval = interval_seconds or settings.storage.sync_interval_seconds
         self._sync_task = asyncio.create_task(self._periodic_sync_loop(interval))
 
     async def _recover(self) -> None:
+        await self._ensure_client()
         containers = await self._docker_call(
             self._client.containers.list,
             all=True,

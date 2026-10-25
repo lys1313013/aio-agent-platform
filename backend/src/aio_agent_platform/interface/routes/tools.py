@@ -11,6 +11,7 @@ router = APIRouter(prefix="/api/tools", tags=["tools"])
 # Chinese labels and metadata for built-in tools
 # These are UI display properties, not part of the tool's functional definition
 TOOL_META: dict[str, dict] = {
+    "get_runtime_info": {"label": "查询运行环境", "category": "other"},
     "list_models": {"label": "查询可用模型", "category": "automation"},
     "run_shell": {"label": "Shell 命令", "category": "sandbox"},
     "run_code": {"label": "运行代码", "category": "sandbox"},

@@ -8,10 +8,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from docker.errors import APIError, NotFound
+from docker.errors import APIError, DockerException, NotFound
 
 from aio_agent_platform.core.config import settings
-from aio_agent_platform.sandbox.models import SandboxManager
+from aio_agent_platform.sandbox.models import SandboxManager, SandboxUnavailableError
 from aio_agent_platform.storage.workspace import SyncStats, WorkspaceStorage
 
 
@@ -52,6 +52,7 @@ class Container:
 class Daemon:
     def __init__(self):
         self.containers = self
+        self.api = SimpleNamespace(timeout=60)
         self.items = {}
         self.created = []
         self.close = Mock()
@@ -86,7 +87,7 @@ class Daemon:
 @pytest.fixture
 def setup(monkeypatch, tmp_path):
     daemon = Daemon()
-    monkeypatch.setattr("aio_agent_platform.sandbox.models.docker.from_env", lambda: daemon)
+    monkeypatch.setattr("aio_agent_platform.sandbox.models.docker.from_env", lambda **kwargs: daemon)
     monkeypatch.setattr(settings.sandbox, "lock_dir", str(tmp_path))
     monkeypatch.setattr(settings.sandbox, "namespace", "test-deployment")
     storage = SimpleNamespace(
@@ -378,6 +379,81 @@ async def test_cleanup_scheduler_runs_without_storage(setup, monkeypatch):
         await asyncio.wait_for(cleaned.wait(), 1)
     finally:
         await manager.shutdown()
+
+
+async def test_docker_offline_allows_degraded_startup_and_later_recovery(setup, monkeypatch):
+    daemon, storage = setup
+    connect = Mock(side_effect=[DockerException("offline"), DockerException("offline"), daemon])
+    monkeypatch.setattr("aio_agent_platform.sandbox.models.docker.from_env", connect)
+    manager = SandboxManager(storage)
+    connect.assert_not_called()
+    await manager.start_periodic_sync()
+    try:
+        assert manager._sync_task is not None
+        assert not daemon.created
+        with pytest.raises(SandboxUnavailableError, match="沙箱不可用"):
+            await obtain(manager)
+        sandbox = await obtain(manager)
+        assert sandbox.container_id in daemon.items
+        assert len(daemon.created) == 1
+        assert daemon.api.timeout == 60
+    finally:
+        await manager.shutdown()
+
+
+async def test_docker_disconnect_during_recovery_allows_startup(setup):
+    daemon, storage = setup
+    original_list = daemon.list
+    daemon.list = Mock(side_effect=APIError("offline"))
+    manager = SandboxManager(storage)
+    await manager.start_periodic_sync()
+    try:
+        assert manager._sync_task is not None
+        daemon.list = original_list
+        await manager._recover()
+        assert not daemon.created
+    finally:
+        await manager.shutdown()
+
+
+async def test_shutdown_without_docker_does_not_connect(setup, monkeypatch):
+    connect = Mock(side_effect=DockerException("offline"))
+    monkeypatch.setattr("aio_agent_platform.sandbox.models.docker.from_env", connect)
+    manager = SandboxManager()
+    await manager.start_periodic_sync()
+    await manager.shutdown()
+    assert connect.call_count == 1
+
+
+async def test_cancelled_lazy_connection_retains_client_and_releases_lock(setup, monkeypatch):
+    daemon, _ = setup
+    started, released = threading.Event(), threading.Event()
+
+    def connect(**kwargs):
+        started.set()
+        assert released.wait(5)
+        return daemon
+
+    monkeypatch.setattr("aio_agent_platform.sandbox.models.docker.from_env", connect)
+    manager = SandboxManager()
+    task = asyncio.create_task(manager._ensure_client())
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        released.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert manager._client is daemon
+        assert not manager._client_lock.locked()
+        await manager.shutdown()
+        daemon.close.assert_called_once()
+    finally:
+        released.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_separate_process_lock_prevents_reaping(setup):

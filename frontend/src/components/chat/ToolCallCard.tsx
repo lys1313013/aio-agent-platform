@@ -39,6 +39,7 @@ const TOOL_LABELS: Record<string, string> = {
   web_search: '网页搜索',
   web_fetch: '读取网页',
   run_shell: 'Shell 命令',
+  get_runtime_info: '查询运行环境',
   list_models: '查询可用模型',
   run_code: '运行代码',
   read_file: '读取文件',

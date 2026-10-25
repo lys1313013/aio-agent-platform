@@ -12,6 +12,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     """Register all built-in tools into the registry."""
     registry.register(RUN_SHELL)
     registry.register(RUN_CODE)
+    registry.register(GET_RUNTIME_INFO)
     registry.register(LIST_MODELS)
     registry.register(READ_FILE)
     registry.register(WRITE_FILE)
@@ -49,6 +50,37 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     for _ui_tool in UI_TOOLS:
         registry.register(_ui_tool)
 
+
+# ---- Backend identity (read-only, no sandbox or setup required) ----
+
+GET_RUNTIME_INFO = Tool(
+    name="get_runtime_info",
+    description=(
+        "Query the device and environment running this agent's backend, without sandbox execution. "
+        "Use when asked where you are running, the computer name, macOS/Linux, architecture, "
+        "or sandbox availability. Automatically detects device name; no configuration needed. "
+        "Reports backend/container identity, not the browser or remote LLM host. "
+        "Optional resource metrics reflect the backend OS view, not container quotas. "
+        "Sandbox checks are read-only and do not verify command execution."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "include_resources": {
+                "type": "boolean", "default": False,
+                "description": "Include CPU, memory and disk metrics (default: false)",
+            },
+            "check_sandbox": {
+                "type": "boolean", "default": True,
+                "description": "Check Docker and current user sandbox without creating it (default: true)",
+            },
+        },
+        "additionalProperties": False,
+    },
+    requires_sandbox=False,
+    permission_level="read",
+    timeout=10,
+)
 
 # ---- Shell / Code (sandbox, dangerous permission) ----
 
