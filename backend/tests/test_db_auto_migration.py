@@ -58,6 +58,33 @@ async def test_ambiguous_history_blocks_upgrade_before_alembic(monkeypatch):
     assert "pg_advisory_unlock" in str(conn.execute.await_args_list[-1].args[0])
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["empty", "behind"])
+async def test_new_and_existing_databases_share_upgrade_path(monkeypatch, state):
+    engine = _Engine(AsyncMock())
+    upgrade = AsyncMock()
+    monkeypatch.setattr(connection, "get_engine", lambda: engine)
+    monkeypatch.setattr(connection, "_local_alembic_heads", lambda: {"head"})
+    monkeypatch.setattr(connection, "_db_schema_state", AsyncMock(return_value=state))
+    monkeypatch.setattr(connection, "_auto_upgrade_schema", upgrade)
+    await connection.init_db()
+    upgrade.assert_awaited_once_with(engine, {"head"})
+
+
+@pytest.mark.asyncio
+async def test_force_bootstrap_cannot_stamp_unversioned_history(monkeypatch):
+    engine = _Engine(AsyncMock())
+    upgrade = AsyncMock()
+    monkeypatch.setattr(connection.settings.db, "bootstrap_force", True)
+    monkeypatch.setattr(connection, "get_engine", lambda: engine)
+    monkeypatch.setattr(connection, "_local_alembic_heads", lambda: {"head"})
+    monkeypatch.setattr(connection, "_db_schema_state", AsyncMock(return_value="legacy"))
+    monkeypatch.setattr(connection, "_auto_upgrade_schema", upgrade)
+    with pytest.raises(RuntimeError, match="未标记版本"):
+        await connection.init_db()
+    upgrade.assert_not_awaited()
+
+
 @pytest.mark.postgres
 @pytest.mark.parametrize('has_column', [True, False])
 async def test_legacy_guard_does_not_backfill_unknown_tenants(engine, has_column):

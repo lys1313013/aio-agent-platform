@@ -16,6 +16,10 @@ load_dotenv()
 # Import our models and Base so alembic can detect schema changes
 from aio_agent_platform.core.config import settings  # noqa: E402
 from aio_agent_platform.db.models import Base  # noqa: E402
+from aio_agent_platform.db.schema import (  # noqa: E402
+    database_schema_state,
+    require_known_tenant_ownership,
+)
 
 # Alembic Config object
 config = context.config
@@ -48,6 +52,9 @@ def do_run_migrations(connection: Connection) -> None:
     """Run migrations with a connection."""
     context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
+        if database_schema_state(connection, set()) == "legacy":
+            raise RuntimeError("数据库包含未标记版本的表，拒绝直接迁移或 stamp head")
+        require_known_tenant_ownership(connection)
         context.run_migrations()
 
 
@@ -58,14 +65,20 @@ async def run_async_migrations() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
-    await connectable.dispose()
+    try:
+        async with connectable.connect() as connection:
+            await connection.run_sync(do_run_migrations)
+    finally:
+        await connectable.dispose()
 
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
-    asyncio.run(run_async_migrations())
+    connection = config.attributes.get("connection")
+    if connection is not None:
+        do_run_migrations(connection)
+    else:
+        asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

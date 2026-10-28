@@ -76,13 +76,22 @@ async def engine(request):
         if request.config.getoption("--run-postgres"):
             pytest.fail("PostgreSQL integration test database is unreachable")
         pytest.skip("disposable test database not reachable")
+    # Exercise the production migration chain; create_all would hide missing DDL/RLS.
+    from pathlib import Path
+
+    from alembic.config import Config
+
+    from alembic import command
+
+    def migrate(connection):
+        backend_dir = Path(__file__).resolve().parents[1]
+        config = Config(str(backend_dir / "alembic.ini"))
+        config.set_main_option("script_location", str(backend_dir / "alembic"))
+        config.attributes["connection"] = connection
+        command.upgrade(config, "head")
+
     async with engine.begin() as conn:
-        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
-        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pg_trgm"'))
-        await conn.run_sync(Base.metadata.create_all)
-        # Apply manual column migrations (create_all won't alter existing tables)
-        from aio_agent_platform.db.connection import _run_manual_migrations
-        await _run_manual_migrations(conn)
+        await conn.run_sync(migrate)
     yield engine
     await engine.dispose()
 

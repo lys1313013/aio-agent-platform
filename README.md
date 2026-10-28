@@ -129,12 +129,13 @@ cd backend
 # 创建新迁移
 alembic revision --autogenerate -m "描述"
 
-# 执行迁移
-alembic upgrade head
-
-# 回退一步
-alembic downgrade -1
+# 执行迁移（新库和已有版本的数据库使用同一条迁移链）
+uv run alembic upgrade head
 ```
+
+API 启动也会检查并执行该迁移链，不再通过 `create_all` 建表后直接标记为最新版本。迁移 `c5e6f7a8b9d0` 补齐历史初始化遗漏的观测表、约束、索引与用户 RLS 策略；测试同时比较新库、旧版本升级和已标记版本的旧 bootstrap 数据库结构，并使用非 owner 数据库角色验证 RLS。
+
+非空但没有迁移版本的数据库会拒绝启动和迁移，须先备份、核对实际结构并制定显式迁移方案，不能直接 `stamp head`。无法确定租户或存在不符合新约束的历史 NULL 记录时，迁移失败且不自动回填；`DATABASE_BOOTSTRAP_FORCE` 也不能绕过检查。历史归属修复需要独立授权。该结构修复迁移不提供自动 downgrade，回滚须使用经过验证的备份恢复方案。
 
 ## 文档
 

@@ -4,15 +4,17 @@ import asyncio
 from collections.abc import AsyncGenerator
 from contextvars import ContextVar
 from pathlib import Path
+from uuid import UUID
 
-from sqlalchemy import text
-from sqlalchemy.engine import make_url
+from sqlalchemy import event, text
+from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import Session, SessionTransaction
 
 from aio_agent_platform.core.config import settings
 
@@ -20,8 +22,30 @@ from aio_agent_platform.core.config import settings
 _engine: AsyncEngine | None = None
 _async_session_factory: async_sessionmaker[AsyncSession] | None = None
 
-# Current user ID for RLS (set by get_current_user dependency)
+# Optional user context for explicit background callers of get_db.
+# HTTP authentication binds its verified identity directly to the request session.
 current_user_id: ContextVar[str | None] = ContextVar("current_user_id", default=None)
+_RLS_USER_KEY = "aio_rls_user_id"
+_SET_RLS_USER = text("SELECT set_config('app.current_user_id', :uid, true)")
+
+
+def _set_transaction_user(
+    session: Session, transaction: SessionTransaction, connection: Connection,
+) -> None:
+    """Restore a bound identity for each transaction, including after commit."""
+    connection.execute(_SET_RLS_USER, {"uid": session.info[_RLS_USER_KEY]})
+
+
+async def set_db_user(session: AsyncSession, user_id: UUID | str) -> None:
+    """Bind an already authenticated user; this does not authorize tenant access."""
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    session.info[_RLS_USER_KEY] = str(user_id)
+    if not event.contains(session.sync_session, "after_begin", _set_transaction_user):
+        event.listen(session.sync_session, "after_begin", _set_transaction_user)
+    # Authentication queries may already have opened this transaction, before
+    # the listener was installed. Set its identity immediately as well.
+    await session.execute(_SET_RLS_USER, {"uid": str(user_id)})
 
 
 def get_engine() -> AsyncEngine:
@@ -61,20 +85,15 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
     """
     FastAPI dependency: get a database session.
 
-    Also sets the PostgreSQL session variable for RLS:
-    set_config('app.current_user_id', user_id, true), scoped to this transaction.
+    Explicit background user context is supported; HTTP authentication sets the
+    identity after this dependency yields. SQL settings are transaction-local.
     """
     factory = get_session_factory()
     async with factory() as session:
-        user_id = current_user_id.get(None)
-        if user_id:
-            # SET does not accept bind parameters. The true flag gives set_config
-            # the same transaction-local scope as SET LOCAL (commit or rollback).
-            await session.execute(
-                text("SELECT set_config('app.current_user_id', :uid, true)"),
-                {"uid": user_id},
-            )
         try:
+            user_id = current_user_id.get(None)
+            if user_id:
+                await set_db_user(session, user_id)
             yield session
             await session.commit()
         except BaseException:
@@ -86,72 +105,23 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
 
 
 def _local_alembic_heads() -> set[str]:
-    """读取本地 alembic 迁移的 head 版本(纯文件解析,不连库)。
+    """Require the shipped migration chain before initializing any database."""
+    from alembic.script import ScriptDirectory
 
-    找不到 alembic 目录时返回空集合,调用方退化为哨兵表检测。
-    """
-    from pathlib import Path
-
-    try:
-        from alembic.script import ScriptDirectory
-
-        alembic_dir = Path(__file__).resolve().parents[3] / "alembic"
-        if not alembic_dir.is_dir():
-            return set()
-        return set(ScriptDirectory(dir=str(alembic_dir)).get_heads())
-    except Exception:
-        return set()
-
-
-async def _schema_initialized(conn) -> bool:
-    """哨兵检测:核心表都在即认为 schema 已完成初始化(legacy 库兜底用)。
-
-    覆盖早期(users)与后期(tenant_memberships / llm_models)迁移的表,
-    单次查询一个网络往返。
-    """
-    result = await conn.execute(
-        text(
-            "SELECT to_regclass('public.users'), to_regclass('public.tenants'),"
-            " to_regclass('public.tenant_memberships'),"
-            " to_regclass('public.llm_models'), to_regclass('public.cron_jobs')"
-        )
-    )
-    return all(row is not None for row in result.one())
+    alembic_dir = Path(__file__).resolve().parents[3] / "alembic"
+    if not alembic_dir.is_dir():
+        raise RuntimeError("缺少 Alembic 迁移目录，拒绝绕过版本管理创建数据库")
+    heads = set(ScriptDirectory(dir=str(alembic_dir)).get_heads())
+    if not heads:
+        raise RuntimeError("Alembic 迁移链没有 head，无法确认数据库目标结构")
+    return heads
 
 
 async def _db_schema_state(conn, heads: set[str]) -> str:
-    """判断数据库 schema 状态: current / behind / legacy / empty。"""
-    result = await conn.execute(text("SELECT to_regclass('public.alembic_version')"))
-    if result.scalar() is not None:
-        rows = (
-            (await conn.execute(text("SELECT version_num FROM alembic_version")))
-            .scalars()
-            .all()
-        )
-        if rows and heads and all(rev in heads for rev in rows):
-            return "current"
-        return "behind" if heads else "current"
-    # 无版本记录:历史上由 create_all bootstrap 出来的库,哨兵表兜底识别
-    if await _schema_initialized(conn):
-        return "legacy"
-    return "empty"
+    """Classify exact revision matches; unversioned tables are never an empty DB."""
+    from aio_agent_platform.db.schema import database_schema_state
 
-
-async def _stamp_alembic_head(conn, heads: set[str]) -> None:
-    """bootstrap 完成后写入 alembic 版本,使后续启动走版本比对快路径。"""
-    await conn.execute(
-        text(
-            "CREATE TABLE IF NOT EXISTS alembic_version ("
-            "version_num VARCHAR(32) NOT NULL,"
-            "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
-        )
-    )
-    await conn.execute(text("DELETE FROM alembic_version"))
-    for rev in heads:
-        await conn.execute(
-            text("INSERT INTO alembic_version (version_num) VALUES (:rev)"),
-            {"rev": rev},
-        )
+    return await conn.run_sync(database_schema_state, heads)
 
 
 def _run_alembic_upgrade() -> None:
@@ -180,8 +150,11 @@ async def _auto_upgrade_schema(engine: AsyncEngine, heads: set[str]) -> None:
         )
         try:
             # Another instance may have completed the migration while this one waited.
-            if await _db_schema_state(lock_conn, heads) == "current":
+            state = await _db_schema_state(lock_conn, heads)
+            if state == "current":
                 return
+            if state == "legacy":
+                raise RuntimeError("数据库包含未标记版本的表，拒绝自动迁移或 stamp head")
             await _guard_legacy_tenant_upgrade(lock_conn)
             # Release preflight read locks before Alembic uses a separate connection.
             # The session-level advisory lock survives this commit.
@@ -199,209 +172,27 @@ async def _auto_upgrade_schema(engine: AsyncEngine, heads: set[str]) -> None:
 
 
 async def init_db() -> None:
-    """Initialize database: create extensions and all tables (dev bootstrap)."""
-    import structlog
-
-    log = structlog.get_logger()
+    """Use the same versioned migrations for new and existing installations."""
     engine = get_engine()
-    # 远程库上 create_all(checkfirst) 每张表一次往返(53 张)+ 60 余条
-    # 幂等手动迁移,共 110+ 次往返,启动多花 10s 级。已初始化的库直接跳过;
-    # 已纳入 Alembic 的旧库在启动时自动升级。全新部署走完整 bootstrap 并盖章版本。
     heads = _local_alembic_heads()
-    if not settings.db.bootstrap_force:
-        async with engine.connect() as conn:
-            state = await _db_schema_state(conn, heads)
-        if state == "current":
-            return
-        if state == "behind":
-            await _auto_upgrade_schema(engine, heads)
-            return
-        if state == "legacy":
-            log.warning(
-                "db_schema_unstamped: 库由旧版 bootstrap 创建,无 alembic 版本记录;"
-                "无法安全推断迁移起点,请先执行 'uv run alembic stamp head'",
-            )
-            return
-
-    async with engine.begin() as conn:
-        # Create extensions
-        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
-        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pg_trgm"'))
-
-        # Import all models to register them with Base
-        from aio_agent_platform.db.models import Base
-
-        # Create all tables (idempotent — skips existing tables)
-        await conn.run_sync(Base.metadata.create_all)
-
-        # Manual migrations for existing tables that need new columns
-        await _run_manual_migrations(conn)
-
-        # bootstrap 出来的库即当前 schema,写入 alembic 头版本
-        if heads:
-            await _stamp_alembic_head(conn, heads)
+    async with engine.connect() as conn:
+        state = await _db_schema_state(conn, heads)
+    if state == "current":
+        return
+    if state == "legacy":
+        raise RuntimeError(
+            "数据库存在未标记版本的表，无法安全推断迁移起点；"
+            "请先备份并审核实际结构，再制定显式迁移方案，禁止直接 stamp head"
+        )
+    # bootstrap_force deliberately cannot bypass revision checks or ownership guards.
+    await _auto_upgrade_schema(engine, heads)
 
 
 async def _guard_legacy_tenant_upgrade(conn) -> None:
-    """Never infer historical ownership from current UI state or a public default."""
-    tables = ("users", "knowledge_bases", "mcp_servers", "agents", "user_profiles", "portrait_versions", "cron_jobs", "cron_job_runs",
-              "memories", "daily_memories", "llm_providers", "llm_models",
-              "channel_configs", "channel_bindings", "channel_bind_codes")
-    for table in tables:
-        columns = (await conn.execute(text(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_schema=current_schema() AND table_name=:table"
-        ), {"table": table})).scalars().all()
-        if not columns:
-            continue
-        condition = " WHERE tenant_id IS NULL" if "tenant_id" in columns else ""
-        # table comes from the constant allowlist above.
-        ambiguous = await conn.scalar(text(f'SELECT EXISTS (SELECT 1 FROM "{table}"{condition})'))
-        if ambiguous:
-            raise RuntimeError(
-                f"{table} 存在无法确定租户的历史记录，已停止自动迁移。"
-                "请先备份并单独审核所属对象，显式处理归属后再迁移；"
-                "禁止按用户当前租户或公共租户自动回填。"
-            )
+    """Use the same ownership preflight as manual Alembic execution."""
+    from aio_agent_platform.db.schema import require_known_tenant_ownership
 
-
-async def _run_manual_migrations(conn) -> None:
-    """Idempotent column additions for existing tables."""
-    # DDL 需要 ACCESS EXCLUSIVE 锁，若被其他长事务/残留连接阻塞会无限等锁。
-    # 限定锁等待 10s，超时即放弃让启动继续（迁移幂等，下次启动可重试）。
-    await conn.execute(text("SET LOCAL lock_timeout = '10s'"))
-    await _guard_legacy_tenant_upgrade(conn)
-    migrations = [
-        # Keep legacy/bootstrap databases aligned with the scoped-memory migration.
-        "ALTER TABLE memories ADD COLUMN IF NOT EXISTS agent_id UUID",
-        "ALTER TABLE daily_memories ADD COLUMN IF NOT EXISTS agent_id UUID",
-        "CREATE INDEX IF NOT EXISTS idx_memories_user_agent_layer ON memories (user_id, agent_id, layer)",
-        "ALTER TABLE daily_memories DROP CONSTRAINT IF EXISTS uq_daily_memories_user_date",
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_memories_shared_date ON daily_memories (user_id, date) WHERE agent_id IS NULL",
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_memories_agent_date ON daily_memories (user_id, agent_id, date) WHERE agent_id IS NOT NULL",
-
-        # Tenant isolation. Existing installations are moved into one default tenant
-        # so their current sharing behaviour is preserved after upgrading.
-        """CREATE TABLE IF NOT EXISTS tenants (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            name VARCHAR(128) NOT NULL,
-            slug VARCHAR(64) NOT NULL UNIQUE,
-            is_active BOOLEAN NOT NULL DEFAULT true,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )""",
-        """INSERT INTO tenants (id, name, slug, is_active, created_at, updated_at)
-           VALUES (
-               '00000000-0000-0000-0000-000000000001',
-               '默认租户',
-               'default',
-               true,
-               now(),
-               now()
-           )
-           ON CONFLICT (slug) DO NOTHING""",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        "ALTER TABLE users ALTER COLUMN tenant_id SET NOT NULL",
-        "CREATE INDEX IF NOT EXISTS idx_users_tenant ON users (tenant_id)",
-        """CREATE TABLE IF NOT EXISTS tenant_memberships (
-            tenant_id UUID NOT NULL,
-            user_id UUID NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            PRIMARY KEY (tenant_id, user_id)
-        )""",
-        """INSERT INTO tenant_memberships (tenant_id, user_id)
-           SELECT tenant_id, id FROM users
-           ON CONFLICT (tenant_id, user_id) DO NOTHING""",
-        """CREATE INDEX IF NOT EXISTS idx_tenant_memberships_user
-           ON tenant_memberships (user_id)""",
-        """UPDATE users SET role = 'superadmin'
-           WHERE id = (
-               SELECT id FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1
-           )
-           AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'superadmin')""",
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        "ALTER TABLE agents ALTER COLUMN tenant_id SET NOT NULL",
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'tenant'",
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS mcp_all_tools_server_ids JSONB NOT NULL DEFAULT '[]'::jsonb",
-        "CREATE INDEX IF NOT EXISTS idx_agents_tenant_visibility ON agents (tenant_id, visibility)",
-        "CREATE INDEX IF NOT EXISTS idx_agents_creator ON agents (created_by)",
-        "ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        "ALTER TABLE knowledge_bases ALTER COLUMN tenant_id SET NOT NULL",
-        "ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        "ALTER TABLE mcp_servers ALTER COLUMN tenant_id SET NOT NULL",
-        "CREATE INDEX IF NOT EXISTS idx_mcp_servers_tenant ON mcp_servers (tenant_id)",
-        "ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS created_by UUID",
-        """UPDATE knowledge_bases SET created_by = (
-               SELECT id FROM users ORDER BY created_at LIMIT 1
-           ) WHERE created_by IS NULL""",
-        "ALTER TABLE knowledge_bases ALTER COLUMN created_by SET NOT NULL",
-        "ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'tenant'",
-        """CREATE INDEX IF NOT EXISTS idx_knowledge_bases_tenant_visibility
-           ON knowledge_bases (tenant_id, visibility)""",
-        "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS personal_portrait TEXT",
-        # Portrait version history table
-        """CREATE TABLE IF NOT EXISTS portrait_versions (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            user_id UUID NOT NULL,
-            content TEXT,
-            source VARCHAR(16) NOT NULL DEFAULT 'manual',
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_portrait_versions_user ON portrait_versions (user_id, created_at)",
-        # Portrait tenant isolation
-        "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        "ALTER TABLE user_profiles ALTER COLUMN tenant_id SET NOT NULL",
-        "CREATE INDEX IF NOT EXISTS idx_user_profiles_tenant ON user_profiles (tenant_id)",
-        "ALTER TABLE portrait_versions ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        "ALTER TABLE portrait_versions ALTER COLUMN tenant_id SET NOT NULL",
-        "CREATE INDEX IF NOT EXISTS idx_portrait_versions_tenant ON portrait_versions (tenant_id)",
-        # UserProfile: composite primary key (user_id, tenant_id) for multi-tenant profiles
-        """DO $$
-        BEGIN
-            IF EXISTS (
-                SELECT 1 FROM pg_constraint
-                WHERE conname = 'user_profiles_pkey'
-                  AND conrelid = 'user_profiles'::regclass
-                  AND pg_get_constraintdef(oid) LIKE 'PRIMARY KEY (user_id)%'
-                  AND pg_get_constraintdef(oid) NOT LIKE '%tenant_id%'
-            ) THEN
-                ALTER TABLE user_profiles DROP CONSTRAINT user_profiles_pkey;
-                ALTER TABLE user_profiles ADD PRIMARY KEY (user_id, tenant_id);
-            END IF;
-        END $$""",
-        # CronJob: agent_id and message columns
-        "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS agent_id UUID",
-        "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS message TEXT",
-        "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS model_id UUID",
-        # Cron job tenant isolation
-        "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        "ALTER TABLE cron_jobs ALTER COLUMN tenant_id SET NOT NULL",
-        "CREATE INDEX IF NOT EXISTS idx_cron_jobs_tenant ON cron_jobs (tenant_id)",
-        "ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()",
-        "ALTER TABLE cron_job_runs ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        "ALTER TABLE cron_job_runs ALTER COLUMN tenant_id SET NOT NULL",
-        # Preserve unknown delivery history; do not infer delivery from execution success.
-        "ALTER TABLE cron_job_runs ADD COLUMN IF NOT EXISTS delivery_status VARCHAR(32) NOT NULL DEFAULT 'unknown'",
-        "ALTER TABLE cron_job_runs ADD COLUMN IF NOT EXISTS delivery_reason TEXT",
-        "ALTER TABLE cron_job_runs ADD COLUMN IF NOT EXISTS delivery_error TEXT",
-        # LLM tenant isolation
-        "ALTER TABLE llm_providers ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        "ALTER TABLE llm_providers ALTER COLUMN tenant_id SET NOT NULL",
-        "CREATE INDEX IF NOT EXISTS idx_llm_providers_tenant ON llm_providers (tenant_id)",
-        "ALTER TABLE llm_models ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        "ALTER TABLE llm_models ALTER COLUMN tenant_id SET NOT NULL",
-        """CREATE INDEX IF NOT EXISTS idx_llm_models_tenant_default
-           ON llm_models (tenant_id, is_default) WHERE is_default""",
-        # Memory tenant isolation
-        "ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        "ALTER TABLE memories ALTER COLUMN tenant_id SET NOT NULL",
-        "CREATE INDEX IF NOT EXISTS idx_memories_tenant ON memories (tenant_id)",
-        "ALTER TABLE daily_memories ADD COLUMN IF NOT EXISTS tenant_id UUID",
-        "ALTER TABLE daily_memories ALTER COLUMN tenant_id SET NOT NULL",
-        "CREATE INDEX IF NOT EXISTS idx_daily_memories_tenant ON daily_memories (tenant_id)",
-    ]
-    for sql in migrations:
-        await conn.execute(text(sql))
+    await conn.run_sync(require_known_tenant_ownership)
 
 
 async def close_db() -> None:

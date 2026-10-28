@@ -22,7 +22,7 @@ class DatabaseSettings(BaseSettings):
     )
     bootstrap_force: bool = Field(
         default=False,
-        description="强制在启动时执行完整建表/手动迁移(默认哨兵检测后跳过)",
+        description="启动时重新检查迁移版本，不绕过未标记数据库的结构保护",
     )
 
 

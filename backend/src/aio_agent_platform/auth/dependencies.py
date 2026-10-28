@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aio_agent_platform.auth.jwt_handler import TokenExpiredError, TokenPayload, decode_token
 from aio_agent_platform.db import User
-from aio_agent_platform.db.connection import current_user_id, get_db
+from aio_agent_platform.db.connection import get_db, set_db_user
 
 security = HTTPBearer()
 
@@ -19,7 +19,7 @@ async def get_execution_user(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
-    """Extract user from JWT and set RLS context variable."""
+    """Validate JWT and active user, then bind the request's database identity."""
     try:
         payload: TokenPayload = decode_token(credentials.credentials)
     except TokenExpiredError as e:
@@ -41,9 +41,6 @@ async def get_execution_user(
             detail="Invalid token type",
         )
 
-    # Set RLS context variable
-    current_user_id.set(payload.sub)
-
     # Identity authentication is independent of the mutable UI tenant.
     try:
         user_id = UUID(payload.sub)
@@ -52,6 +49,7 @@ async def get_execution_user(
     user = await db.scalar(select(User).where(User.id == user_id, User.is_active))
     if user is None:
         raise HTTPException(status_code=401, detail="User not found or inactive")
+    await set_db_user(db, user.id)
     return user
 
 
