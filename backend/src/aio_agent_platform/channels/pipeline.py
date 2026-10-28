@@ -421,6 +421,30 @@ class ChannelInboundPipeline:
         # 在跑任务登记：chat_key → 当前处理任务；trigger_message_id → chat_key 反查。
         self._running: dict[str, _RunningTask] = {}
         self._trigger_index: dict[str, str] = {}
+        self._closed = False
+
+    async def shutdown(self) -> None:
+        """Stop accepting work and await in-flight turns before tools close."""
+        self._closed = True
+        # Cancelling a consumer also cancels the inner turn it is awaiting.
+        # Do not cancel that child twice while it persists interrupted output.
+        tasks = {*self._chat_consumers.values(), *self._processing_tasks}
+        for chat_key, consumer in self._chat_consumers.items():
+            running = self._running.get(chat_key)
+            if running is not None and running.task.cancelling():
+                continue
+            if not consumer.cancelling():
+                consumer.cancel()
+        for task in self._processing_tasks:
+            if not task.cancelling():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._chat_consumers.clear()
+        self._chat_queues.clear()
+        self._processing_tasks.clear()
+        self._running.clear()
+        self._trigger_index.clear()
 
     def _chat_key(self, event: InboundEvent) -> str:
         return f"{self.channel.id}:{event.chat_id}:{event.external_id}"
@@ -439,6 +463,8 @@ class ChannelInboundPipeline:
         路由：去重后，撤回事件与 /stop 直接处理（需即时取消，不能排在队列里）；
         普通消息进入 chat 级队列串行消费。
         """
+        if self._closed:
+            return
         if _dedup(event.event_id):
             logger.info("pipeline_duplicate_event", event_id=event.event_id)
             return
@@ -469,7 +495,7 @@ class ChannelInboundPipeline:
     ) -> None:
         """Drain one chat's queue serially; each event runs in a child task so
         /stop can cancel the in-flight turn without killing the consumer."""
-        while True:
+        while not self._closed:
             try:
                 event = await asyncio.wait_for(
                     queue.get(), timeout=_CHAT_QUEUE_IDLE_SECONDS
@@ -1100,6 +1126,8 @@ class ChannelInboundPipeline:
         )
         if not prior_msg_count and (agent.enable_auto_title if agent else True):
             title_task = asyncio.create_task(generate_session_title(event.text, self.channel.tenant_id))
+            background_tasks.add(title_task)
+            title_task.add_done_callback(background_tasks.discard)
 
         # Persist the user message up front so it survives agent failures.
         db.add(Message(

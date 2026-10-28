@@ -40,6 +40,11 @@ context before create_task preserves the time even if execution crosses a minute
         finally:
             scheduled_run_time.reset(token)
 
+    def pending_tasks(self) -> tuple:
+        """Snapshot jobs before APScheduler clears its set during shutdown."""
+        # AsyncIOExecutor creates the set in start(), after scheduler DB loading.
+        return tuple(getattr(self, "_pending_futures", ()))
+
 
 class OccurrenceClaims:
     def __init__(self):

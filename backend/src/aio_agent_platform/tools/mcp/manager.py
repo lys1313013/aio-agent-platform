@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import AsyncExitStack
 from uuid import UUID
 
 import structlog
@@ -52,7 +53,13 @@ class MCPManager:
             await self.remove_server(server_id)
 
         conn = MCPServerConnection(server_id, config)
-        await conn.connect()
+        try:
+            await conn.connect()
+        except BaseException:
+            # connect() can be cancelled after opening a transport but before
+            # the connection is published in this manager's registry.
+            await conn.disconnect()
+            raise
 
         self._connections[server_id] = conn
         self._retry_after.pop(server_id, None)
@@ -212,8 +219,9 @@ class MCPManager:
     async def shutdown(self) -> None:
         """Close all MCP Server connections."""
         server_ids = list(self._connections.keys())
-        for server_id in server_ids:
-            await self.remove_server(server_id)
+        async with AsyncExitStack() as cleanup:
+            for server_id in reversed(server_ids):
+                cleanup.push_async_callback(self.remove_server, server_id)
         logger.info("mcp_manager_shutdown", servers_closed=len(server_ids))
 
     def get_status(self) -> dict[str, dict]:

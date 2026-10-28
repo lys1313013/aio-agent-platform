@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from uuid import UUID
@@ -38,7 +39,7 @@ CRON_TIMEZONE = ZoneInfo("Asia/Shanghai")
 _global_scheduler: Scheduler | None = None
 
 
-def set_global_scheduler(scheduler: Scheduler) -> None:
+def set_global_scheduler(scheduler: Scheduler | None) -> None:
     global _global_scheduler
     _global_scheduler = scheduler
 
@@ -55,9 +56,10 @@ class Scheduler:
         session_factory: async_sessionmaker[AsyncSession],
         executor: JobExecutor | None = None,
     ):
+        self._occurrence_executor = OccurrenceExecutor()
         self._scheduler = AsyncIOScheduler(
             timezone=CRON_TIMEZONE,
-            executors={"default": OccurrenceExecutor()},
+            executors={"default": self._occurrence_executor},
             job_defaults={"coalesce": True, "misfire_grace_time": MISFIRE_GRACE_SECONDS},
         )
         self._claims = OccurrenceClaims()
@@ -79,8 +81,24 @@ class Scheduler:
         logger.info("scheduler_started", job_count=len(jobs))
 
     async def shutdown(self) -> None:
-        self._scheduler.shutdown(wait=False)
-        await self._claims.close()
+        tasks = self._occurrence_executor.pending_tasks()
+        try:
+            if self._scheduler.running:
+                self._scheduler.shutdown(wait=False)
+                # AsyncIOScheduler schedules its shutdown on the event loop.
+                # Let it cancel jobs before waiting for their finally blocks.
+                await asyncio.sleep(0)
+        except BaseException:
+            for task in tasks:
+                if not task.done() and not task.cancelling():
+                    task.cancel()
+            raise
+        finally:
+            try:
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                await self._claims.close()
         logger.info("scheduler_shutdown")
 
     def add_system_job(

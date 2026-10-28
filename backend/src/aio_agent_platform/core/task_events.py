@@ -54,6 +54,14 @@ class TaskEventBroker:
             return
         self._listen_task = asyncio.create_task(self._listen_loop())
 
+    async def shutdown(self) -> None:
+        """Wait for the listener to release its Redis connection before exit."""
+        task, self._listen_task = self._listen_task, None
+        self._subscribers.clear()
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def _listen_loop(self) -> None:
         client = aioredis.Redis.from_url(settings.redis.url, decode_responses=True)
         try:

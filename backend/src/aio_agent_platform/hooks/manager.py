@@ -106,14 +106,19 @@ class HookManager:
     async def shutdown(self) -> None:
         """取消刷新与 worker，刷掉积压日志。"""
         self._started = False
-        if self._refresh_task:
-            self._refresh_task.cancel()
-        for w in self._workers:
-            w.cancel()
+        tasks = [task for task in (
+            self._refresh_task, self._load_task, self._log_task, *self._workers,
+        ) if task is not None]
+        for task in tasks:
+            task.cancel()
         self._workers = []
-        await self._flush_log_queue()
-        if self._log_task:
-            self._log_task.cancel()
+        self._refresh_task = self._load_task = self._log_task = None
+        try:
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await self._flush_log_queue()
+        finally:
+            self._sandbox_mgr = None
 
     async def _refresh_loop(self) -> None:
         while True:

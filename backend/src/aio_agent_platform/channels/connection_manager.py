@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
 from typing import Any
 from uuid import UUID
 
@@ -63,8 +64,9 @@ class ChannelConnectionManager:
 
     async def stop_all(self) -> None:
         """Stop all active channels."""
-        for channel_id in list(self._adapters.keys()):
-            await self.stop_channel(channel_id)
+        async with AsyncExitStack() as cleanup:
+            for channel_id in reversed(list(self._adapters)):
+                cleanup.push_async_callback(self.stop_channel, channel_id)
 
     async def start_channel(self, channel: ChannelConfig) -> None:
         """Start a single channel."""
@@ -79,10 +81,20 @@ class ChannelConnectionManager:
         if adapter is None:
             return
         try:
-            await adapter.stop()
+            # Stop accepting/drain execution before the adapter closes the
+            # transport/client used by an interrupted turn's final response.
+            pipeline = getattr(adapter, "pipeline", None)
+            if pipeline is not None:
+                await pipeline.shutdown()
         except Exception:
-            logger.exception("channel_stop_failed", channel_id=str(channel_id))
-        self._channel_configs.pop(channel_id, None)
+            logger.exception("channel_pipeline_stop_failed", channel_id=str(channel_id))
+        finally:
+            try:
+                await adapter.stop()
+            except Exception:
+                logger.exception("channel_stop_failed", channel_id=str(channel_id))
+            finally:
+                self._channel_configs.pop(channel_id, None)
         logger.info("channel_stopped", channel_id=str(channel_id))
 
     async def _start_channel(self, channel: ChannelConfig) -> None:
@@ -100,11 +112,15 @@ class ChannelConnectionManager:
 
         adapter = spec.build(channel, self.tool_executor)
 
-        # Start the transport
-        await adapter.start()
-
+        # Own the adapter before start: it may allocate a client or background
+        # task and then fail or be cancelled.
         self._adapters[channel.id] = adapter
         self._channel_configs[channel.id] = channel
+        try:
+            await adapter.start()
+        except BaseException:
+            await self.stop_channel(channel.id)
+            raise
         logger.info("channel_started", channel_id=str(channel.id), mode=channel.mode)
 
     def get_adapter(self, channel_id: UUID) -> ChannelAdapter | None:

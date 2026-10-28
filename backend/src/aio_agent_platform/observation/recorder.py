@@ -88,14 +88,16 @@ class Recorder:
             await self._write_batch(batch)
 
     async def shutdown(self) -> None:
-        await self.flush()
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        try:
+            await self.flush()
+        finally:
+            task, self._task = self._task, None
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
     # ---- enqueue (non-blocking) ----
 
