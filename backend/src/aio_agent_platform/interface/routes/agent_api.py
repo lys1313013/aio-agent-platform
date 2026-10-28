@@ -20,12 +20,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.auth.dependencies import AdminUser, CurrentUser, ExecutionUser
 from aio_agent_platform.core.agent import AgentLoop, AgentStep
+from aio_agent_platform.core.chat import ModelUnavailableError, build_agent_loop, build_tools_schema
 from aio_agent_platform.core.chat_history import ChatTurnRecorder
-from aio_agent_platform.core.config import settings
 from aio_agent_platform.core.context import (
     emergency_compress,
     is_context_overflow_error,
@@ -34,14 +33,14 @@ from aio_agent_platform.core.context import (
 )
 from aio_agent_platform.core.execution_scope import bind_execution_scope
 from aio_agent_platform.core.prompt import build_system_prompt
+from aio_agent_platform.core.runtime_config import AgentRuntimeConfig
 from aio_agent_platform.db import Message, Session
 from aio_agent_platform.db.connection import get_db
-from aio_agent_platform.db.models import Agent, AgentVersion, LLMModel, User
-from aio_agent_platform.llm import LLMMessage, create_provider
+from aio_agent_platform.db.models import Agent, AgentVersion, User
+from aio_agent_platform.llm import LLMMessage
 from aio_agent_platform.memory.service import MemoryService
 from aio_agent_platform.skills.service import SkillService
 from aio_agent_platform.tools.executor import ToolExecutor
-from aio_agent_platform.tools.mcp.selection import is_mcp_tool_allowed
 
 logger = structlog.get_logger()
 
@@ -140,60 +139,20 @@ async def _build_agent_loop_for_version(
     workspace_slug: str | None = None,
     allowed_tools: set[str] | None = None,
 ) -> AgentLoop:
-    """Create an AgentLoop using the version's config snapshot."""
-    model_to_use = None
-    agent_model_id = config_snapshot.get("model_id")
-
-    if agent_model_id:
-        try:
-            model_uuid = UUID(agent_model_id) if isinstance(agent_model_id, str) else agent_model_id
-            result = await db.execute(
-                select(LLMModel)
-                .options(selectinload(LLMModel.provider))
-                .where(LLMModel.id == model_uuid, LLMModel.is_active, LLMModel.tenant_id == tenant_id)
-            )
-            model_to_use = result.scalar_one_or_none()
-        except (ValueError, AttributeError):
-            pass
-
-    if not model_to_use:
-        result = await db.execute(
-            select(LLMModel)
-            .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == tenant_id)
-            .limit(1)
+    """Use published settings with the same model/provider policy as live chat."""
+    try:
+        return await build_agent_loop(
+            tool_executor=tool_executor,
+            system_prompt=system_prompt,
+            db=db,
+            tenant_id=tenant_id,
+            runtime_config=AgentRuntimeConfig.from_snapshot(config_snapshot),
+            workspace_id=workspace_id,
+            workspace_slug=workspace_slug,
+            allowed_tools=allowed_tools,
         )
-        model_to_use = result.scalar_one_or_none()
-
-    if not model_to_use or not model_to_use.provider:
-        raise HTTPException(
-            status_code=400,
-            detail="没有可用的模型，请在管理后台配置模型",
-        )
-
-    temperature = config_snapshot.get("temperature")
-    if temperature is None:
-        temperature = settings.llm.temperature
-
-    provider = create_provider(
-        provider=model_to_use.provider.provider_type,
-        model=model_to_use.model_name,
-        base_url=model_to_use.provider.base_url,
-        api_key=model_to_use.provider.api_key_encrypted,
-        temperature=temperature,
-    )
-
-    return AgentLoop(
-        execution_tenant_id=tenant_id,
-        provider=provider,
-        tool_executor=tool_executor,
-        system_prompt=system_prompt,
-        max_iterations=config_snapshot.get("max_iterations") if config_snapshot.get("max_iterations") is not None else settings.agent.max_iterations,
-        trust_level=settings.agent.trust_level,
-        workspace_id=workspace_id,
-        workspace_slug=workspace_slug,
-        allowed_tools=allowed_tools,
-    )
+    except ModelUnavailableError as error:
+        raise HTTPException(status_code=400, detail="没有可用的模型，请在管理后台配置模型") from error
 
 
 def _filter_tools_for_agent(tool_executor: ToolExecutor, config_snapshot: dict) -> tuple[list, list]:
@@ -211,50 +170,21 @@ def _filter_tools_for_agent(tool_executor: ToolExecutor, config_snapshot: dict) 
         # Preview runs have no browser frontend — never offer ui_* tools.
         filtered = [t for t in all_tools if t.execution_location != "frontend"]
 
-    # Build OpenAI schema
-    tools_schema = []
-    for t in filtered:
-        tools_schema.append({
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters,
-            },
-        })
-
-    # Add MCP tools
-    mcp_manager = tool_executor.mcp_manager
-    if mcp_manager:
-        mcp_server_ids = config_snapshot.get("mcp_server_ids", [])
-        allowed_server_ids = {str(sid) for sid in mcp_server_ids}
-        enabled_set = set(enabled_tools) if enabled_tools else None
-        all_tools_server_ids = {
-            str(sid)
-            for sid in config_snapshot.get("mcp_all_tools_server_ids", [])
-        }
-
-        for full_name, tool_info in mcp_manager.list_all_tools():
-            server_id = mcp_manager._tool_to_server.get(full_name)
-            if not is_mcp_tool_allowed(
-                server_id=server_id,
-                full_name=full_name,
-                allowed_server_ids=allowed_server_ids,
-                enabled_tools=enabled_set,
-                all_tools_server_ids=all_tools_server_ids,
-            ):
-                continue
-            tools_schema.append(tool_info.to_openai_tool(
-                prefix=full_name[:len(full_name) - len(tool_info.name)]
-            ))
-
-    return filtered, tools_schema
+    return filtered, build_tools_schema(
+        tool_executor,
+        filtered,
+        mcp_server_ids={str(sid) for sid in config_snapshot.get("mcp_server_ids", [])},
+        enabled_tools=set(enabled_tools) if enabled_tools else None,
+        mcp_all_tools_server_ids={
+            str(sid) for sid in config_snapshot.get("mcp_all_tools_server_ids", [])
+        },
+    )
 
 
 def _build_config_snapshot(agent: Agent) -> dict:
     """Build a config snapshot from the current agent state."""
     return {
-        "model_id": str(agent.model_id) if agent.model_id else None,
+        **AgentRuntimeConfig.from_agent(agent).to_snapshot(),
         "system_prompt": agent.system_prompt,
         "enabled_tools": agent.enabled_tools or [],
         "mcp_server_ids": [str(sid) for sid in (agent.mcp_server_ids or [])],
@@ -264,11 +194,9 @@ def _build_config_snapshot(agent: Agent) -> dict:
         "skill_ids": [str(s.id) for s in agent.skills] if agent.skills else [],
         "knowledge_base_ids": [str(kb.id) for kb in agent.knowledge_bases] if agent.knowledge_bases else [],
         "child_ids": [str(c.id) for c in agent.children] if agent.children else [],
-        "temperature": agent.temperature,
         "welcome_message": agent.welcome_message,
         "enable_memory_extraction": agent.enable_memory_extraction,
         "enable_auto_title": agent.enable_auto_title if agent.enable_auto_title is not None else True,
-        "max_iterations": agent.max_iterations,
     }
 
 
@@ -531,7 +459,7 @@ async def _execute_agent_inner(
         relevant_memories=memory_data.get("l2_memories", []) + memory_data.get("l3_memories", []),
         daily_memories=memory_data.get("daily_memories", []),
         relevant_skills=await SkillService.get_skills_for_prompt(db, user.id, req.user_input, bound_skills=agent.skills),
-        agent_prompt=config_snapshot.get("system_prompt") or agent.system_prompt,
+        agent_prompt=config_snapshot.get("system_prompt", agent.system_prompt),
         child_agents=agent.children if agent.children else None,
         user_portrait=user_portrait,
     )
@@ -761,7 +689,7 @@ async def sse_chat(
                 relevant_memories=memory_data.get("l2_memories", []) + memory_data.get("l3_memories", []),
                 daily_memories=memory_data.get("daily_memories", []),
                 relevant_skills=await SkillService.get_skills_for_prompt(db_session, user.id, req.message, bound_skills=agent.skills),
-                agent_prompt=config_snapshot.get("system_prompt") or agent.system_prompt,
+                agent_prompt=config_snapshot.get("system_prompt", agent.system_prompt),
                 child_agents=agent.children if agent.children else None,
                 user_portrait=user_portrait,
             )

@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from datetime import UTC
 from uuid import UUID, uuid4
@@ -14,6 +14,15 @@ from uuid import UUID, uuid4
 import structlog
 from sqlalchemy import select
 
+from aio_agent_platform.core.agent_events import (
+    AgentEvent,
+    ControlEvent,
+    FileChangesEvent,
+    TextEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    encode_agent_event,
+)
 from aio_agent_platform.core.confirmation import confirmation_manager
 from aio_agent_platform.core.context import (
     ContextBudget,
@@ -295,8 +304,9 @@ class AgentLoop:
                 except StopAsyncIteration:
                     break
                 # Demand-driven: no provider/tool work advances until the
-                # consumer asks for another event.
-                yield event
+                # consumer asks for another event. Encode only at this public
+                # boundary; internal orchestration uses typed events.
+                yield encode_agent_event(event) if isinstance(event, AgentEvent) else event
         finally:
             worker.cancel()
             with suppress(asyncio.CancelledError):
@@ -309,7 +319,7 @@ class AgentLoop:
         session_id: UUID,
         conversation_history: list[LLMMessage],
         tools: list[dict],
-    ) -> AsyncIterator[AgentStep | str]:
+    ) -> AsyncIterator[AgentStep | AgentEvent]:
         tenant_id = self.execution_tenant_id or execution_tenant_id(user_id)
         if tenant_id is None:
             raise ValueError("AgentLoop requires an explicit execution tenant")
@@ -334,12 +344,12 @@ class AgentLoop:
         session_id: UUID,
         conversation_history: list[LLMMessage],
         tools: list[dict],
-    ) -> AsyncIterator[AgentStep | str]:
+    ) -> AsyncIterator[AgentStep | AgentEvent]:
         """
         Run the agent loop.
 
         Yields:
-            str: Streaming events like "thinking:..." or "tool_call:..." or "tool_result:..."
+            AgentEvent: Typed text, reasoning, tool and interaction events.
             AgentStep: Final step when done=True
         """
         ctx = ToolContext(
@@ -460,126 +470,13 @@ class AgentLoop:
                         },
                     )
 
-            # Pending tool calls being accumulated from stream deltas
-            pending_tool_calls: dict[int, dict] = {}  # index -> {id, name, args_str}
-
-            # Keep text for the completed step/context, but forward each final-text
-            # delta immediately so the HTTP SSE endpoint remains genuinely streaming.
-            text_chunks: list[str] = []
-            provider_reasoning_chunks: list[str] = []
-            provider_reasoning_emitted = False
-
-            # Usage reported by the provider's final stream event
-            step_usage: dict | None = None
-
-            # Call LLM (streaming), with mid-stream disconnect retry.
-            # Retry only when this iteration produced nothing yet — replaying
-            # a partially-streamed iteration would duplicate content on the client.
-            logger.debug(
-                "agent_loop_llm_call",
-                session_id=str(session_id),
-                iteration=step_num,
-            )
-            for stream_attempt in range(1, _STREAM_RETRY_MAX + 2):  # 1, 2, 3
-                try:
-                    # Refresh after tools, user confirmations, and retries without
-                    # accumulating stale clocks in history. The platform clock
-                    # is system context; Anthropic collects it at the end of
-                    # its system prompt instead of the conversation tail.
-                    request_messages = [
-                        *messages,
-                        LLMMessage(role="system", content=build_current_time_context()),
-                    ]
-                    async for chunk in self.provider.stream(request_messages, tools=tools):
-                        if chunk.type == "text_delta" and chunk.content:
-                            if provider_reasoning_chunks and not provider_reasoning_emitted:
-                                yield f"reasoning:{''.join(provider_reasoning_chunks)}"
-                                provider_reasoning_emitted = True
-                            step.thinking += chunk.content
-                            text_chunks.append(chunk.content)
-                            yield f"text_delta:{chunk.content}"
-
-                        elif chunk.type == "reasoning_delta" and chunk.content:
-                            provider_reasoning_chunks.append(chunk.content)
-                            # Live deltas are separate from the complete reasoning
-                            # event used to persist one block per ReAct step.
-                            yield f"reasoning_delta:{chunk.content}"
-
-                        elif chunk.type == "tool_call_start" and chunk.tool_call:
-                            if provider_reasoning_chunks and not provider_reasoning_emitted:
-                                yield f"reasoning:{''.join(provider_reasoning_chunks)}"
-                                provider_reasoning_emitted = True
-                            # New tool call starting
-                            tc = chunk.tool_call
-                            idx = chunk.tool_call_index
-                            if idx is None:
-                                idx = max(pending_tool_calls, default=-1) + 1
-                            pending = pending_tool_calls.setdefault(idx, {
-                                "id": "", "name": "", "args_str": "",
-                            })
-                            pending["id"] = tc.id or pending["id"]
-                            pending["name"] += tc.name
-                            pending["args_str"] += chunk.argument_delta or ""
-
-                        elif chunk.type == "tool_call_delta" and chunk.argument_delta:
-                            # Native providers carry an index; legacy sequential
-                            # adapters may omit it, retaining their last-call behavior.
-                            idx = chunk.tool_call_index
-                            if idx is None and pending_tool_calls:
-                                idx = next(reversed(pending_tool_calls))
-                            if idx not in pending_tool_calls:
-                                raise ValueError("Tool argument delta has no matching tool call")
-                            pending_tool_calls[idx]["args_str"] += chunk.argument_delta
-
-                        elif chunk.type == "done" and chunk.usage:
-                            step_usage = chunk.usage
-                    break  # stream completed normally
-                except LLMStreamError:
-                    produced = (
-                        bool(text_chunks)
-                        or bool(provider_reasoning_chunks)
-                        or bool(pending_tool_calls)
-                    )
-                    if produced or stream_attempt > _STREAM_RETRY_MAX:
-                        raise
-                    delay = _STREAM_RETRY_BASE_DELAY * stream_attempt
-                    logger.warning(
-                        "agent_loop_stream_retry",
-                        session_id=str(session_id),
-                        iteration=step_num,
-                        attempt=stream_attempt,
-                        delay=delay,
-                    )
-                    await asyncio.sleep(delay)
-                    # Discard partial state and reopen a fresh stream
-                    step.thinking = ""
-                    text_chunks = []
-                    provider_reasoning_chunks = []
-                    provider_reasoning_emitted = False
-                    pending_tool_calls = {}
-                    step_usage = None
-
-            if step_usage:
-                record_llm_usage(user_id, self.provider.model, step_usage)
-                total_tokens += step_usage.get("total_tokens", 0) or 0
-
-            # Finalize tool calls from accumulated deltas
-            for _idx, tc_data in pending_tool_calls.items():
-                try:
-                    args = json.loads(tc_data["args_str"]) if tc_data["args_str"] else {}
-                except json.JSONDecodeError as error:
-                    raise ValueError(
-                        f"Invalid JSON arguments for tool '{tc_data['name']}' "
-                        f"(call {tc_data['id']}); no tools in this batch were executed"
-                    ) from error
-                if not isinstance(args, dict):
-                    raise ValueError(
-                        f"Arguments for tool '{tc_data['name']}' must be a JSON object; "
-                        "no tools in this batch were executed"
-                    )
-                step.tool_calls.append(
-                    ToolCall(id=tc_data["id"], name=tc_data["name"], arguments=args)
-                )
+            step_usage: dict = {}
+            async with aclosing(self._stream_model_step(
+                step, messages, tools, user_id, session_id, step_usage,
+            )) as stream:
+                async for event in stream:
+                    yield event
+            total_tokens += step_usage.get("total_tokens", 0) or 0
 
             tool_call_count += len(step.tool_calls)
 
@@ -591,8 +488,6 @@ class AgentLoop:
                     iteration=step_num,
                     text_length=len(step.thinking),
                 )
-                if provider_reasoning_chunks and not provider_reasoning_emitted:
-                    yield f"reasoning:{''.join(provider_reasoning_chunks)}"
                 step.final_output = step.thinking
                 self._finalize_trace(
                     trace_id, t_start, session_id, user_id, tenant_id,
@@ -615,11 +510,9 @@ class AgentLoop:
                 tools=[tc.name for tc in step.tool_calls],
                 thinking_length=len(step.thinking),
             )
-            if provider_reasoning_chunks and not provider_reasoning_emitted:
-                yield f"reasoning:{''.join(provider_reasoning_chunks)}"
 
             for tc in step.tool_calls:
-                yield f"tool_call:{tc.id}:{tc.name}:{json.dumps(tc.arguments, ensure_ascii=False)}"
+                yield ToolCallEvent(tc.id, tc.name, tc.arguments)
 
             # Append assistant message with tool calls (required by both OpenAI and Anthropic)
             messages.append(
@@ -630,238 +523,9 @@ class AgentLoop:
                 )
             )
 
-            # Execute tools: delegation calls run concurrently with regular
-            # calls, but results are yielded in the ORIGINAL LLM order so
-            # the frontend renders cards in the correct sequence.
-            cached = completed_calls.get() or {}
-            executable_calls = []
-            for tc in step.tool_calls:
-                previous = cached.get(call_key(tc.name, tc.arguments))
-                if (previous and tc.name != "view_image"
-                        and (self.allowed_tools is None or tc.name in self.allowed_tools)):
-                    # Continue from a recorded result, never re-submit the same
-                    # completed external operation just because the worker restarted.
-                    # view_image must reload its ephemeral pixels; history only has metadata.
-                    output = str(previous.get("preview", ""))
-                    step.tool_results.append(ToolResult(
-                        tool_call_id=tc.id, name=tc.name, arguments=tc.arguments,
-                        output=output, success=True,
-                    ))
-                    yield f"tool_result:{tc.id}:{tc.name}:ok:{json.dumps(output, ensure_ascii=False)}"
-                else:
-                    executable_calls.append(tc)
-            delegation_calls = [tc for tc in executable_calls if tc.name == "delegate_task"]
-            regular_calls = [tc for tc in executable_calls if tc.name != "delegate_task"]
-
-            # --- Start delegation tasks concurrently (background) ---
-            # These run while regular tools execute, so by the time we need
-            # delegation results they're usually already done.
-            delegation_futures: dict[str, asyncio.Task] = {}  # tc.id -> Task
-            for tc in delegation_calls:
-                delegation_futures[tc.id] = track_task(
-                    self.tool_executor.execute(
-                        tool_name=tc.name,
-                        arguments=tc.arguments,
-                        tool_call_id=tc.id,
-                        user_id=str(ctx.user_id),
-                        session_id=str(ctx.session_id),
-                        delegation=ctx.delegation,
-                        event_queue=self.event_queue,
-                        workspace_id=str(ctx.workspace_id) if ctx.workspace_id else None,
-                        workspace_slug=ctx.workspace_slug,
-                        allowed_tools=self.allowed_tools,
-                    )
-                )
-
-            if delegation_calls:
-                logger.info(
-                    "agent_loop_delegation_start",
-                    session_id=str(session_id),
-                    iteration=step_num,
-                    delegation_count=len(delegation_calls),
-                )
-
-            # --- Execute regular tools sequentially ---
-            for tc in regular_calls:
-                # ============================================================
-                # Tool permission check (enforces allowed_tools whitelist)
-                # ============================================================
-                if self.allowed_tools is not None and tc.name not in self.allowed_tools:
-                    logger.warning(
-                        "tool_permission_denied",
-                        tool_name=tc.name,
-                        allowed_tools=sorted(self.allowed_tools),
-                    )
-                    get_hook_manager().fire_nowait(
-                        "Notification",
-                        user_id=str(ctx.user_id),
-                        session_id=str(ctx.session_id),
-                        workspace_id=str(ctx.workspace_id) if ctx.workspace_id else None,
-                        workspace_slug=ctx.workspace_slug,
-                        data={
-                            "level": "permission",
-                            "category": "permission_denied",
-                            "message": (
-                                f"Permission denied: tool '{tc.name}' is not available "
-                                "to this agent."
-                            ),
-                        },
-                    )
-                    result = ToolResult(
-                        tool_call_id=tc.id,
-                        name=tc.name,
-                        arguments=tc.arguments,
-                        output="",
-                        success=False,
-                        error=f"Permission denied: tool '{tc.name}' is not available to this agent.",
-                    )
-                    step.tool_results.append(result)
-                    yield f"tool_result:{tc.id}:{tc.name}:err:{json.dumps(result.error, ensure_ascii=False)}"
-                    continue
-
-                # ============================================================
-                # AskUserQuestion: 特殊处理，避免死锁
-                # ============================================================
-                if tc.name == "AskUserQuestion":
-                    ask_t_start = time.monotonic()
-                    async for evt in self._run_ask_user_flow(tc, ctx):
-                        yield evt
-
-                    ask_output = self._last_ask_user_output or ""
-                    result = ToolResult(
-                        tool_call_id=tc.id,
-                        name=tc.name,
-                        arguments=tc.arguments,
-                        output=ask_output,
-                        success=True,
-                        duration_ms=(time.monotonic() - ask_t_start) * 1000,
-                    )
-                    step.tool_results.append(result)
-                    get_recorder().record_tool_call(
-                        tool_name="AskUserQuestion",
-                        exec_type="direct",
-                        duration_ms=result.duration_ms,
-                        is_error=ask_output.startswith("Error:"),
-                        user_id=str(ctx.user_id),
-                        session_id=str(ctx.session_id),
-                    )
-
-                    output_preview = ask_output[:500]
-                    yield f"tool_result:{tc.id}:{tc.name}:ok:{json.dumps(output_preview, ensure_ascii=False)}"
-                    continue
-
-                # ============================================================
-                # Frontend UI tools (ui_*): 拦截下发浏览器执行，避免死锁
-                # （与 AskUserQuestion 同理，不能进 tool_executor 阻塞）
-                # ============================================================
-                tool_def = self.tool_executor.registry.get(tc.name)
-                if tool_def is not None and tool_def.execution_location == "frontend":
-                    ui_t_start = time.monotonic()
-                    async for evt in self._run_ui_action_flow(tc, ctx):
-                        yield evt
-
-                    ui_output = self._last_ui_action_output or ""
-                    ui_ok = not ui_output.startswith("Error")
-                    result = ToolResult(
-                        tool_call_id=tc.id,
-                        name=tc.name,
-                        arguments=tc.arguments,
-                        output=ui_output if ui_ok else "",
-                        success=ui_ok,
-                        error=None if ui_ok else ui_output,
-                        duration_ms=(time.monotonic() - ui_t_start) * 1000,
-                    )
-                    step.tool_results.append(result)
-                    get_recorder().record_tool_call(
-                        tool_name=tc.name,
-                        exec_type="direct",
-                        duration_ms=result.duration_ms,
-                        is_error=not ui_ok,
-                        user_id=str(ctx.user_id),
-                        session_id=str(ctx.session_id),
-                    )
-
-                    output_preview = ui_output[:500]
-                    status = "ok" if ui_ok else "err"
-                    yield f"tool_result:{tc.id}:{tc.name}:{status}:{json.dumps(output_preview, ensure_ascii=False)}"
-                    continue
-
-                logger.debug(
-                    "agent_loop_execute_tool",
-                    session_id=str(session_id),
-                    iteration=step_num,
-                    tool_name=tc.name,
-                    tool_call_id=tc.id,
-                )
-                result = await self._execute_tool_traced(tc, ctx)
-                step.tool_results.append(result)
-
-                status = "ok" if result.success else "err"
-                output_preview = result.output if result.success else (result.error or "")[:50000]
-                logger.debug(
-                    "agent_loop_tool_result",
-                    session_id=str(session_id),
-                    iteration=step_num,
-                    tool_name=tc.name,
-                    tool_call_id=tc.id,
-                    status=status,
-                    duration_ms=round(result.duration_ms, 2),
-                    output_length=len(result.output) if result.output else 0,
-                )
-                yield f"tool_result:{tc.id}:{tc.name}:{status}:{json.dumps(output_preview, ensure_ascii=False)}"
-                if result.file_changes:
-                    yield f"file_changes:{json.dumps(result.file_changes, ensure_ascii=False)}"
-
-                # Yield control to event loop so delegation handler and
-                # event_queue drain can run between tool executions.
-                await asyncio.sleep(0)
-
-            # --- Collect delegation results ---
-            # Delegation tasks were started early and have been running in
-            # the background.  Wait for them and yield results.
-            if delegation_futures:
-                # Wait for all delegation tasks with heartbeat so the SSE
-                # generator can drain event_queue (child agent events).
-                gather_task = asyncio.ensure_future(
-                    asyncio.gather(
-                        *delegation_futures.values(),
-                        return_exceptions=True,
-                    )
-                )
-                while not gather_task.done():
-                    await asyncio.sleep(0.3)
-                    if not gather_task.done():
-                        yield "delegation_heartbeat:drain"
-
-                results_list = gather_task.result()
-
-                for i, tc in enumerate(delegation_calls):
-                    result = results_list[i]
-                    if isinstance(result, BaseException):
-                        result = ToolResult(
-                            tool_call_id=tc.id,
-                            name=tc.name,
-                            arguments=tc.arguments,
-                            output="",
-                            success=False,
-                            error=str(result),
-                        )
-                    step.tool_results.append(result)
-
-                    status = "ok" if result.success else "err"
-                    output_preview = result.output if result.success else (result.error or "")[:50000]
-                    logger.info(
-                        "agent_loop_delegation_result",
-                        session_id=str(session_id),
-                        iteration=step_num,
-                        tool_call_id=tc.id,
-                        status=status,
-                        duration_ms=round(result.duration_ms, 2),
-                    )
-                    yield f"tool_result:{tc.id}:{tc.name}:{status}:{json.dumps(output_preview, ensure_ascii=False)}"
-
-                    if result.file_changes:
-                        yield f"file_changes:{json.dumps(result.file_changes, ensure_ascii=False)}"
+            async with aclosing(self._execute_step_tools(step, ctx)) as tool_events:
+                async for event in tool_events:
+                    yield event
 
             # Reload once after the whole parallel batch: result order is call
             # order, which need not be the order portrait edits committed in.
@@ -985,6 +649,383 @@ class AgentLoop:
             final_output="智能体已达到最大迭代次数，仍未完成任务。",
             done=True,
         )
+
+    async def _stream_model_step(
+        self, step: AgentStep, messages: list[LLMMessage], tools: list[dict],
+        user_id: UUID, session_id: UUID, usage: dict,
+    ) -> AsyncGenerator[AgentEvent]:
+        """Stream one model step, validate its whole tool batch, and retain usage.
+
+        Retries are permitted only before any output. This iterator remains in
+        the execution worker's context and is closed before that context exits.
+        """
+        step_num = step.step
+        # Pending tool calls being accumulated from stream deltas
+        pending_tool_calls: dict[int, dict] = {}  # index -> {id, name, args_str}
+
+        # Keep text for the completed step/context, but forward each final-text
+        # delta immediately so the HTTP SSE endpoint remains genuinely streaming.
+        text_chunks: list[str] = []
+        provider_reasoning_chunks: list[str] = []
+        provider_reasoning_emitted = False
+
+        # Usage reported by the provider's final stream event
+        step_usage: dict | None = None
+
+        # Call LLM (streaming), with mid-stream disconnect retry.
+        # Retry only when this iteration produced nothing yet — replaying
+        # a partially-streamed iteration would duplicate content on the client.
+        logger.debug(
+            "agent_loop_llm_call",
+            session_id=str(session_id),
+            iteration=step_num,
+        )
+        for stream_attempt in range(1, _STREAM_RETRY_MAX + 2):  # 1, 2, 3
+            try:
+                # Refresh after tools, user confirmations, and retries without
+                # accumulating stale clocks in history. The platform clock
+                # is system context; Anthropic collects it at the end of
+                # its system prompt instead of the conversation tail.
+                request_messages = [
+                    *messages,
+                    LLMMessage(role="system", content=build_current_time_context()),
+                ]
+                async with aclosing(self.provider.stream(request_messages, tools=tools)) as model_stream:
+                    async for chunk in model_stream:
+                        if chunk.type == "text_delta" and chunk.content:
+                            if provider_reasoning_chunks and not provider_reasoning_emitted:
+                                yield TextEvent("reasoning", "".join(provider_reasoning_chunks))
+                                provider_reasoning_emitted = True
+                            step.thinking += chunk.content
+                            text_chunks.append(chunk.content)
+                            yield TextEvent("text_delta", chunk.content)
+
+                        elif chunk.type == "reasoning_delta" and chunk.content:
+                            provider_reasoning_chunks.append(chunk.content)
+                            # Live deltas are separate from the complete reasoning
+                            # event used to persist one block per ReAct step.
+                            yield TextEvent("reasoning_delta", chunk.content)
+
+                        elif chunk.type == "tool_call_start" and chunk.tool_call:
+                            if provider_reasoning_chunks and not provider_reasoning_emitted:
+                                yield TextEvent("reasoning", "".join(provider_reasoning_chunks))
+                                provider_reasoning_emitted = True
+                            # New tool call starting
+                            tc = chunk.tool_call
+                            idx = chunk.tool_call_index
+                            if idx is None:
+                                idx = max(pending_tool_calls, default=-1) + 1
+                            pending = pending_tool_calls.setdefault(idx, {
+                                "id": "", "name": "", "args_str": "",
+                            })
+                            pending["id"] = tc.id or pending["id"]
+                            pending["name"] += tc.name
+                            pending["args_str"] += chunk.argument_delta or ""
+
+                        elif chunk.type == "tool_call_delta" and chunk.argument_delta:
+                            # Native providers carry an index; legacy sequential
+                            # adapters may omit it, retaining their last-call behavior.
+                            idx = chunk.tool_call_index
+                            if idx is None and pending_tool_calls:
+                                idx = next(reversed(pending_tool_calls))
+                            if idx not in pending_tool_calls:
+                                raise ValueError("Tool argument delta has no matching tool call")
+                            pending_tool_calls[idx]["args_str"] += chunk.argument_delta
+
+                        elif chunk.type == "done" and chunk.usage:
+                            step_usage = chunk.usage
+                break  # stream completed normally
+            except LLMStreamError:
+                produced = (
+                    bool(text_chunks)
+                    or bool(provider_reasoning_chunks)
+                    or bool(pending_tool_calls)
+                )
+                if (not getattr(self.provider, "enable_retry", True)
+                        or produced or stream_attempt > _STREAM_RETRY_MAX):
+                    raise
+                delay = _STREAM_RETRY_BASE_DELAY * stream_attempt
+                logger.warning(
+                    "agent_loop_stream_retry",
+                    session_id=str(session_id),
+                    iteration=step_num,
+                    attempt=stream_attempt,
+                    delay=delay,
+                )
+                await asyncio.sleep(delay)
+                # Discard partial state and reopen a fresh stream
+                step.thinking = ""
+                text_chunks = []
+                provider_reasoning_chunks = []
+                provider_reasoning_emitted = False
+                pending_tool_calls = {}
+                step_usage = None
+
+        if step_usage:
+            record_llm_usage(user_id, self.provider.model, step_usage)
+            usage.update(step_usage)
+
+        # Finalize tool calls from accumulated deltas
+        for _idx, tc_data in pending_tool_calls.items():
+            try:
+                args = json.loads(tc_data["args_str"]) if tc_data["args_str"] else {}
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"Invalid JSON arguments for tool '{tc_data['name']}' "
+                    f"(call {tc_data['id']}); no tools in this batch were executed"
+                ) from error
+            if not isinstance(args, dict):
+                raise ValueError(
+                    f"Arguments for tool '{tc_data['name']}' must be a JSON object; "
+                    "no tools in this batch were executed"
+                )
+            step.tool_calls.append(
+                ToolCall(id=tc_data["id"], name=tc_data["name"], arguments=args)
+            )
+
+        if provider_reasoning_chunks and not provider_reasoning_emitted:
+            yield TextEvent("reasoning", "".join(provider_reasoning_chunks))
+
+    async def _execute_step_tools(
+        self, step: AgentStep, ctx: ToolContext,
+    ) -> AsyncGenerator[AgentEvent]:
+        """Run a tool batch while preserving interactive yields and delegation order."""
+        session_id, step_num = ctx.session_id, step.step
+        # Execute tools: delegation calls run concurrently with regular
+        # calls, but results are yielded in the ORIGINAL LLM order so
+        # the frontend renders cards in the correct sequence.
+        cached = completed_calls.get() or {}
+        executable_calls = []
+        for tc in step.tool_calls:
+            previous = cached.get(call_key(tc.name, tc.arguments))
+            if (previous and tc.name != "view_image"
+                    and (self.allowed_tools is None or tc.name in self.allowed_tools)):
+                # Continue from a recorded result, never re-submit the same
+                # completed external operation just because the worker restarted.
+                # view_image must reload its ephemeral pixels; history only has metadata.
+                output = str(previous.get("preview", ""))
+                step.tool_results.append(ToolResult(
+                    tool_call_id=tc.id, name=tc.name, arguments=tc.arguments,
+                    output=output, success=True,
+                ))
+                yield ToolResultEvent(tc.id, tc.name, "ok", output)
+            else:
+                executable_calls.append(tc)
+        delegation_calls = [tc for tc in executable_calls if tc.name == "delegate_task"]
+        regular_calls = [tc for tc in executable_calls if tc.name != "delegate_task"]
+
+        # --- Start delegation tasks concurrently (background) ---
+        # These run while regular tools execute, so by the time we need
+        # delegation results they're usually already done.
+        delegation_futures: dict[str, asyncio.Task] = {}  # tc.id -> Task
+        for tc in delegation_calls:
+            delegation_futures[tc.id] = track_task(
+                self.tool_executor.execute(
+                    tool_name=tc.name,
+                    arguments=tc.arguments,
+                    tool_call_id=tc.id,
+                    user_id=str(ctx.user_id),
+                    session_id=str(ctx.session_id),
+                    delegation=ctx.delegation,
+                    event_queue=self.event_queue,
+                    workspace_id=str(ctx.workspace_id) if ctx.workspace_id else None,
+                    workspace_slug=ctx.workspace_slug,
+                    allowed_tools=self.allowed_tools,
+                )
+            )
+
+        if delegation_calls:
+            logger.info(
+                "agent_loop_delegation_start",
+                session_id=str(session_id),
+                iteration=step_num,
+                delegation_count=len(delegation_calls),
+            )
+
+        # --- Execute regular tools sequentially ---
+        for tc in regular_calls:
+            # ============================================================
+            # Tool permission check (enforces allowed_tools whitelist)
+            # ============================================================
+            if self.allowed_tools is not None and tc.name not in self.allowed_tools:
+                logger.warning(
+                    "tool_permission_denied",
+                    tool_name=tc.name,
+                    allowed_tools=sorted(self.allowed_tools),
+                )
+                get_hook_manager().fire_nowait(
+                    "Notification",
+                    user_id=str(ctx.user_id),
+                    session_id=str(ctx.session_id),
+                    workspace_id=str(ctx.workspace_id) if ctx.workspace_id else None,
+                    workspace_slug=ctx.workspace_slug,
+                    data={
+                        "level": "permission",
+                        "category": "permission_denied",
+                        "message": (
+                            f"Permission denied: tool '{tc.name}' is not available "
+                            "to this agent."
+                        ),
+                    },
+                )
+                result = ToolResult(
+                    tool_call_id=tc.id,
+                    name=tc.name,
+                    arguments=tc.arguments,
+                    output="",
+                    success=False,
+                    error=f"Permission denied: tool '{tc.name}' is not available to this agent.",
+                )
+                step.tool_results.append(result)
+                yield ToolResultEvent(tc.id, tc.name, "err", result.error)
+                continue
+
+            # ============================================================
+            # AskUserQuestion: 特殊处理，避免死锁
+            # ============================================================
+            if tc.name == "AskUserQuestion":
+                ask_t_start = time.monotonic()
+                async with aclosing(self._run_ask_user_flow(tc, ctx)) as interactive_events:
+                    async for evt in interactive_events:
+                        yield evt
+
+                ask_output = self._last_ask_user_output or ""
+                result = ToolResult(
+                    tool_call_id=tc.id,
+                    name=tc.name,
+                    arguments=tc.arguments,
+                    output=ask_output,
+                    success=True,
+                    duration_ms=(time.monotonic() - ask_t_start) * 1000,
+                )
+                step.tool_results.append(result)
+                get_recorder().record_tool_call(
+                    tool_name="AskUserQuestion",
+                    exec_type="direct",
+                    duration_ms=result.duration_ms,
+                    is_error=ask_output.startswith("Error:"),
+                    user_id=str(ctx.user_id),
+                    session_id=str(ctx.session_id),
+                )
+
+                output_preview = ask_output[:500]
+                yield ToolResultEvent(tc.id, tc.name, "ok", output_preview)
+                continue
+
+            # ============================================================
+            # Frontend UI tools (ui_*): 拦截下发浏览器执行，避免死锁
+            # （与 AskUserQuestion 同理，不能进 tool_executor 阻塞）
+            # ============================================================
+            tool_def = self.tool_executor.registry.get(tc.name)
+            if tool_def is not None and tool_def.execution_location == "frontend":
+                ui_t_start = time.monotonic()
+                async with aclosing(self._run_ui_action_flow(tc, ctx)) as interactive_events:
+                    async for evt in interactive_events:
+                        yield evt
+
+                ui_output = self._last_ui_action_output or ""
+                ui_ok = not ui_output.startswith("Error")
+                result = ToolResult(
+                    tool_call_id=tc.id,
+                    name=tc.name,
+                    arguments=tc.arguments,
+                    output=ui_output if ui_ok else "",
+                    success=ui_ok,
+                    error=None if ui_ok else ui_output,
+                    duration_ms=(time.monotonic() - ui_t_start) * 1000,
+                )
+                step.tool_results.append(result)
+                get_recorder().record_tool_call(
+                    tool_name=tc.name,
+                    exec_type="direct",
+                    duration_ms=result.duration_ms,
+                    is_error=not ui_ok,
+                    user_id=str(ctx.user_id),
+                    session_id=str(ctx.session_id),
+                )
+
+                output_preview = ui_output[:500]
+                status = "ok" if ui_ok else "err"
+                yield ToolResultEvent(tc.id, tc.name, status, output_preview)
+                continue
+
+            logger.debug(
+                "agent_loop_execute_tool",
+                session_id=str(session_id),
+                iteration=step_num,
+                tool_name=tc.name,
+                tool_call_id=tc.id,
+            )
+            result = await self._execute_tool_traced(tc, ctx)
+            step.tool_results.append(result)
+
+            status = "ok" if result.success else "err"
+            output_preview = result.output if result.success else (result.error or "")[:50000]
+            logger.debug(
+                "agent_loop_tool_result",
+                session_id=str(session_id),
+                iteration=step_num,
+                tool_name=tc.name,
+                tool_call_id=tc.id,
+                status=status,
+                duration_ms=round(result.duration_ms, 2),
+                output_length=len(result.output) if result.output else 0,
+            )
+            yield ToolResultEvent(tc.id, tc.name, status, output_preview)
+            if result.file_changes:
+                yield FileChangesEvent(result.file_changes)
+
+            # Yield control to event loop so delegation handler and
+            # event_queue drain can run between tool executions.
+            await asyncio.sleep(0)
+
+        # --- Collect delegation results ---
+        # Delegation tasks were started early and have been running in
+        # the background.  Wait for them and yield results.
+        if delegation_futures:
+            # Wait for all delegation tasks with heartbeat so the SSE
+            # generator can drain event_queue (child agent events).
+            gather_task = asyncio.ensure_future(
+                asyncio.gather(
+                    *delegation_futures.values(),
+                    return_exceptions=True,
+                )
+            )
+            while not gather_task.done():
+                await asyncio.sleep(0.3)
+                if not gather_task.done():
+                    yield ControlEvent("delegation_heartbeat", status="drain")
+
+            results_list = gather_task.result()
+
+            for i, tc in enumerate(delegation_calls):
+                result = results_list[i]
+                if isinstance(result, BaseException):
+                    result = ToolResult(
+                        tool_call_id=tc.id,
+                        name=tc.name,
+                        arguments=tc.arguments,
+                        output="",
+                        success=False,
+                        error=str(result),
+                    )
+                step.tool_results.append(result)
+
+                status = "ok" if result.success else "err"
+                output_preview = result.output if result.success else (result.error or "")[:50000]
+                logger.info(
+                    "agent_loop_delegation_result",
+                    session_id=str(session_id),
+                    iteration=step_num,
+                    tool_call_id=tc.id,
+                    status=status,
+                    duration_ms=round(result.duration_ms, 2),
+                )
+                yield ToolResultEvent(tc.id, tc.name, status, output_preview)
+
+                if result.file_changes:
+                    yield FileChangesEvent(result.file_changes)
+
 
     # ------------------------------------------------------------------
     # Observation finalize
@@ -1146,7 +1187,7 @@ class AgentLoop:
         self,
         tc: ToolCall,
         ctx: ToolContext,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[AgentEvent]:
         """
         处理 AskUserQuestion 的完整确认流程（async generator）。
 
@@ -1232,7 +1273,7 @@ class AgentLoop:
         # 它让控制权从 _run_ask_user_flow → agent_loop.run() → SSE generator
         # SSE generator 收到这个事件后，会先 drain event_queue（发送 confirmation_required）
         # 然后再调用 agent_loop 的 __anext__() 恢复执行
-        yield f"confirmation_flow:{tc.id}:waiting"
+        yield ControlEvent("confirmation_flow", tc.id, "waiting")
 
         # ---- Step 3: 阻塞等待用户响应 ----
         # 此时 SSE generator 已经 drain 了 event_queue，前端已收到确认卡片
@@ -1283,7 +1324,7 @@ class AgentLoop:
         self,
         tc: ToolCall,
         ctx: ToolContext,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[AgentEvent]:
         """
         处理前端 UI 工具（ui_*）的完整执行流程（async generator）。
 
@@ -1376,7 +1417,7 @@ class AgentLoop:
                     },
                     "created_at": confirmation.created_at.isoformat(),
                 })
-                yield f"confirmation_flow:{tc.id}:waiting"
+                yield ControlEvent("confirmation_flow", tc.id, "waiting")
 
                 confirmation = await confirmation_manager.wait_for_response(
                     confirmation.id
@@ -1431,14 +1472,14 @@ class AgentLoop:
                 "session_id": session_key,
                 "created_at": pending.created_at.isoformat(),
             })
-            yield f"ui_action:{tc.id}:waiting"
+            yield ControlEvent("ui_action", tc.id, "waiting")
 
             # ---- Step 4: 分片等待前端回包（心跳让 SSE 持续 drain）----
             while True:
                 state = await ui_action_manager.wait_chunk(pending.id)
                 if state != "waiting":
                     break
-                yield f"ui_action:{tc.id}:heartbeat"
+                yield ControlEvent("ui_action", tc.id, "heartbeat")
         finally:
             # SSE 断开 → CancelledError → 必须清理 pending，不得泄漏
             result_payload = ui_action_manager.discard(pending.id)

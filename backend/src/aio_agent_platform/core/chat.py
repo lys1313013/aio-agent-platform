@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Collection
 from typing import Any
 from uuid import UUID
 
@@ -37,6 +38,7 @@ from aio_agent_platform.core.execution_scope import (
     require_execution_user,
 )
 from aio_agent_platform.core.prompt import build_system_prompt
+from aio_agent_platform.core.runtime_config import AgentRuntimeConfig
 from aio_agent_platform.db import Message, Session
 from aio_agent_platform.db.connection import get_session_factory
 from aio_agent_platform.db.models import (
@@ -48,12 +50,13 @@ from aio_agent_platform.db.models import (
     UserConfig,
     UserProfile,
 )
-from aio_agent_platform.llm import LLMMessage, ToolCall, create_provider
+from aio_agent_platform.llm import LLMMessage, LLMProvider, ToolCall, create_provider
 from aio_agent_platform.memory.service import MemoryService
 from aio_agent_platform.observation import get_langfuse_client
 from aio_agent_platform.skills.service import SkillService
 from aio_agent_platform.tools.executor import ToolExecutor
 from aio_agent_platform.tools.mcp.selection import is_mcp_tool_allowed
+from aio_agent_platform.tools.registry import Tool
 
 logger = structlog.get_logger()
 
@@ -256,53 +259,68 @@ def filter_tools_by_agent(
             dynamic_spawn=True,
         )
 
-    # Build OpenAI schema from filtered built-in tools.
-    tools_schema = []
-    for t in filtered:
-        tools_schema.append({
+    allowed_server_ids = None
+    if agent and agent.mcp_server_ids is not None:
+        try:
+            allowed_server_ids = {str(sid) for sid in agent.mcp_server_ids}
+        except Exception:
+            allowed_server_ids = set()
+    enabled_set = set(agent.enabled_tools) if agent and agent.enabled_tools else None
+    all_tools_server_ids = {
+        str(server_id)
+        for server_id in (getattr(agent, "mcp_all_tools_server_ids", None) or [])
+    } if agent else set()
+    return filtered, build_tools_schema(
+        tool_executor,
+        filtered,
+        mcp_server_ids=allowed_server_ids,
+        enabled_tools=enabled_set,
+        mcp_all_tools_server_ids=all_tools_server_ids,
+        blacklist=blacklist,
+    )
+
+
+def build_tools_schema(
+    tool_executor: ToolExecutor,
+    tools: list[Tool],
+    *,
+    mcp_server_ids: Collection[str] | None,
+    enabled_tools: Collection[str] | None,
+    mcp_all_tools_server_ids: Collection[str] = (),
+    blacklist: Collection[str] = (),
+) -> list[dict]:
+    """Serialize entry-approved built-ins and apply the shared MCP selection policy.
+
+    Each entry retains its own capability restrictions (e.g. browser tools).
+    ``None`` and an empty server selection deliberately have different meanings.
+    """
+    schema = [
+        {
             "type": "function",
             "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters,
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
             },
-        })
-
-    # Add MCP tools, filtered by agent's mcp_server_ids and enabled_tools.
-    mcp_manager = tool_executor.mcp_manager
-    if mcp_manager:
-        allowed_server_ids = None
-        if agent and agent.mcp_server_ids is not None:
-            try:
-                allowed_server_ids = {str(sid) for sid in agent.mcp_server_ids}
-            except Exception:
-                allowed_server_ids = set()
-
-        enabled_set = None
-        if agent and agent.enabled_tools:
-            enabled_set = set(agent.enabled_tools)
-        all_tools_server_ids = {
-            str(server_id)
-            for server_id in (getattr(agent, "mcp_all_tools_server_ids", None) or [])
-        } if agent else set()
-
-        for full_name, tool_info in mcp_manager.list_all_tools():
-            server_id = mcp_manager._tool_to_server.get(full_name)
-            if not is_mcp_tool_allowed(
-                server_id=server_id,
+        }
+        for tool in tools
+        if tool.name not in blacklist
+    ]
+    manager = tool_executor.mcp_manager
+    if manager:
+        for full_name, tool_info in manager.list_all_tools():
+            if full_name in blacklist or not is_mcp_tool_allowed(
+                server_id=manager._tool_to_server.get(full_name),
                 full_name=full_name,
-                allowed_server_ids=allowed_server_ids,
-                enabled_tools=enabled_set,
-                all_tools_server_ids=all_tools_server_ids,
+                allowed_server_ids=mcp_server_ids,
+                enabled_tools=enabled_tools,
+                all_tools_server_ids=mcp_all_tools_server_ids,
             ):
                 continue
-            if full_name in blacklist:
-                continue
-            tools_schema.append(tool_info.to_openai_tool(
+            schema.append(tool_info.to_openai_tool(
                 prefix=full_name[:len(full_name) - len(tool_info.name)]
             ))
-
-    return filtered, tools_schema
+    return schema
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +394,10 @@ def resolve_provider_type(provider_type: str | None) -> str:
     return "openai"
 
 
+class ModelUnavailableError(RuntimeError):
+    """The execution tenant has no usable configured model."""
+
+
 async def resolve_model(
     db: AsyncSession,
     tenant_id: UUID,
@@ -406,8 +428,33 @@ async def resolve_model(
         model_to_use = result.scalar_one_or_none()
 
     if not model_to_use or not model_to_use.provider:
-        raise RuntimeError("没有可用的模型，请在管理后台配置模型并为智能体绑定模型")
+        raise ModelUnavailableError("没有可用的模型，请在管理后台配置模型并为智能体绑定模型")
     return model_to_use
+
+
+async def build_agent_provider(
+    db: AsyncSession, *, tenant_id: UUID, config: AgentRuntimeConfig,
+) -> LLMProvider:
+    """Resolve and build providers consistently for root and delegated execution."""
+    model_to_use = await resolve_model(db, tenant_id=tenant_id, model_id=config.model_id)
+
+    provider = create_provider(
+        provider=model_to_use.provider.provider_type,
+        model=model_to_use.model_name,
+        base_url=model_to_use.provider.base_url,
+        api_key=model_to_use.provider.api_key_encrypted,
+        temperature=config.temperature if config.temperature is not None else settings.llm.temperature,
+        enable_retry=config.enable_retry,
+        langfuse_client=get_langfuse_client(),
+        supports_vision=bool(model_to_use.is_multimodal),
+    )
+    logger.info(
+        "使用模型",
+        model=model_to_use.model_name,
+        provider=model_to_use.provider.name,
+    )
+
+    return provider
 
 
 async def build_agent_loop(
@@ -424,35 +471,28 @@ async def build_agent_loop(
     workspace_id: UUID | None = None,
     workspace_slug: str | None = None,
     allowed_tools: set[str] | None = None,
+    *,
+    runtime_config: AgentRuntimeConfig | None = None,
 ) -> AgentLoop:
-    """Create an AgentLoop using the specified or default model from DB.
+    """Build every execution provider through the same tenant-scoped factory.
 
-    Raises HTTPException (or RuntimeError for non-HTTP callers) if no model is available.
+    Scalar settings remain supported by existing interactive/background callers.
+    Published versions pass their snapshot-derived configuration instead.
     """
-    model_to_use = await resolve_model(db, tenant_id, agent_model_id)
-
-    provider = create_provider(
-        provider=model_to_use.provider.provider_type,
-        model=model_to_use.model_name,
-        base_url=model_to_use.provider.base_url,
-        api_key=model_to_use.provider.api_key_encrypted,
-        temperature=agent_temperature if agent_temperature is not None else settings.llm.temperature,
-        enable_retry=agent_enable_retry,
-        langfuse_client=get_langfuse_client(),
-        supports_vision=bool(model_to_use.is_multimodal),
+    config = runtime_config or AgentRuntimeConfig(
+        model_id=agent_model_id,
+        temperature=agent_temperature,
+        max_iterations=agent_max_iterations,
+        enable_retry=agent_enable_retry if agent_enable_retry is not None else True,
     )
-    logger.info(
-        "使用模型",
-        model=model_to_use.model_name,
-        provider=model_to_use.provider.name,
-    )
+    provider = await build_agent_provider(db, tenant_id=tenant_id, config=config)
 
     return AgentLoop(
         execution_tenant_id=tenant_id,
         provider=provider,
         tool_executor=tool_executor,
         system_prompt=system_prompt,
-        max_iterations=agent_max_iterations if agent_max_iterations is not None else settings.agent.max_iterations,
+        max_iterations=config.max_iterations if config.max_iterations is not None else settings.agent.max_iterations,
         trust_level=settings.agent.trust_level,
         delegation=delegation,
         event_queue=event_queue,

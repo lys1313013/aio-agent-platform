@@ -112,7 +112,7 @@ async def test_existing_and_dynamic_delegation_inherit_tenant(scope_env, db_sess
         assert child.id == d.child.id
         dynamic = delegation._build_dynamic_agent(uuid4(), "specialist", "task", d.a.id)
         create = Mock(return_value=object())
-        monkeypatch.setattr(delegation, "create_provider", create)
+        monkeypatch.setattr(chat, "create_provider", create)
         await delegation._build_child_provider(db_session, dynamic)
         assert create.call_args.kwargs["model"] == d.a.name
         assert dynamic.tenant_id == d.a.id

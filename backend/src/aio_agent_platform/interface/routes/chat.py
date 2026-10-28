@@ -32,6 +32,7 @@ from aio_agent_platform.auth.dependencies import CurrentUser, ExecutionUser
 from aio_agent_platform.auth.jwt_handler import TokenExpiredError, decode_token
 from aio_agent_platform.core import chat_runs
 from aio_agent_platform.core.agent import AgentStep, DelegationContext
+from aio_agent_platform.core.agent_events import ControlEvent, decode_agent_event
 from aio_agent_platform.core.auto_title import generate_session_title
 from aio_agent_platform.core.chat import (
     _background_tasks,
@@ -63,6 +64,7 @@ from aio_agent_platform.core.execution_scope import (
     require_agent_tenant,
     require_execution_user,
 )
+from aio_agent_platform.core.turn_metadata import InteractiveTurnMetadata
 from aio_agent_platform.db import Message, Session
 from aio_agent_platform.db.connection import current_user_id, get_db, get_session_factory
 from aio_agent_platform.db.models import LLMModel, User
@@ -1142,118 +1144,19 @@ async def chat_stream(
                 saved_flag = {"done": False}
                 file_changes_list = turn.file_changes
                 reasoning_chunks = turn.reasoning
-                # Track delegation details for persistence
-                delegations_map: dict[str, dict] = {}  # tool_call_id -> delegation data
-                # Track confirmation cards (AskUserQuestion) in arrival order for persistence
-                confirmations_order: list[str] = []  # confirmation_id, in arrival order
-                confirmations_map: dict[str, dict] = {}  # confirmation_id -> card data
+                metadata = InteractiveTurnMetadata()
 
                 # Send session_id first so frontend knows which session
                 yield _sse_event({"type": "session", "session_id": str(session_id)})
                 logger.info("stream_started", session_id=str(session_id))
 
                 iteration_count = 0
-                # delegation_id → tool_call_id mapping for embedding delegation details
-                delegation_to_toolcall: dict[str, str] = {}
-
-                def _track_delegation_event(evt: dict) -> None:
-                    """Track delegation events for persistence in message tool_calls."""
-                    evt_type = evt.get("type", "")
-                    del_id = evt.get("delegation_id", "")
-
-                    if evt_type == "delegation_start":
-                        tc_id = evt.get("tool_call_id", "")
-                        if tc_id:
-                            delegation_to_toolcall[del_id] = tc_id
-                        delegations_map[tc_id] = {
-                            "delegation_id": del_id,
-                            "child_agent_id": evt.get("child_agent_id", ""),
-                            "child_agent_name": evt.get("child_agent_name", ""),
-                            "child_agent_icon": evt.get("child_agent_icon", ""),
-                            "is_dynamic": evt.get("is_dynamic", False),
-                            "task": evt.get("task", ""),
-                            "status": "running",
-                            "thinking": "",
-                            "toolCalls": [],
-                            "result": "",
-                        }
-                    elif evt_type == "delegation_thinking":
-                        tc_id = delegation_to_toolcall.get(del_id, "")
-                        if tc_id and tc_id in delegations_map:
-                            delegations_map[tc_id]["thinking"] += evt.get("content", "")
-                    elif evt_type == "delegation_tool_call":
-                        tc_id = delegation_to_toolcall.get(del_id, "")
-                        if tc_id and tc_id in delegations_map:
-                            delegations_map[tc_id]["toolCalls"].append({
-                                "id": evt.get("id", ""),
-                                "name": evt.get("name", ""),
-                                "arguments": evt.get("arguments", {}),
-                            })
-                    elif evt_type == "delegation_tool_result":
-                        tc_id = delegation_to_toolcall.get(del_id, "")
-                        if tc_id and tc_id in delegations_map:
-                            for d_tc in delegations_map[tc_id]["toolCalls"]:
-                                if d_tc["id"] == evt.get("tool_call_id", ""):
-                                    d_tc["result"] = {
-                                        "status": evt.get("status", ""),
-                                        "preview": evt.get("preview", ""),
-                                    }
-                                    break
-                    elif evt_type == "delegation_text_delta":
-                        tc_id = delegation_to_toolcall.get(del_id, "")
-                        if tc_id and tc_id in delegations_map:
-                            delegations_map[tc_id]["result"] += evt.get("content", "")
-                    elif evt_type == "delegation_end":
-                        tc_id = delegation_to_toolcall.get(del_id, "")
-                        if tc_id and tc_id in delegations_map:
-                            delegations_map[tc_id]["status"] = evt.get("status", "completed")
-                            delegations_map[tc_id]["duration_ms"] = evt.get("duration_ms", 0)
-                            delegations_map[tc_id]["error"] = evt.get("error")
-                            # Use result from delegation_end if result is empty
-                            if not delegations_map[tc_id]["result"]:
-                                delegations_map[tc_id]["result"] = evt.get("result_preview", "")
-
-                    elif evt_type == "confirmation_required":
-                        c_id = evt.get("confirmation_id", "")
-                        if c_id:
-                            confirmations_order.append(c_id)
-                            confirmations_map[c_id] = {
-                                "confirmation_id": c_id,
-                                "question": evt.get("question", ""),
-                                "mode": evt.get("mode", ""),
-                                "options": evt.get("options") or [],
-                                "table_schema": evt.get("table_schema"),
-                                "context": evt.get("context") or {},
-                            }
-                    elif evt_type == "confirmation_resolved":
-                        c_id = evt.get("confirmation_id", "")
-                        if c_id and c_id in confirmations_map:
-                            confirmations_map[c_id]["resolved"] = {
-                                "status": evt.get("status", ""),
-                                "selected_options": evt.get("selected_options") or [],
-                                "user_input": evt.get("user_input"),
-                                "table_data": evt.get("table_data"),
-                                "resolved_at": evt.get("resolved_at"),
-                            }
-
-                def _merge_tool_metadata() -> None:
-                    """Fold transport-specific delegation/confirmation data into tool calls.
-
-                    Idempotent — safe to call from the normal completion path and
-                    again from an interruption handler.
-                    """
-                    for tc in tool_calls_list:
-                        if tc["name"] == "delegate_task" and tc["id"] in delegations_map:
-                            tc["delegation"] = delegations_map[tc["id"]]
-                    ask_tcs = [tc for tc in tool_calls_list if tc["name"] == "AskUserQuestion"]
-                    for tc, c_id in zip(ask_tcs, confirmations_order, strict=False):
-                        tc["confirmation"] = confirmations_map.get(c_id)
 
                 async def _rescue_partial() -> None:
                     """Persist whatever tool calls accumulated before an interruption."""
                     if saved_flag["done"]:
                         return
-                    _merge_tool_metadata()
+                    metadata.merge(tool_calls_list)
                     await turn.rescue()
 
                 async for event in agent_loop.run(
@@ -1271,20 +1174,22 @@ async def chat_stream(
                             session_id=str(session_id),
                             event_type=del_event.get("type", "unknown"),
                         )
-                        _track_delegation_event(del_event)
+                        metadata.track(del_event)
                         yield _sse_event(del_event)
 
-                    _merge_tool_metadata()
+                    metadata.merge(tool_calls_list)
                     payload = await turn.process(event, gen_db)
                     final_output = turn.content
                     if payload is not None:
                         yield _sse_event(payload)
                     elif isinstance(event, str):
                         # Interactive-only control events remain the transport's responsibility.
-                        if event.startswith("ui_action:") and event.endswith(":heartbeat"):
-                            yield _sse_event({"type": "ui_action_heartbeat"})
-                        elif event.startswith("delegation_heartbeat:"):
-                            yield _sse_event({"type": "delegation_heartbeat"})
+                        control = decode_agent_event(event)
+                        if isinstance(control, ControlEvent):
+                            if control.kind == "ui_action" and control.status == "heartbeat":
+                                yield _sse_event({"type": "ui_action_heartbeat"})
+                            elif control.kind == "delegation_heartbeat":
+                                yield _sse_event({"type": "delegation_heartbeat"})
                     elif isinstance(event, AgentStep):
                         iteration_count += 1
                         if event.done:
@@ -1306,12 +1211,12 @@ async def chat_stream(
                         session_id=str(session_id),
                         event_type=del_event.get("type", "unknown"),
                     )
-                    _track_delegation_event(del_event)
+                    metadata.track(del_event)
                     yield _sse_event(del_event)
 
                 # Merge tool results / delegation / confirmation metadata into
                 # tool_calls_list (also used by the interruption handlers below).
-                _merge_tool_metadata()
+                metadata.merge(tool_calls_list)
 
                 # Send final text
                 yield _sse_event({"type": "text", "content": final_output})

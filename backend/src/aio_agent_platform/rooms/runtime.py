@@ -11,12 +11,21 @@ import structlog
 from sqlalchemy import select
 
 from aio_agent_platform.core.agent import AgentStep
+from aio_agent_platform.core.agent_events import (
+    AgentEvent,
+    FileChangesEvent,
+    TextEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    decode_agent_event,
+)
 from aio_agent_platform.core.chat import (
     build_agent_loop,
     filter_tools_by_agent,
     load_agent,
     refresh_mcp_tools_for_agent,
 )
+from aio_agent_platform.core.chat_history import _merge_file_changes
 from aio_agent_platform.core.confirmation import confirmation_manager
 from aio_agent_platform.core.context import (
     ContextBudget,
@@ -156,46 +165,48 @@ class Output:
                 self.done = True
                 self.content = self.content or event.final_output or ""
             return True
-        if not isinstance(event, str):
+        if not isinstance(event, (str, AgentEvent)):
             return False
-        if event.startswith("text_delta:"):
-            self.content += event[len("text_delta:"):]
-            return False
-        if event.startswith("reasoning_delta:"):
-            content = event[len("reasoning_delta:"):]
-            if content:
-                chunks = self.payload["reasoning"]
-                if self._reasoning_index is None:
-                    self._reasoning_index = len(chunks)
-                    chunks.append({"id": str(self._reasoning_index), "content": ""})
-                chunks[self._reasoning_index]["content"] += content
-            # Use the same save interval as text; never write once per token.
-            return False
-        if event.startswith("reasoning:"):
-            content = event[len("reasoning:"):]
+        decoded = decode_agent_event(event)
+        if isinstance(decoded, TextEvent):
+            content = decoded.content
+            if decoded.kind == "text_delta":
+                self.content += content
+                return False
             chunks = self.payload["reasoning"]
+            if decoded.kind == "reasoning_delta":
+                if content:
+                    if self._reasoning_index is None:
+                        self._reasoning_index = len(chunks)
+                        chunks.append({"id": str(self._reasoning_index), "content": ""})
+                    chunks[self._reasoning_index]["content"] += content
+                # Use the same save interval as text; never write once per token.
+                return False
             if self._reasoning_index is not None:
                 chunks[self._reasoning_index]["content"] = content
                 self._reasoning_index = None
             elif content:
                 chunks.append({"id": str(len(chunks)), "content": content})
-        elif event.startswith("tool_call:"):
-            _, tc_id, name, arguments = event.split(":", 3)
-            self.payload["tool_calls"].append({"id": tc_id, "name": name, "arguments": json.loads(arguments)})
-        elif event.startswith("tool_result:"):
-            _, tc_id, _name, status, preview = event.split(":", 4)
+        elif isinstance(decoded, ToolCallEvent):
+            self.payload["tool_calls"].append({
+                "id": decoded.call_id, "name": decoded.name, "arguments": decoded.arguments,
+            })
+        elif isinstance(decoded, ToolResultEvent):
             for tc in self.payload["tool_calls"]:
-                if tc["id"] == tc_id:
-                    parsed = json.loads(preview)
-                    tc["result"] = {"status": status, "preview": parsed if isinstance(parsed, str) else json.dumps(parsed, ensure_ascii=False)}
-        elif event.startswith("file_changes:"):
-            from aio_agent_platform.interface.routes.chat import _merge_file_changes
+                if tc["id"] == decoded.call_id:
+                    preview = decoded.preview
+                    tc["result"] = {
+                        "status": decoded.status,
+                        "preview": preview if isinstance(preview, str) else json.dumps(preview, ensure_ascii=False),
+                    }
+        elif isinstance(decoded, FileChangesEvent):
             self.payload["file_changes"] = _merge_file_changes(
-                self.payload["file_changes"], json.loads(event[len("file_changes:"):]),
+                self.payload["file_changes"], decoded.changes,
             )
         else:
             return False
         return True
+
 
 
 def start_run(app, room_id: UUID, run_id: UUID) -> None:

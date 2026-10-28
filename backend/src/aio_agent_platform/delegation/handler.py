@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -13,22 +12,22 @@ from uuid import UUID, uuid4
 import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from aio_agent_platform.core.agent import AgentLoop, AgentStep, DelegationContext
+from aio_agent_platform.core.agent_events import AgentEvent, decode_agent_event, event_payload
+from aio_agent_platform.core.chat import ModelUnavailableError, build_agent_provider
 from aio_agent_platform.core.config import settings
 from aio_agent_platform.core.context import current_agent_id
 from aio_agent_platform.core.execution_scope import execution_tenant_id, require_execution_user
 from aio_agent_platform.core.prompt import build_system_prompt
+from aio_agent_platform.core.runtime_config import AgentRuntimeConfig
 from aio_agent_platform.db.connection import current_user_id, get_session_factory
 from aio_agent_platform.db.models import (
     Agent,
     AgentRelationship,
     Delegation,
-    LLMModel,
     Session,
 )
-from aio_agent_platform.llm import create_provider
 from aio_agent_platform.memory.service import MemoryService
 from aio_agent_platform.skills.service import SkillService
 from aio_agent_platform.tools.executor import ToolExecutor
@@ -481,93 +480,31 @@ async def _build_child_system_prompt(
 
 
 async def _build_child_provider(db: AsyncSession, child_agent: Agent | DynamicSubAgent):
-    """Build LLM provider for child agent with model inheritance."""
-    # Try child's model, then default model
-    model_to_use = None
-
-    if child_agent.model_id:
-        result = await db.execute(
-            select(LLMModel)
-            .options(selectinload(LLMModel.provider))
-            .where(LLMModel.id == child_agent.model_id, LLMModel.is_active, LLMModel.tenant_id == child_agent.tenant_id)
+    """Build a child provider with the common execution settings and tenant policy."""
+    try:
+        return await build_agent_provider(
+            db, tenant_id=child_agent.tenant_id,
+            config=AgentRuntimeConfig.from_agent(child_agent),
         )
-        model_to_use = result.scalar_one_or_none()
-
-    if not model_to_use:
-        result = await db.execute(
-            select(LLMModel)
-            .options(selectinload(LLMModel.provider))
-            .where(LLMModel.is_default, LLMModel.is_active, LLMModel.tenant_id == child_agent.tenant_id)
-            .limit(1)
-        )
-        model_to_use = result.scalar_one_or_none()
-
-    if not model_to_use or not model_to_use.provider:
+    except ModelUnavailableError:
         return None
-
-    return create_provider(
-        provider=model_to_use.provider.provider_type,
-        model=model_to_use.model_name,
-        base_url=model_to_use.provider.base_url,
-        api_key=model_to_use.provider.api_key_encrypted,
-        temperature=child_agent.temperature if child_agent.temperature is not None else settings.llm.temperature,
-        enable_retry=child_agent.enable_retry if child_agent.enable_retry is not None else True,
-        supports_vision=bool(model_to_use.is_multimodal),
-    )
 
 
 async def _proxy_child_event(
     event_queue: asyncio.Queue,
     delegation_id: UUID,
-    event: str,
+    event: AgentEvent | str,
 ) -> None:
-    """Proxy child agent events to parent's SSE stream with delegation prefix."""
-    if event.startswith("reasoning_delta:"):
-        content = event[len("reasoning_delta:"):]
-        await event_queue.put({
-            "type": "delegation_thinking",
-            "delegation_id": str(delegation_id),
-            "content": content,
-        })
-    elif event.startswith("text_delta:"):
-        delta = event[len("text_delta:"):]
-        await event_queue.put({
-            "type": "delegation_text_delta",
-            "delegation_id": str(delegation_id),
-            "content": delta,
-        })
-    elif event.startswith("tool_call:"):
-        parts = event.split(":", 3)
-        tc_id = parts[1] if len(parts) > 1 else ""
-        tc_name = parts[2] if len(parts) > 2 else ""
-        try:
-            tc_args = json.loads(parts[3]) if len(parts) > 3 else {}
-        except json.JSONDecodeError:
-            tc_args = {}
-        await event_queue.put({
-            "type": "delegation_tool_call",
-            "delegation_id": str(delegation_id),
-            "id": tc_id,
-            "name": tc_name,
-            "arguments": tc_args,
-        })
-    elif event.startswith("tool_result:"):
-        parts = event.split(":", 4)
-        tc_id = parts[1] if len(parts) > 1 else ""
-        tc_name = parts[2] if len(parts) > 2 else ""
-        status = parts[3] if len(parts) > 3 else ""
-        try:
-            preview = json.loads(parts[4]) if len(parts) > 4 else ""
-        except json.JSONDecodeError:
-            preview = parts[4] if len(parts) > 4 else ""
-        await event_queue.put({
-            "type": "delegation_tool_result",
-            "delegation_id": str(delegation_id),
-            "tool_call_id": tc_id,
-            "name": tc_name,
-            "status": status,
-            "preview": preview,
-        })
+    """Proxy the common execution payload with the parent's delegation identity."""
+    decoded = decode_agent_event(event)
+    payload = event_payload(decoded) if decoded is not None else None
+    if payload is None or payload["type"] not in {"thinking", "text_delta", "tool_call", "tool_result"}:
+        return
+    await event_queue.put({
+        **payload,
+        "type": f"delegation_{payload['type']}",
+        "delegation_id": str(delegation_id),
+    })
 
 
 # Handler registry

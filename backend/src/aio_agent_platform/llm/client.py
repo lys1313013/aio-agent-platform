@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -185,13 +185,13 @@ class LLMProvider(ABC):
         """Non-streaming completion."""
 
     @abstractmethod
-    async def stream(
+    def stream(
         self,
         messages: list[LLMMessage],
         tools: list[dict] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
-    ) -> AsyncIterator[LLMChunk]:
+    ) -> AsyncGenerator[LLMChunk]:
         """Streaming completion."""
 
     def _convert_tools(self, tools: list[dict]) -> list[dict]:
@@ -315,7 +315,7 @@ class OpenAIProvider(LLMProvider):
         tools: list[dict] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
-    ) -> AsyncIterator[LLMChunk]:
+    ) -> AsyncGenerator[LLMChunk]:
         openai_messages = self._to_openai_messages(messages)
         temp = temperature if temperature is not None else self.default_temperature
         mt = max_tokens or self.default_max_tokens
@@ -681,7 +681,7 @@ class AnthropicProvider(LLMProvider):
         tools: list[dict] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
-    ) -> AsyncIterator[LLMChunk]:
+    ) -> AsyncGenerator[LLMChunk]:
         system_content, anthropic_messages = self._to_anthropic_format(messages)
         anthropic_tools = self._convert_tools(tools) if tools else None
         temp = temperature if temperature is not None else self.default_temperature

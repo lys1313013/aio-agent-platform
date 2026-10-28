@@ -161,3 +161,38 @@ async def test_execute_rejects_session_bound_to_another_agent(external_chat):
                 fixture.request, fixture.user, db,
             )
     assert error.value.status_code == 404
+
+
+@pytest.mark.parametrize("transport", ["execute", "stream"])
+@pytest.mark.parametrize("saved_prompt", ["missing", "", None, "published prompt"])
+async def test_published_prompt_does_not_fall_back_when_explicitly_empty(
+    external_chat, monkeypatch, transport, saved_prompt,
+):
+    fixture = external_chat
+    snapshot = {} if saved_prompt == "missing" else {"system_prompt": saved_prompt}
+    monkeypatch.setattr(agent_api, "_get_active_version", AsyncMock(
+        return_value=SimpleNamespace(config_snapshot=snapshot),
+    ))
+
+    async def run(**_kwargs):
+        yield AgentStep(step=1, done=True, final_output="answer")
+
+    monkeypatch.setattr(agent_api, "_build_agent_loop_for_version", AsyncMock(
+        return_value=SimpleNamespace(provider=Mock(), run=run),
+    ))
+    async with fixture.factory() as db:
+        if transport == "execute":
+            await agent_api._execute_agent_inner(
+                fixture.agent.id,
+                agent_api.ExecuteRequest(user_input="repeat", session_rid=str(fixture.session_id)),
+                fixture.request, fixture.user, db,
+            )
+        else:
+            response = await agent_api.sse_chat(
+                fixture.session_id, agent_api.SseChatRequest(message="repeat"),
+                fixture.request, fixture.user, db,
+            )
+            async for _frame in response.body_iterator:
+                pass
+    expected = fixture.agent.system_prompt if saved_prompt == "missing" else saved_prompt
+    assert agent_api.build_system_prompt.call_args.kwargs["agent_prompt"] == expected
