@@ -366,7 +366,8 @@ async def admin_update_agent(
 
     await db.flush()
 
-    # Reload
+    # FK and association-table writes do not update already-loaded relationships.
+    # Refresh them so the response describes the persisted configuration.
     result = await db.execute(
         select(Agent)
         .options(
@@ -379,6 +380,7 @@ async def admin_update_agent(
             with_loader_criteria(Agent, _agent_visible_to(user), include_aliases=True),
         )
         .where(Agent.id == agent_id)
+        .execution_options(populate_existing=True)
     )
     agent = result.scalar_one()
     return _agent_to_dict(agent, user=user)

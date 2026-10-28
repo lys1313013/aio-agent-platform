@@ -10,12 +10,12 @@ import { buildPageContext } from '@/lib/uiActions/registry';
 import ChatRunNotice from '@/components/chat/ChatRunNotice';
 import ChatWindow from '@/components/chat/ChatWindow';
 import AgentConfigSidebar from '@/components/AgentConfigSidebar';
+import { useAgentDetails } from '@/components/agent-config/useAgentDetails';
 import SandboxFilePanel from '@/components/chat/SandboxFilePanel';
 import WebpagePreviewPanel from '@/components/chat/WebpagePreviewPanel';
 import { Alert, App, Typography, Tag, Button, Skeleton, Tooltip } from 'antd';
 import { PlusOutlined, LinkOutlined, DeleteOutlined } from '@ant-design/icons';
-import { agentsApi } from '@/lib/api';
-import type { Agent, ChatAttachment, FileAttachmentRef, SessionStatus } from '@/lib/types';
+import type { ChatAttachment, FileAttachmentRef, SessionStatus } from '@/lib/types';
 import { getAgentIcon } from '@/lib/agent-icons';
 
 const { Text } = Typography;
@@ -26,8 +26,7 @@ export default function AgentChatPage() {
   const { activeSessionId, sessions, messages, messagesLoading, addMessage, createSession, renameSession, deleteSession, loadSessions, refreshSessions, setActiveSession } = useChatStore();
   const { message, modal } = App.useApp();
   const [creatingSession, setCreatingSession] = useState(false);
-  const [agent, setAgent] = useState<Agent | null>(null);
-  const [agentLoading, setAgentLoading] = useState(true);
+  const { agent, agentLoading, loadAgent } = useAgentDetails(agentId, message.error);
   const [sessionStatus, setSessionStatus] = useState<SessionStatus | null>(null);
   const [checkingStatus, setCheckingStatus] = useState(false);
   // onDone 需要 flushNext，但 useChatStream 初始化早于 useMessageQueue —— 用 ref 打破循环依赖
@@ -76,21 +75,6 @@ export default function AgentChatPage() {
       interruptStream,
     );
   flushNextRef.current = flushNext;
-
-  // Load agent info
-  const loadAgent = useCallback((silent = false) => {
-    if (!agentId) return;
-    if (!silent) setAgentLoading(true);
-    agentsApi
-      .get(agentId)
-      .then(setAgent)
-      .catch((err) => message.error(`加载智能体失败：${err.message}`))
-      .finally(() => { if (!silent) setAgentLoading(false); });
-  }, [agentId, message]);
-
-  useEffect(() => {
-    loadAgent();
-  }, [loadAgent]);
 
   // Sync URL → store: when URL has a sessionId, activate it; when URL has no
   // sessionId (blank chat), clear any stale session from a previous agent visit.
