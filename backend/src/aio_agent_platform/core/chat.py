@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Collection
+from functools import partial
 from typing import Any
 from uuid import UUID
 
@@ -550,7 +551,11 @@ async def load_conversation_history(
     so non-vision models never receive image blocks.
     """
     from aio_agent_platform.llm import build_image_url_refs, build_user_content
-    from aio_agent_platform.storage.chat_attachments import ChatAttachmentStorage
+    from aio_agent_platform.storage.chat_attachments import (
+        AttachmentAccessError,
+        ChatAttachmentStorage,
+        validate_attachment_refs,
+    )
 
     soft_limit = limit or settings.agent.context_history_soft_limit
 
@@ -564,27 +569,38 @@ async def load_conversation_history(
     messages = list(reversed(result.scalars().all()))
 
     session_result = await db.execute(
-        select(Session.context_summary).where(Session.id == session_id)
+        select(Session).where(Session.id == session_id)
     )
-    context_summary = session_result.scalar_one_or_none()
+    session = session_result.scalar_one_or_none()
+    context_summary = session.context_summary if session else None
 
     llm_messages: list[LLMMessage] = []
-    attachment_storage = ChatAttachmentStorage()
+    attachment_storage = None
     for msg in messages:
         # A reserved/background turn may have failed before producing anything.
         if msg.role == "assistant" and not (msg.content or msg.tool_calls):
             continue
         if msg.role in ("user", "assistant"):
             if msg.attachments and msg.role == "user":
+                if session is None:
+                    raise AttachmentAccessError("附件会话不存在")
+                attachments = validate_attachment_refs(
+                    msg.attachments, user_id=str(session.user_id), session_id=str(session.id),
+                )
                 if allow_images:
+                    if attachment_storage is None:
+                        attachment_storage = ChatAttachmentStorage()
                     content = build_user_content(
                         text=msg.content or "",
-                        attachments=msg.attachments,
+                        attachments=attachments,
                         provider_type=provider_type,
-                        to_data_uri=attachment_storage.to_data_uri,
+                        to_data_uri=partial(
+                            attachment_storage.to_data_uri,
+                            user_id=str(session.user_id), session_id=str(session.id),
+                        ),
                     )
                 else:
-                    refs = build_image_url_refs(msg.attachments)
+                    refs = build_image_url_refs(attachments)
                     text = msg.content or ""
                     content = f"{text}\n\n{refs}" if text and refs else (text or refs)
             else:

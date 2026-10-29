@@ -55,7 +55,10 @@ from aio_agent_platform.rooms.service import (
     now,
     touch,
 )
-from aio_agent_platform.storage.chat_attachments import ChatAttachmentStorage
+from aio_agent_platform.storage.chat_attachments import (
+    ChatAttachmentStorage,
+    validate_attachment_refs,
+)
 from aio_agent_platform.tools.builtin import FRONTEND_TOOL_NAMES
 
 logger = structlog.get_logger()
@@ -450,15 +453,18 @@ async def _execute_task(app, room_id, run_id, task_id):
 
         text_input = input_text(snapshot)
         vision = bool(getattr(provider, "supports_vision", False))
-        storage = ChatAttachmentStorage() if vision and (
-            snapshot["input"].get("attachments") or any(r.get("attachments") for r in snapshot["history"])
-        ) else None
+        storage = None
 
         def content(text, images):
+            nonlocal storage
+            images = validate_attachment_refs(images, user_id=str(user.id), session_id=str(room_id))
             if images and vision:
+                if storage is None:
+                    storage = ChatAttachmentStorage()
                 return build_user_content(text=text, attachments=images,
                                           provider_type="anthropic" if isinstance(provider.provider, AnthropicProvider) else "openai",
-                                          to_data_uri=storage.to_data_uri)
+                                          to_data_uri=lambda key, mime: storage.to_data_uri(
+                                              key, mime, user_id=str(user.id), session_id=str(room_id)))
             return text + ("\n[本成员模型不支持读取图片内容，请其他成员提供文字说明]" if images else "")
 
         history_messages = [LLMMessage(role="user", content=content(r["content"], r.get("attachments"))) for r in snapshot["history"]]

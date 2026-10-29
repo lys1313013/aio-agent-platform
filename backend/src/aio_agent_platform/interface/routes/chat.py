@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from functools import partial
 from typing import Annotated
 from uuid import UUID
 
@@ -86,7 +87,9 @@ from aio_agent_platform.pets.smart import (
 from aio_agent_platform.storage.chat_attachments import (
     ALLOWED_MIME,
     MAX_BYTES,
+    AttachmentAccessError,
     ChatAttachmentStorage,
+    validate_attachment_refs,
 )
 from aio_agent_platform.storage.client import ObjectStorage
 from aio_agent_platform.storage.workspace import WorkspaceStorage
@@ -171,6 +174,17 @@ class AttachmentOut(BaseModel):
     mime: str
     size: int
     filename: str
+
+
+def _validated_chat_attachments(req: ChatRequest, user: User) -> list[dict] | None:
+    try:
+        return validate_attachment_refs(
+            [a.model_dump() for a in req.attachments] if req.attachments else None,
+            user_id=str(user.id),
+            session_id=str(req.session_id) if req.session_id else None,
+        )
+    except AttachmentAccessError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
 
 
 class FileAttachmentOut(BaseModel):
@@ -282,7 +296,8 @@ def _compress_image(data: bytes, mime: str) -> tuple[bytes, str]:
 
 @router.post("/attachments", response_model=AttachmentOut, status_code=201)
 async def upload_chat_attachment(
-    user: CurrentUser,
+    user: ExecutionUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
     file: UploadFile = File(...),
     session_id: UUID | None = Form(None),
 ) -> AttachmentOut:
@@ -293,6 +308,22 @@ async def upload_chat_attachment(
     - Returns a stable public URL for frontend <img> preview and
       for LLM providers that accept URL sources.
     """
+    # A user cannot upload into a foreign or inaccessible session namespace.
+    if session_id:
+        session = await db.scalar(select(Session).where(
+            Session.id == session_id, Session.user_id == user.id,
+        ))
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if session.source == "room":
+            from aio_agent_platform.rooms.service import owned_room
+
+            await owned_room(db, session_id, user)
+        else:
+            await load_chat_agent(db, None, session_id, user)
+    else:
+        await load_chat_agent(db, None, None, user)
+
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
@@ -484,6 +515,7 @@ async def chat(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ChatResponse:
     """Non-streaming chat endpoint."""
+    _attachments_data = _validated_chat_attachments(req, user)
     tool_executor: ToolExecutor = request.app.state.tool_executor
 
     # Load agent
@@ -577,8 +609,6 @@ async def chat(
         allowed_tools={s["function"]["name"] for s in tools_schema},
     )
 
-    # Convert Pydantic AttachmentOut objects to dicts for JSONB storage and build_user_content
-    _attachments_data = [a.model_dump() for a in req.attachments] if req.attachments else None
     _file_attachments_data = _file_refs_to_dicts(req.file_attachments)
 
     # Inject file references into user message for LLM context
@@ -586,13 +616,15 @@ async def chat(
 
     # Build multimodal user content for this turn (always uses base64 for images).
     # Non-multimodal models receive image URL references instead of image blocks.
-    attachment_storage = ChatAttachmentStorage()
-    if allow_images:
+    if allow_images and _attachments_data:
+        attachment_storage = ChatAttachmentStorage()
         user_content = build_user_content(
             text=user_message_for_llm,
             attachments=_attachments_data,
             provider_type=provider_type_for_content,
-            to_data_uri=attachment_storage.to_data_uri,
+            to_data_uri=partial(
+                attachment_storage.to_data_uri, user_id=str(user.id), session_id=str(session.id),
+            ),
         )
     else:
         refs = build_image_url_refs(_attachments_data)
@@ -763,9 +795,7 @@ async def _handle_command_stream(
         raise HTTPException(status_code=403, detail=str(error)) from error
 
     # Persist the user's command message (same shape as a normal chat message).
-    _attachments_data = (
-        [a.model_dump() for a in req.attachments] if req.attachments else None
-    )
+    _attachments_data = _validated_chat_attachments(req, user)
     _file_attachments_data = _file_refs_to_dicts(req.file_attachments)
     user_msg = Message(
         session_id=session_id,
@@ -843,6 +873,7 @@ async def chat_stream(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StreamingResponse:
     """Streaming chat via Server-Sent Events."""
+    _attachments_data = _validated_chat_attachments(req, user)
     # Slash command interception — commands run without entering AgentLoop.
     if req.message.strip().startswith("/"):
         return await _handle_command_stream(req, request, user, db)
@@ -902,7 +933,8 @@ async def chat_stream(
 
     # Serialize all Web turns in a session before persisting the user message.
     run = await chat_runs.reserve(
-        db, user.id, session_id, req.model_dump(mode="json"), req.resume_run_id,
+        db, user.id, session_id,
+        {**req.model_dump(mode="json"), "attachments": _attachments_data}, req.resume_run_id,
     )
 
     # Resolve model/provider info for provider-specific content formatting
@@ -929,8 +961,6 @@ async def chat_stream(
         provider_type_for_content = _resolve_provider_type(_resolved_model.provider.provider_type)
     allow_images = bool(_resolved_model and _resolved_model.is_multimodal)
 
-    # Convert Pydantic AttachmentOut objects to dicts for JSONB storage
-    _attachments_data = [a.model_dump() for a in req.attachments] if req.attachments else None
     _file_attachments_data = _file_refs_to_dicts(req.file_attachments)
     user_msg = Message(
         session_id=session_id,
@@ -1105,13 +1135,15 @@ async def chat_stream(
 
                 # Build multimodal user content for this turn (always uses base64 for images).
                 # Non-multimodal models receive image URL references instead of image blocks.
-                attachment_storage = ChatAttachmentStorage()
-                if allow_images:
+                if allow_images and _attachments_data:
+                    attachment_storage = ChatAttachmentStorage()
                     user_content = build_user_content(
                         text=_user_message_for_llm,
                         attachments=_attachments_data,
                         provider_type=provider_type_for_content,
-                        to_data_uri=attachment_storage.to_data_uri,
+                        to_data_uri=partial(
+                            attachment_storage.to_data_uri, user_id=str(user.id), session_id=str(session.id),
+                        ),
                     )
                 else:
                     refs = build_image_url_refs(_attachments_data)

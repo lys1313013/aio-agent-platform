@@ -198,13 +198,17 @@ def select_targets(req: RoomSend, roster: list[ChatRoomMember], default_id: UUID
 
 def validate_attachments(req: RoomSend, room: ChatRoom, user: User) -> dict:
     data = req.model_dump(mode="json", exclude={"request_id"})
-    for image in data["attachments"]:
-        parts = image["key"].split("/")
-        if (len(parts) != 4 or parts[0] != "chat-attachments" or parts[1] != str(user.id)
-                or parts[2] not in {str(room.id), "_pending"} or ".." in parts):
-            raise HTTPException(403, "图片不属于当前用户或聊天室")
-        # Never trust a client URL when constructing model input.
-        image["url"] = "/api/public/images/" + image["key"]
+    from aio_agent_platform.storage.chat_attachments import (
+        AttachmentAccessError,
+        validate_attachment_refs,
+    )
+
+    try:
+        data["attachments"] = validate_attachment_refs(
+            data["attachments"], user_id=str(user.id), session_id=str(room.id),
+        )
+    except AttachmentAccessError as error:
+        raise HTTPException(403, str(error)) from error
     for file in data["file_attachments"]:
         path = PurePosixPath(file["workspace_path"])
         if (path.is_absolute() or ".." in path.parts or "\\" in str(path)

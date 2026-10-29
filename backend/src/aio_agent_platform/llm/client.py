@@ -1073,7 +1073,7 @@ def build_user_content(
     if final_text:
         blocks.append({"type": "text", "text": final_text})
 
-    for a, uri in resolved:
+    for _attachment, uri in resolved:
         if is_anthropic:
             # Anthropic base64 source: data:<mime>;base64,<payload>
             payload = uri.split(",", 1)[1] if "," in uri else uri
@@ -1082,7 +1082,7 @@ def build_user_content(
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": a["mime"],
+                        "media_type": uri[5:].split(";", 1)[0],
                         "data": payload,
                     },
                 }
